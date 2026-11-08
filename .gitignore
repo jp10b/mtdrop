@@ -1,0 +1,31 @@
+# Prior art clones (read-only references, never committed)
+third_party/*
+!third_party/NOTICE
+
+# Captures, keys, firmware – NEVER commit (CLAUDE.md §9)
+*.pcap
+*.pcapng
+*.cap
+*keylog*
+*.key
+*.pem
+*.p12
+*.pfx
+*.bin
+firmware/
+captures/
+private/
+
+# Build output
+bin/
+obj/
+out/
+build/
+x64/
+*.sys
+*.pdb
+*.cat
+.vs/
+__pycache__/
+*.pyc
+.venv/
