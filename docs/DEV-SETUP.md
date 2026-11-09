@@ -9,7 +9,7 @@ Status: 2026-11-09. Only the protocol tools need a setup today. The driver secti
 
 ## .NET parts (M2)
 
-- .NET SDK 10. `dotnet build`, `dotnet test`.
+- .NET SDK 10. `dotnet test mtdrop.sln`.
 
 ## Before the first driver swap (M3, spike S1 in ADR-0002)
 

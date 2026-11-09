@@ -1,6 +1,6 @@
 # ADR-0001: Languages and stack per component
 
-- **Status:** Proposed (2026-11-09) – needs maintainer acceptance
+- **Status:** Accepted (2026-11-09, maintainer)
 - **Deciders:** maintainer
 - **Inputs:** `docs/RESEARCH.md` §3, §4, §6, §8; `docs/FINDINGS.md` F-001, F-002; `docs/PROTOCOL.md`
 
@@ -20,7 +20,7 @@ Forces:
 - GPL-3.0 is fixed by OWL. MIT and BSD-3-Clause-Clear code may be included; GPL-2.0-only code may not.
 - The maintainer's machine already has .NET SDK 8 and 10 and Rust; it has no C toolchain (no CMake, GCC, Clang or WDK) yet.
 
-## Decision (proposed)
+## Decision
 
 | Component | Language / stack | Basis |
 |---|---|---|

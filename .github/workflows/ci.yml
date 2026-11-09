@@ -18,6 +18,10 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install pytest cryptography
       - run: python -m pytest tools -q
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet test mtdrop.sln --nologo
       - name: Refuse private artefacts
         shell: bash
         run: |

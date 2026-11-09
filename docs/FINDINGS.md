@@ -203,3 +203,49 @@ TLS 1.3 records of the `awdl0` capture decrypted offline with the session keylog
 - TODO-VERIFY: meaning of `DeviceSupportFlags` bits and of `SenderIdentityAuthTag`.
 - TODO-VERIFY: how long the phone waits for the `/Ask` response (decides how long the Accept/Decline toast may stay open). Observed so far: answers after 1.5 s and 3.2 s were accepted.
 - TODO-VERIFY: multi-file and HEIC/Live Photo/video transfers (`Files` with several entries, `ConvertMediaFormats`).
+
+---
+
+## F-003 – The C# receiver decodes what the phone really sent
+
+- **Date:** 2026-11-09
+- **Milestone:** M2 (protocol layer on Windows, testable without AWDL)
+- **Code:** `airdropd/Mtdrop.Protocol` at the commit that adds this entry
+
+### Hypothesis
+
+A receiver written only from `docs/PROTOCOL.md` accepts the byte stream captured in F-001 and produces the same file the Linux rig saved.
+
+### What would falsify it
+
+Any `/Discover`, `/Ask` or complete `/Upload` from the capture is rejected, or the saved file differs from the original by even one byte, or a sidecar/temporary file is left in the destination folder.
+
+### Method
+
+1. The decrypted client-to-server bytes of each TLS connection from F-001 (six connections) were sent unchanged over a new TLS connection to `AirDropServer` on the loopback interface (test `Replays_a_private_capture_when_available`, enabled by an environment variable; the data stays outside the repository).
+2. Live smoke test of the console host on an isolated host-only virtual adapter of the same machine: a script listened for the announcements, sent a `PTR _airdrop._tcp.local` query, then connected by TLS to the advertised address and port and posted `/Discover`.
+
+### Raw result (FACT)
+
+| Capture connection | Content | Result |
+|---|---|---|
+| 0, 3 | `/Discover` | `200`, receiver name returned |
+| 1 | `/Ask` + `/Upload` that stalled in F-001 | `/Ask` `200`; upload reported "sender went quiet"; **no file left** |
+| 2 | `/Ask` + complete `/Upload` | `200` / `200`; saved file **byte-identical** to the photo saved by the Linux rig (2 374 534 B); AppleDouble sidecar not saved |
+| 4 | TLS handshake only | no request (nothing to replay) |
+| 5 | `/Ask` cut off by the end of the capture | connection timed out, no prompt, no file |
+
+Smoke test: five-record announcement (PTR, SRV, TXT, AAAA, NSEC) heard every 2 s; a query was answered within 0.5 s; TLS 1.3 with `TLS_AES_256_GCM_SHA384` negotiated by the Windows TLS stack with our generated RSA-2048 certificate; `/Discover` returned the three expected keys.
+
+Automated tests at this point: 76 C# tests and 18 Python tests pass.
+
+### Conclusion
+
+1. Hypothesis confirmed for the one transfer type we have (single JPEG from Photos).
+2. The Windows TLS stack offers what the phone negotiated in F-001. Whether the phone accepts *our* certificate is still unverified: it was never shown to a phone.
+3. Opening the mDNS socket next to the operating system's own responder on UDP 5353 works with address reuse on Windows 11 build 26200.
+
+### Follow-ups
+
+- Not verified without a radio: anything involving the real phone's reactions (certificate acceptance, decline status, how long it waits for `/Ask`).
+- The multicast loopback option must stay enabled on Windows for a same-machine query to reach the responder (it acts on the receiving side there).

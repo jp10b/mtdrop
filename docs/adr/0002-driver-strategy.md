@@ -1,6 +1,6 @@
 # ADR-0002: Driver strategy for the MT7921 radio
 
-- **Status:** Proposed (2026-11-09) – needs maintainer acceptance. No driver work starts before acceptance and the safety checklist in CLAUDE.md §9.
+- **Status:** Accepted (2026-11-09, maintainer). No driver work starts before the safety checklist in CLAUDE.md §9 and `docs/DEV-SETUP.md` is complete.
 - **Deciders:** maintainer
 - **Inputs:** `docs/RESEARCH.md` §0, §3, §5, §8, §9; `docs/FINDINGS.md` F-001
 
@@ -62,7 +62,7 @@ All chip logic in a kernel driver; user mode sees IOCTLs for RX, TX, channel.
 - Own WDI/NDIS miniport replacing the vendor driver for normal Wi-Fi too: far too large.
 - Patching the vendor `.sys`: breaks its signature and its licence.
 
-## Decision (proposed)
+## Decision
 
 **Start with A, keep the chip logic independent of how registers and buffers are reached, and fall back to C (not B) if A fails on DMA.**
 

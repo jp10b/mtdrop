@@ -4,7 +4,7 @@
 The PC is meant to show up in the iPhone's native share sheet, like a Mac does. No app on the iPhone, no dongle, no VM.
 
 > **Status: early development. Nothing here works on Windows yet.**
-> What exists today: research, protocol notes, a proof on Linux that the hardware can do it, and reference codecs with tests.
+> What exists today: research, protocol notes, a proof on Linux that the hardware can do it, and the protocol service with tests. The radio driver, which everything depends on, is not started.
 
 mtdrop is an independent interoperability project. It is not affiliated with or endorsed by Apple. AirDrop is a trademark of Apple Inc.
 
@@ -14,7 +14,7 @@ mtdrop is an independent interoperability project. It is not affiliated with or 
 |---|---|
 | The MT7921 in the target laptop receives a photo from an iPhone 15 Pro (iOS 26.5.2) under Linux | Done – [`docs/FINDINGS.md`](docs/FINDINGS.md) F-001 |
 | What iOS 26.5.2 sends, decoded from our own capture | Done – F-002, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
-| Protocol service on Windows | Not started (M2) |
+| Protocol service on Windows (`airdropd`): discovery records, TLS, `/Discover`, `/Ask`, `/Upload`, safe extraction | Works against tests and against a replay of the real capture – F-003. Not yet tested over the air (needs the radio) |
 | Windows radio driver | Not started (M3–M4) |
 | End-to-end receive on Windows | Not started (M6) |
 
@@ -42,16 +42,15 @@ Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Decisions and their rea
 | `docs/` | Architecture, protocol notes, prior-art research, lab notebook, decisions |
 | `driver/` | Radio driver for MT7921 (not started) |
 | `awdld/` | AWDL daemon based on OWL (not started) |
-| `airdropd/` | AirDrop protocol service (not started) |
+| `airdropd/` | AirDrop protocol service (C#): library, tests, console host |
 | `app/`, `service/` | Tray app and elevated helper (not started) |
 | `tools/` | Capture analysis and reference codecs (Python) |
 | `tests/fixtures/` | Synthetic, redacted protocol fixtures only |
 
 ## Building and testing
 
-Only the Python tools exist so far:
-
 ```
+dotnet test mtdrop.sln
 python -m pip install pytest cryptography
 python -m pytest tools
 ```

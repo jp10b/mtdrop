@@ -1,6 +1,6 @@
 # Architecture
 
-Status: 2026-11-09. Reflects the *proposed* ADR-0001 and ADR-0002; it changes if they are not accepted.
+Status: 2026-11-09. Reflects ADR-0001 and ADR-0002 (accepted).
 
 ## Components
 

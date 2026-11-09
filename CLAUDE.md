@@ -288,10 +288,10 @@ mtdrop/
 1. Ask the maintainer to fill section 4 (hardware/environment). Update this file. — *done (2026-11-08); only the 5 GHz channel remains TODO.*
 2. Clone prior art into `third_party/` and write `docs/RESEARCH.md` (licences included). Flag anything that changes the plan. — *done (2026-11-08), first pass; see RESEARCH.md §0 and §9.*
 3. Write `docs/PROTOCOL.md` from OWL + OpenDrop + airdrop-mt7921 findings (mark FACT / ASSUMPTION / TODO-VERIFY). — *done (2026-11-09), includes our own decrypted capture.*
-4. Propose ADR-0001 (language/stack) and ADR-0002 (driver strategy: full custom MT7921 driver vs alternatives) with pros/cons. — *proposed (2026-11-09) in `docs/adr/`; waiting for maintainer acceptance. ADR-0001 proposes C#/.NET for `airdropd`; ADR-0002 proposes a UMDF proxy + user-mode chip library first, thin KMDF as fallback, fixed channel 44 first.*
+4. Propose ADR-0001 (language/stack) and ADR-0002 (driver strategy: full custom MT7921 driver vs alternatives) with pros/cons. — *accepted by the maintainer (2026-11-09), see `docs/adr/`. ADR-0001 proposes C#/.NET for `airdropd`; ADR-0002 proposes a UMDF proxy + user-mode chip library first, thin KMDF as fallback, fixed channel 44 first.*
 5. Scaffold the repo (M1). — *done (2026-11-09): README, LICENSE, ARCHITECTURE, DEV-SETUP, FINDINGS, ADRs, `third_party/NOTICE`, CI (Python tool tests), reference codecs in `tools/proto/`.*
 6. Write a step-by-step **M0 guide in Polish** for the maintainer: which Linux live USB, how to set it up, how to build patched OWL + OpenDrop, how to capture pcaps and TLS keylog, what to send back. — *done (2026-11-08), moved ahead of 3–5 at maintainer's request: `docs/M0-GUIDE.pl.md` + `tools/m0/`. Results go to `C:\Users\desktop\mtdrop-private\` (outside the repo, never committed).*
 
 Do not start driver code before M0 succeeds. (M0 succeeded 2026-11-09. Driver work additionally requires ADR-0002 accepted and the checklist in `docs/DEV-SETUP.md` complete.)
 
-**Next (after ADR acceptance):** M2 – `airdropd` on Windows against synthetic fixtures shaped like F-002. Needs no driver and no admin rights.
+**Next:** M2 – `airdropd` on Windows against synthetic fixtures shaped like F-002. Needs no driver and no admin rights.
