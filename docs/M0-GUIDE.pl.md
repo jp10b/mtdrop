@@ -74,8 +74,10 @@ Połącz się z routerem przez Wi-Fi normalnie (ikonka w prawym górnym rogu). W
 1. Otwórz **Pliki** (menedżer plików). Po lewej kliknij dysk Windows (ok. pojemności Twojego C:). Ubuntu go zamontuje.
 2. W terminalu sprawdź, gdzie się zamontował:
    ```sh
-   ls /media/$USER/
+   ls /media/$USER/ /run/media/$USER/ 2>/dev/null
    ```
+   Uwaga z testu 2026-11-09: sesja Live Ubuntu 26.04 montuje dysk w `/run/media/$USER/…`, nie w `/media/$USER/…`. W dalszych poleceniach użyj tej ścieżki, która u Ciebie istnieje.
+
    Zobaczysz nazwę (np. `Acer` albo długi identyfikator). Dalej nazywam ją `<WIN>`.
 3. Ta instrukcja jest pod: `/media/$USER/<WIN>/Users/desktop/Desktop/airdrop/docs/M0-GUIDE.pl.md` – możesz ją otworzyć w edytorze tekstu albo w Firefoksie.
 4. Uruchom przygotowanie (pobiera pakiety, buduje OWL i poprawionego OpenDropa – ok. 10 minut):

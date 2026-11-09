@@ -1,0 +1,31 @@
+Third-party material
+
+The directories under third_party/ are local, git-ignored clones used for study.
+Nothing from them is part of this repository unless listed under "Reused code".
+
+Reused code
+-----------
+(none yet)
+
+When code is reused, add one entry per file:
+  <our path>  <-  <project> @ <commit>, <their path>, <licence>, <what was changed>
+
+Studied projects (commit = cloned HEAD)
+---------------------------------------
+seemoo-lab/owl                       0ee3263  GPL-3.0-or-later
+jedbillyb/owl                        57b8678  GPL-3.0
+seemoo-lab/opendrop                  11fe7ba  GPL-3.0
+jedbillyb/opendrop (not cloned)      787f694  GPL-3.0
+jedbillyb/airdrop-mt7921             51e705e  GPL-3.0
+jedbillyb/mt7921-dual-channel        b06d010  GPL-3.0
+Foglio24/linux-airdrop               6b1bf73  GPL-3.0
+raph559/winawdl                      0db7031  MIT (root, driver, app, airdrop); GPL-3.0-or-later (awdl); GPL-2.0-only (radio) - radio/ must not be reused
+21Suspect/AirDrop-for-Windows        9ae8771  GPL-3.0-or-later
+BenItBuhner/AirDrop-for-Everything   34bdc8d  MIT
+openwrt/mt76                         0936617  BSD-3-Clause-Clear (mt7921, mt792x, connac, core)
+wrldwideee/win-drop                  e9be009  no licence - study only
+jiaqizou-msft/Airdrop-on-Windows     675497b  no licence - study only
+
+Firmware
+--------
+MediaTek firmware is not part of this repository and is not redistributed.

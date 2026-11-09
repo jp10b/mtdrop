@@ -10,7 +10,7 @@ set -euo pipefail
 WORK="${WORK:-$HOME/m0}"
 
 echo "==> Checking kernel support for active monitor (decides whether M0 can work)"
-if ! command -v iw >/dev/null 2>&1; then sudo apt-get install -y iw; fi
+if ! command -v iw >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y iw; fi
 if iw list 2>/dev/null | grep -qi "active monitor"; then
   echo "    OK: $(iw list | grep -i 'active monitor' | head -1 | sed 's/^\s*//')"
 else
@@ -36,6 +36,8 @@ echo "    commit: $(cat "$WORK/airdrop-mt7921.commit")"
 
 echo "==> Running airdrop-mt7921/install.sh (it will ask before adding a sudoers rule - answer y)"
 cd airdrop-mt7921
+# CMake 4 rejects OWL's bundled googletest (cmake_minimum_required < 3.5); seen on Ubuntu 26.04.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
 ./install.sh
 
 echo

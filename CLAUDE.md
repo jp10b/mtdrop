@@ -71,7 +71,7 @@ AirDrop stack, bottom to top:
 2. **AWDL** – Apple's proprietary peer-to-peer Wi-Fi link. Devices sync via action frames (PSF / MIF), elect a master, follow a channel sequence across social channels (6, 44, 149) plus others (e.g. 36). Data frames carry IPv6. Implemented in open source by **OWL** (seemoo-lab/owl, C, GPL-3.0).
 3. **IPv6 link-local** over an `awdl0` interface. On Windows, create it with **Wintun** (already done by `winawdl`).
 4. **mDNS / DNS-SD** – service `_airdrop._tcp`, advertised on `awdl0` only.
-5. **HTTPS** (self-signed TLS) – endpoints `/Discover`, `/Ask`, `/Upload`. Payload of `/Upload` is an archive (per OpenDrop: CPIO, possibly compressed – TODO-VERIFY in OpenDrop source). Implemented by **OpenDrop** (seemoo-lab/opendrop, Python, GPL-3.0), but **stock OpenDrop does not work with iOS 26** – use the patches from `jedbillyb/airdrop-mt7921/patches/`.
+5. **HTTPS** (self-signed TLS) – endpoints `/Discover`, `/Ask`, `/Upload`. Payload of `/Upload` from iOS 26 is `application/x-dvzip` wrapping an ODC cpio archive (FACT, `docs/FINDINGS.md` F-002; details in `docs/PROTOCOL.md`). Implemented by **OpenDrop** (seemoo-lab/opendrop, Python, GPL-3.0), but **stock OpenDrop does not work with iOS 26** – use the patches from `jedbillyb/airdrop-mt7921/patches/`.
 
 ### Hard-won knowledge from airdrop-mt7921 (Linux, same chip) – read their FINDINGS.md
 
@@ -183,7 +183,7 @@ The MediaTek vendor driver and ours bind to the same PCI hardware ID. "Receive o
 
 Each milestone ends with: code merged, `docs/FINDINGS.md` updated, acceptance criterion demonstrated by the maintainer.
 
-**M0 – Prove the chip on Linux (no Windows work yet)**
+**M0 – Prove the chip on Linux (no Windows work yet)** — *DONE 2026-11-09, see `docs/FINDINGS.md` F-001/F-002.*
 - Maintainer boots Linux from USB (e.g. Ubuntu / Fedora live with persistence) on the same laptop.
 - Reproduce `airdrop-mt7921` receive: photo from iPhone arrives.
 - Capture: pcap of AWDL session, TLS keylog of `/Ask` + `/Upload` (keep **outside** the repo), firmware file names/versions the Linux driver loads, PCI ID.
@@ -287,9 +287,11 @@ mtdrop/
 
 1. Ask the maintainer to fill section 4 (hardware/environment). Update this file. — *done (2026-11-08); only the 5 GHz channel remains TODO.*
 2. Clone prior art into `third_party/` and write `docs/RESEARCH.md` (licences included). Flag anything that changes the plan. — *done (2026-11-08), first pass; see RESEARCH.md §0 and §9.*
-3. Write `docs/PROTOCOL.md` from OWL + OpenDrop + airdrop-mt7921 findings (mark FACT / ASSUMPTION / TODO-VERIFY).
-4. Propose ADR-0001 (language/stack) and ADR-0002 (driver strategy: full custom MT7921 driver vs alternatives) with pros/cons.
-5. Scaffold the repo (M1).
+3. Write `docs/PROTOCOL.md` from OWL + OpenDrop + airdrop-mt7921 findings (mark FACT / ASSUMPTION / TODO-VERIFY). — *done (2026-11-09), includes our own decrypted capture.*
+4. Propose ADR-0001 (language/stack) and ADR-0002 (driver strategy: full custom MT7921 driver vs alternatives) with pros/cons. — *proposed (2026-11-09) in `docs/adr/`; waiting for maintainer acceptance. ADR-0001 proposes C#/.NET for `airdropd`; ADR-0002 proposes a UMDF proxy + user-mode chip library first, thin KMDF as fallback, fixed channel 44 first.*
+5. Scaffold the repo (M1). — *done (2026-11-09): README, LICENSE, ARCHITECTURE, DEV-SETUP, FINDINGS, ADRs, `third_party/NOTICE`, CI (Python tool tests), reference codecs in `tools/proto/`.*
 6. Write a step-by-step **M0 guide in Polish** for the maintainer: which Linux live USB, how to set it up, how to build patched OWL + OpenDrop, how to capture pcaps and TLS keylog, what to send back. — *done (2026-11-08), moved ahead of 3–5 at maintainer's request: `docs/M0-GUIDE.pl.md` + `tools/m0/`. Results go to `C:\Users\desktop\mtdrop-private\` (outside the repo, never committed).*
 
-Do not start driver code before M0 succeeds.
+Do not start driver code before M0 succeeds. (M0 succeeded 2026-11-09. Driver work additionally requires ADR-0002 accepted and the checklist in `docs/DEV-SETUP.md` complete.)
+
+**Next (after ADR acceptance):** M2 – `airdropd` on Windows against synthetic fixtures shaped like F-002. Needs no driver and no admin rights.
