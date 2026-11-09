@@ -9,6 +9,7 @@ Python helpers. Development only; nothing here is shipped to users.
 | `capture/http_shape.py` | Print the *shape* of decrypted exchanges with identifying values masked |
 | `capture/tcp_stats.py` | Per-connection throughput, retransmissions and gaps |
 | `capture/radiotap_stats.py` | Frame, channel and signal statistics of a radiotap capture |
+| `demo/fake_sender.py` | Plays the phone with synthetic data: finds a receiver by mDNS on one interface and sends a generated PNG |
 | `m0/` | Scripts for the Linux proof (M0) |
 
 Inputs and outputs of the `capture/` tools are private data. Keep them outside the repository.

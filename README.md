@@ -43,7 +43,8 @@ Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Decisions and their rea
 | `driver/` | Radio driver for MT7921 (not started) |
 | `awdld/` | AWDL daemon based on OWL (not started) |
 | `airdropd/` | AirDrop protocol service (C#): library, tests, console host |
-| `app/`, `service/` | Tray app and elevated helper (not started) |
+| `app/` | Tray app prototype: Receive toggle, Accept/Decline toast |
+| `service/` | Elevated helper (not started) |
 | `tools/` | Capture analysis and reference codecs (Python) |
 | `tests/fixtures/` | Synthetic, redacted protocol fixtures only |
 
