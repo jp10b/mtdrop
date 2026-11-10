@@ -8,6 +8,7 @@ Reused code
 driver/proxy/mtdrop_proxy.c        <-  raph559/winawdl @ 0db7031, driver/regproxy/regproxy.c, MIT (c) 2026 Raphael Richaud; BAR selection, GUID, names changed
 driver/proxy/mtdrop_proxy_ioctl.h  <-  raph559/winawdl @ 0db7031, driver/regproxy/regproxy_ioctl.h, MIT; GUID, names changed
 driver/proxy/mtdrop_proxy.inf      <-  raph559/winawdl @ 0db7031, driver/regproxy/winawdl_regproxy.inf, MIT; hardware ID, class, names changed
+driver/tools/awe_probe/awe_probe.c <-  raph559/winawdl @ 0db7031, probes/awe_probe.c, MIT; unchanged except the provenance notice
 
 When code is reused, add one entry per file:
   <our path>  <-  <project> @ <commit>, <their path>, <licence>, <what was changed>

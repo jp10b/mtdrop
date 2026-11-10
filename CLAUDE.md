@@ -296,6 +296,6 @@ Do not start driver code before M0 succeeds. (M0 succeeded 2026-11-09. Driver wo
 
 **M2 status (2026-11-09):** `airdropd` library + 76 tests + console host + tray app prototype are in place (FINDINGS F-003). Remaining for M2 acceptance: maintainer confirms the toast flow by hand (`tools/demo/fake_sender.py`).
 
-**M3 spike S1 (2026-11-10): PASS** – UMDF proxy bound without test mode, chip ID 0x7961 read, vendor driver restored (FINDINGS F-004). Next spike: S2 (DMA memory below 4 GiB), then S3 (firmware download).
+**M3 spike S1 (2026-11-10): PASS** – UMDF proxy bound without test mode, chip ID 0x7961 read, vendor driver restored (FINDINGS F-004). **S2 (2026-11-10): PASS as SYSTEM** – 4–16 locked 2 MiB blocks below 4 GiB; the maintainer's admin account lacks SeLockMemoryPrivilege, so the radio process must run as SYSTEM (F-005). Next: design `driver/mt792x` HAL + DMA layout in one low block, then S3 (firmware download) – first step where the chip does DMA; needs explicit confirmation.
 
 **Earlier plan:** M3 preparation – `docs/DEV-SETUP.md` checklist with the maintainer, then spike S1 of ADR-0002 (UMDF proxy, read-only chip ID). Every driver-state command needs explicit confirmation (§9).

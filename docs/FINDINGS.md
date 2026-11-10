@@ -310,3 +310,52 @@ Side effects observed:
 - S2: can we get DMA-capable memory below 4 GiB from user mode on this machine (32-bit DMA mask)?
 - Not tested: behaviour across sleep/hibernate while the proxy is bound; a crash of the driver host process.
 - TODO-VERIFY: meaning of `MT_CONN_ON_MISC = 1` (firmware state after the vendor driver unloads) – read the mt76 definitions before S3.
+
+---
+
+## F-005 – Spike S2: locked memory below 4 GiB is obtainable from user mode, as SYSTEM
+
+- **Date:** 2026-11-10
+- **Milestone:** M3, spike S2 of ADR-0002
+- **Machine state:** 15.4 GiB RAM, 2.9 GiB free, 11 h since boot
+- **Code:** `driver/tools/awe_probe` (winawdl's probe, MIT, unchanged), `scripts/s2-memory-probe.ps1`, `scripts/run-as-system.ps1`
+
+### Hypothesis
+
+An elevated process can allocate locked 2 MiB physical blocks with known addresses, at least two of them below 4 GiB (the MT7921 takes 32-bit DMA addresses), and map them into its address space.
+
+### What would falsify it
+
+The privilege is unavailable to every account we can run as; no block below 4 GiB in repeated runs; a block cannot be mapped and written.
+
+### Method
+
+The probe enables `SeLockMemoryPrivilege`, allocates 512 MiB of ordinary locked pages and as many 2 MiB blocks as it gets (`AllocateUserPhysicalPages2` with the non-paged-large attribute), reports their physical addresses, tries to map one block, and frees everything. Three runs, 2 s apart. No device involved.
+
+### Raw result (FACT)
+
+| Run as | Result |
+|---|---|
+| Elevated administrator (the maintainer's account) | **Privilege not held** – the probe cannot run. Windows Home grants "Lock pages in memory" to no user by default |
+| SYSTEM (temporary scheduled task) | Privilege held; results below |
+
+| Run | 2 MiB blocks obtained | below 4 GiB | Lowest addresses |
+|---|---|---|---|
+| 1 | 57 | **16** | 0x07600000, 0x08C00000, 0x10A00000 … |
+| 2 | 46 | **11** | 0x07600000, 0x07E00000, 0x08C00000 … |
+| 3 | 41 | **4** | 0x10A00000, 0x18400000, 0x18600000, 0x81400000 |
+
+- Mapping: reserving a view with plain `MEM_PHYSICAL` and mapping all 512 frames of a block works (first and last byte writable). Mapping the block as a single frame, or with large-page flags, does not.
+- Ordinary 4 KiB locked pages: ~20 000 of 131 072 below 4 GiB, but fragmented (longest run 64–1024 pages); not a substitute for the 2 MiB blocks.
+
+### Conclusion
+
+1. **Hypothesis confirmed with a condition: the radio process must run as SYSTEM** (or the account must be granted the privilege, which needs a policy change and a new logon). This matches the architecture: the elevated `service/` starts `radiod`.
+2. Low memory is available but varies from run to run (16 → 4 blocks within seconds, while other allocations were live). The chip library must therefore fit its DMA memory into **as few low blocks as possible** and fail cleanly, before touching the chip, if it cannot get them.
+3. Budget estimate (ASSUMPTION, to be fixed in the S3 design): rings ≈ 100 KiB, firmware scatter buffers ≈ 64 KiB, RX buffers 256 × 2 KiB ≈ 512 KiB, TX bounce pool ≈ 512 KiB → **one 2 MiB block** can hold everything if the RX ring is smaller than mt76's 1536 entries.
+4. Physical addresses are assumed to work as bus addresses (no IOMMU translation), as winawdl found on the same Windows build. Unverified here until S3; Kernel DMA Protection state on this machine is TODO-VERIFY.
+
+### Follow-ups
+
+- S3 precondition: check Kernel DMA Protection / VBS state (`msinfo32`), decide ring sizes, write the "no low block → abort before touching hardware" path first.
+- Long-uptime behaviour (winawdl saw a single low block after 13 days) – mitigate by allocating at session start and reporting a clear error.
