@@ -4,7 +4,7 @@
  *
  * Derived from winawdl (https://github.com/raph559/winawdl) @ 0db7031,
  * driver/regproxy/regproxy_ioctl.h, Copyright (c) 2026 Raphael Richaud, MIT.
- * Changes: own interface GUID and names; version reset.
+ * Changes: own interface GUID and names; version reset; REGPROXY_DELAY added.
  */
 #pragma once
 #include <initguid.h>
@@ -13,7 +13,8 @@
 DEFINE_GUID(GUID_DEVINTERFACE_MTDROP_REGPROXY, 0x6f0c2b0e, 0x7d43, 0x4c55,
             0x9a, 0x51, 0x3e, 0x1f, 0x6d, 0x2a, 0x9b, 0x74);
 
-#define REGPROXY_VERSION 1u
+#define REGPROXY_VERSION 2u
+#define REGPROXY_MAX_DELAY_MS 100u
 #define REGPROXY_MAX_OPS 4096u
 #define REGPROXY_MAX_CLOSE_OPS 32u
 
@@ -31,6 +32,8 @@ enum {
   REGPROXY_WRITE = 1,
   REGPROXY_SET_BITS = 2,   /* register |= value */
   REGPROXY_CLEAR_BITS = 3, /* register &= ~value */
+  REGPROXY_DELAY = 4,      /* no register access: wait `value` milliseconds (at most
+                            * REGPROXY_MAX_DELAY_MS). For reset pulses in close ops. */
 };
 
 #pragma pack(push, 1)

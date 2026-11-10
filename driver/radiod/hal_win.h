@@ -16,7 +16,7 @@ extern "C" {
 struct halwin_close_op {
     uint32_t offset; /* BAR0 offset */
     uint32_t value;
-    uint8_t kind;    /* 1 = write value, 2 = set bits, 3 = clear bits */
+    uint8_t kind;    /* 1 = write value, 2 = set bits, 3 = clear bits, 4 = wait `value` ms (offset unused) */
 };
 
 struct halwin;

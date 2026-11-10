@@ -6,7 +6,8 @@
  * Derived from winawdl (https://github.com/raph559/winawdl) @ 0db7031,
  * driver/regproxy/regproxy.c, Copyright (c) 2026 Raphael Richaud, MIT.
  * Changes: selects the largest memory resource (MT7921 BAR0, 1 MiB) instead of
- * the first one above a size threshold; own interface GUID and names.
+ * the first one above a size threshold; own interface GUID and names;
+ * REGPROXY_DELAY operation (a wait, for reset pulses replayed on handle close).
  */
 
 /* windows.h and ntstatus.h both define the common status codes. */
@@ -119,8 +120,9 @@ NTSTATUS RpEvtReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated) {
 }
 
 static BOOLEAN op_is_valid(const REGPROXY_OP *op, SIZE_T bar_len) {
+  if (op->kind == REGPROXY_DELAY) return op->value <= REGPROXY_MAX_DELAY_MS;
   if (op->width != 1 && op->width != 2 && op->width != 4) return FALSE;
-  if (op->kind > REGPROXY_CLEAR_BITS) return FALSE;
+  if (op->kind > REGPROXY_DELAY) return FALSE;
   if (op->offset & (op->width - 1u)) return FALSE;
   return (SIZE_T)op->offset + op->width <= bar_len;
 }
@@ -151,6 +153,9 @@ static void run_op(WDFDEVICE dev, PUCHAR reg, REGPROXY_OP *op) {
   case REGPROXY_SET_BITS:
     write_reg(dev, reg, op->width, read_reg(dev, reg, op->width) | op->value);
     break;
+  case REGPROXY_DELAY:
+    Sleep(op->value);
+    break;
   default:
     write_reg(dev, reg, op->width, read_reg(dev, reg, op->width) & ~op->value);
     break;
@@ -164,7 +169,7 @@ static NTSTATUS run_batch(WDFDEVICE dev, const DEVICE_CONTEXT *ctx,
     if (!op_is_valid(&ops[i], ctx->bar_len)) return STATUS_INVALID_PARAMETER;
 
   for (size_t i = 0; i < count; i++)
-    run_op(dev, (PUCHAR)ctx->bar + ops[i].offset, &ops[i]);
+    run_op(dev, (PUCHAR)ctx->bar + (ops[i].kind == REGPROXY_DELAY ? 0 : ops[i].offset), &ops[i]);
   return STATUS_SUCCESS;
 }
 
@@ -268,7 +273,10 @@ VOID RpEvtFileCleanup(WDFFILEOBJECT FileObject) {
   DEVICE_CONTEXT *ctx = GetCtx(dev);
   if (ctx->bar)
     for (size_t i = 0; i < ctx->close_op_count; i++)
-      run_op(dev, (PUCHAR)ctx->bar + ctx->close_ops[i].offset,
+      run_op(dev,
+             (PUCHAR)ctx->bar + (ctx->close_ops[i].kind == REGPROXY_DELAY
+                                     ? 0
+                                     : ctx->close_ops[i].offset),
              &ctx->close_ops[i]);
   ctx->close_op_count = 0;
   ctx->client_open = FALSE;

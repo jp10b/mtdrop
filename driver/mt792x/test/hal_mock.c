@@ -75,6 +75,8 @@ static void hal_log(void *ctx, enum mt_log_level level, const char *message)
     m->log_text[slot][n] = '\0';
     m->log_level[slot] = level;
     m->log_total++;
+    if (level == MT_LOG_ERROR) m->log_errors++;
+    if (m->log_watch && message && strstr(message, m->log_watch)) m->log_watch_hits++;
     if (m->verbose) {
         static const char *const names[] = { "ERROR", "WARN", "INFO", "DEBUG" };
         fprintf(stderr, "[mock %s] %s\n", names[(unsigned)level & 3u], m->log_text[slot]);

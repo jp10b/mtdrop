@@ -7,7 +7,7 @@
 
 TEST(version_is_set)
 {
-    CHECK(strcmp(mt792x_version(), "0.0.1") == 0);
+    CHECK(strcmp(mt792x_version(), "0.1.0") == 0);
 }
 
 TEST(mock_register_read_write)

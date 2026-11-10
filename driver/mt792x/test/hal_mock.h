@@ -20,7 +20,7 @@ extern "C" {
 #endif
 
 #define MOCK_BAR_SIZE   0x100000u   /* 1 MiB BAR0 window */
-#define MOCK_TRACE_CAP  65536u      /* access trace capacity (entries) */
+#define MOCK_TRACE_CAP  (1u << 20)  /* access trace capacity (entries) */
 #define MOCK_LOG_KEEP   16u         /* number of log messages remembered */
 #define MOCK_LOG_LEN    256u        /* max stored length of one message */
 #define MOCK_DMA_BUS    0x10000000u /* fake bus address of the DMA region */
@@ -62,6 +62,9 @@ struct mock {
     enum mt_log_level log_level[MOCK_LOG_KEEP];
     unsigned log_total;         /* total messages logged (not capped) */
     int verbose;                /* print messages to stderr (MT_TEST_VERBOSE) */
+    const char *log_watch;      /* if set: count messages containing this substring */
+    unsigned log_watch_hits;
+    unsigned log_errors;        /* messages logged at MT_LOG_ERROR */
 
     /* DMA region */
     void *dma_raw;              /* raw allocation, for freeing */

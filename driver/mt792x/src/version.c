@@ -1,7 +1,7 @@
-/* Placeholder so the library target has a source file. No OS headers here. */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "mt792x/mt792x.h"
 
 const char *mt792x_version(void)
 {
-    return "0.0.1";
+    return "0.1.0";
 }

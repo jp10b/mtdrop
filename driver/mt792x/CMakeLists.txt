@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(mt792x VERSION 0.0.1 LANGUAGES C)
+project(mt792x VERSION 0.1.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -15,6 +15,13 @@ endif()
 # ---- portable library: no OS headers allowed in src/ or include/ ----
 add_library(mt792x STATIC
   src/version.c
+  src/util.c
+  src/regio.c
+  src/layout.c
+  src/ring.c
+  src/mcu.c
+  src/fw.c
+  src/bringup.c
 )
 target_include_directories(mt792x PUBLIC include)
 target_compile_options(mt792x PRIVATE ${MT792X_WARNINGS})
@@ -26,12 +33,21 @@ add_executable(mt792x_tests
   test/test_main.c
   test/test_mock.c
   test/hal_mock.c
+  test/fake_chip.c
+  test/fw_builder.c
+  test/rig.c
+  test/test_layout.c
+  test/test_fw.c
+  test/test_bringup.c
+  test/test_faults.c
+  test/test_shutdown.c
+  test/test_realfw.c
 )
 target_include_directories(mt792x_tests PRIVATE test)
 target_link_libraries(mt792x_tests PRIVATE mt792x)
 target_compile_options(mt792x_tests PRIVATE ${MT792X_WARNINGS})
 if(MSVC)
-  # The mock reads MT_TEST_VERBOSE with getenv(), which MSVC flags as deprecated.
+  # The mock reads MT_TEST_VERBOSE with getenv(), the real-firmware test uses fopen().
   target_compile_definitions(mt792x_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 

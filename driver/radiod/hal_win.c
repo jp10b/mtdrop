@@ -213,8 +213,8 @@ int halwin_open_proxy(struct halwin *h, char *error, size_t error_len) {
     REGPROXY_INFO info;
     DWORD got = 0;
     if (!DeviceIoControl(h->proxy, IOCTL_REGPROXY_GET_INFO, NULL, 0, &info, sizeof(info), &got, NULL) ||
-        got != sizeof(info) || info.bar_len < 0x100000u) {
-        set_error(error, error_len, "proxy did not report a 1 MiB register window", GetLastError());
+        got != sizeof(info) || info.bar_len < 0x100000u || info.version < 2u) {
+        set_error(error, error_len, "proxy is too old or did not report a 1 MiB register window", GetLastError());
         CloseHandle(h->proxy);
         h->proxy = INVALID_HANDLE_VALUE;
         return -1;
@@ -227,7 +227,7 @@ int halwin_set_close_ops(struct halwin *h, const struct halwin_close_op *ops, ui
     if (count > REGPROXY_MAX_CLOSE_OPS || h->proxy == INVALID_HANDLE_VALUE) return -1;
     memset(raw, 0, sizeof(raw));
     for (uint32_t i = 0; i < count; i++) {
-        if (ops[i].kind < REGPROXY_WRITE || ops[i].kind > REGPROXY_CLEAR_BITS) return -1;
+        if (ops[i].kind < REGPROXY_WRITE || ops[i].kind > REGPROXY_DELAY) return -1;
         raw[i].offset = ops[i].offset;
         raw[i].value = ops[i].value;
         raw[i].width = 4;
