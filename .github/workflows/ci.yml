@@ -29,3 +29,19 @@ jobs:
             echo "private or binary artefact tracked"
             exit 1
           fi
+
+  mt792x:
+    name: mt792x (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S driver/mt792x -B build/mt792x -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/mt792x --config Release
+      - name: Test
+        run: ctest --test-dir build/mt792x -C Release --output-on-failure
