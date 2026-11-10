@@ -24,7 +24,8 @@ param(
     [switch]$IUnderstandWifiGoesDown,
     [string]$Stages = '',
     # Alternative to -Stages: radiod command lines separated by ';'. The token @fw is replaced by the
-    # patch and RAM firmware paths, e.g.  -Commands 'bringup 6 @fw;sniff 1 10 @fw'
+    # patch and RAM firmware paths, e.g.  -Commands 'bringup 6 @fw;sniff 1 10 @fw'  or, without spaces,
+    # -Commands bringup:6:@fw;sniff:1:10:@fw
     [string]$Commands = '',
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
     [string]$ToolsRoot = 'D:\mtdrop-tools',
@@ -77,6 +78,8 @@ try {
             $commandList += "bringup $v @fw"
         }
     }
+    # ':' may stand for a space so the whole value survives being passed through a scheduled task unquoted.
+    $Commands = $Commands -replace ':', ' '
     if ($Commands) { $commandList += @($Commands -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
     if ($commandList.Count -eq 0) { throw 'nothing to run: give -Stages or -Commands' }
     foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
