@@ -1,6 +1,7 @@
 using System.IO;
 ﻿using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Net;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Toolkit.Uwp.Notifications;
@@ -10,13 +11,17 @@ using WinForms = System.Windows.Forms;
 namespace Mtdrop.App;
 
 /// <summary>
-/// Tray application: "Receive" toggle with a time window, Accept/Decline toasts, saved-file toasts.
+/// Tray application: "Receive" toggle with a time window, Accept/Decline prompt window, saved-file toasts.
 /// Prototype for M2: the network interface is given on the command line because the AWDL
 /// adapter does not exist yet.
 ///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--receive]
+///   mtdrop.exe --test-prompt     (developer: show one sample prompt and exit)
 /// </summary>
 public partial class App : System.Windows.Application
 {
+    /// <summary>How long a consent prompt waits before it declines by itself (also the server-side limit).</summary>
+    private static readonly TimeSpan ConsentLimit = TimeSpan.FromSeconds(60);
+
     private readonly Prompts _prompts = new();
     private readonly DispatcherTimer _window = new();
     private WinForms.NotifyIcon _tray = null!;
@@ -37,6 +42,12 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (e.Args.Contains("--test-prompt"))
+        {
+            _ = RunPromptTestAsync();       // developer switch: no tray, no network session
+            return;
+        }
+        Prompts.InitToasts();
         _single = new Mutex(true, "Local\\mtdrop-tray", out bool first);
         if (!first)
         {
@@ -60,6 +71,33 @@ public partial class App : System.Windows.Application
         UpdateTray();
 
         if (e.Args.Contains("--receive")) _ = ToggleAsync();
+    }
+
+    /// <summary>
+    /// <c>--test-prompt</c>: shows one sample prompt, writes "accepted" or "declined" to
+    /// %LOCALAPPDATA%\mtdrop\last-prompt.txt and exits. Lets the window be checked by hand.
+    /// </summary>
+    private async Task RunPromptTestAsync()
+    {
+        try
+        {
+            var ask = new AskRequest
+            {
+                TransferId = "test",
+                SenderName = "Test Phone",
+                Files = [new AnnouncedFile("mtdrop-test.png", "public.png", 104177, false)],
+                Remote = new IPEndPoint(IPAddress.IPv6Loopback, 0),
+            };
+            bool accepted = await _prompts.AskAsync(ask, CancellationToken.None, ConsentLimit);
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mtdrop");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "last-prompt.txt"), accepted ? "accepted" : "declined");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* result file is best effort */ }
+        finally
+        {
+            Shutdown();
+        }
     }
 
     private static Icon MakeIcon(bool receiving)
@@ -104,9 +142,10 @@ public partial class App : System.Windows.Application
                 ComputerName = Environment.MachineName,
                 DestinationDirectory = _destination,
                 DataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mtdrop"),
+                ConsentTimeout = ConsentLimit,
                 Consent = async (ask, ct) =>
                 {
-                    bool accepted = await _prompts.AskAsync(ask, ct);
+                    bool accepted = await _prompts.AskAsync(ask, ct, ConsentLimit);
                     if (accepted) Interlocked.Increment(ref _activeTransfers);
                     return accepted;
                 },
