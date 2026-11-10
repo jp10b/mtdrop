@@ -359,3 +359,68 @@ The probe enables `SeLockMemoryPrivilege`, allocates 512 MiB of ordinary locked 
 
 - S3 precondition: check Kernel DMA Protection / VBS state (`msinfo32`), decide ring sizes, write the "no low block → abort before touching hardware" path first.
 - Long-uptime behaviour (winawdl saw a single low block after 13 days) – mitigate by allocating at session start and reporting a clear error.
+
+---
+
+## F-006 – Spike S3: MediaTek firmware boots on Windows from a user-mode driver
+
+- **Date:** 2026-11-10
+- **Milestone:** M3, spike S3 of ADR-0002
+- **Code:** `driver/mt792x` (library 0.1.0), `driver/radiod`, `driver/proxy` (version 2), `scripts/s3-bringup.ps1`
+- **Firmware:** the files of the installed vendor package 3.5.0.1349 (patch build `20250922193033`, RAM build `20250922193119`), read from the maintainer's backup; nothing redistributed.
+
+### Hypothesis (written before the run: ADR-0002 spike table, `docs/MT7921-BRINGUP.md` section 6)
+
+Following the mt76 sequence S0–S23 from user mode – registers through the UMDF proxy, DMA in one locked 2 MiB block below 4 GiB, polling instead of interrupts – the chip accepts the vendor's own patch and RAM image and reports `MT_CONN_ON_MISC` bits 1:0 = 3 (firmware ready).
+
+### What would falsify it
+
+TX ring indexes never advance (no bus mastering, or DMA blocked by the platform); no event arrives in our RX buffers; the semaphore or download commands are rejected; firmware-ready never appears.
+
+### Method
+
+Gated stages, each in its own `radiod` run followed by the orderly shutdown, inside three driver-swap sessions run as SYSTEM: stages 1–2 (ownership, reset; no DMA), 3–4 (rings, DMA on, first MCU commands), 5 (downloads). A stop list (10 register operations plus a 50 ms wait) was armed in the proxy before each run; a watchdog gave the card back after 240 s regardless.
+
+### Raw result (FACT)
+
+| Step | Observation |
+|---|---|
+| S1/S2 ownership | `LPCTL` 0x4 then 0x0, first attempt, 4–16 ms |
+| S4 WFSYS reset | `INIT_DONE` after 15 ms; `CONN_ON_MISC` reads 0 afterwards |
+| S7 DMA disable | `GLO_CFG` 0x00103870 |
+| S8 rings | all six base/size registers read back as written, `dma_idx` 0 |
+| S10 DMA enable | `GLO_CFG` **0x5030b875**, exactly the value predicted from the measured start state |
+| S14 `NIC_POWER_CTRL` | consumed from TX ring 17 (**the chip read host memory**); the chip also answers it (event id 0x03, seq 1), which mt76 does not wait for |
+| S15 | `CONN_ON_MISC` = 1 after 10–25 ms |
+| S16 semaphore | event on RX ring 0, 36 bytes, result **2** (patch not loaded) (**the chip wrote host memory**) |
+| S17–S19 patch | 92 032 bytes in 23 chunks in 4 ms; finish result 0 |
+| S20 release | result 3, after ~245 ms |
+| S21 RAM | four regions, 763 904 bytes, ~75 ms in total |
+| S22 `FW_START_REQ` | response on **RX ring 0** (answers a TODO of the specification), after 19 ms |
+| S23 | **`CONN_ON_MISC` = 0x3, firmware ready**, immediately |
+| Whole bring-up | **470 ms** |
+| After firmware start | `HOST_INT_ENA` reads 0x20000000 although the host never wrote a non-zero value; `DUMMY_CR` 0xffff0003 |
+| Shutdown | DMA stopped, WFSYS reset, remap restored, ~90 ms each time |
+| Vendor driver | rebound after every session, no reboot |
+
+Other observations:
+
+- DMA worked at three different physical addresses (0xC4E00000, 0x28000000, 0x8E000000) with virtualization-based security running: physical addresses are valid bus addresses for this device on this machine, and Bus Master Enable is set without us touching configuration space.
+- First attempt at stages 3–4 failed **before touching the chip**: with 0.8 GiB of RAM free no 2 MiB block could be allocated (error 1450). The allocator now asks in rounds and the script checks memory before the driver swap.
+- Claude Code's permission classifier refused to launch the session as SYSTEM; the maintainer ran the same command by hand.
+- Polling cost: proxy register round trips were fast enough for 4 KiB chunks at ~10 MB/s.
+
+### Conclusion
+
+1. **Hypothesis confirmed. ADR-0002 option A (UMDF proxy + user-mode chip library) carries the MT7921 through firmware boot.** No kernel code of ours, no test-signing, no interrupts.
+2. The risks R2 (bus mastering) and R3 (DMA remapping) of the specification did not materialise on this machine.
+3. The vendor's Windows firmware files are compatible with the mt76 download sequence.
+4. Events arrive on RX ring 0 before and at firmware start; ring 4 was not needed up to this point.
+5. Process requirements that are now facts: run as SYSTEM; free RAM matters at session start.
+
+### Follow-ups
+
+- Next gate (S4 of ADR-0002 = acceptance of M3): post-boot MCU commands, sniffer mode on one channel, RX ring 2 → beacons from the home AP decoded with a per-frame channel.
+- TODO-VERIFY: why `HOST_INT_ENA` reads 0x20000000 after firmware start, and whether an unhandled interrupt can result (R1). No ill effect was seen in a 470 ms window.
+- TODO-VERIFY: behaviour if `radiod` is killed mid-download (stop list replay) – exercise deliberately before longer sessions.
+- The 50 ms wait in the stop list relies on `Sleep` inside the UMDF host; not yet exercised by a real process death.
