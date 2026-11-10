@@ -20,7 +20,18 @@ Nothing below is automated. Every command that changes driver, boot or network-a
 - [ ] Device Encryption / BitLocker state re-checked; recovery key saved off the machine if enabled.
 - [ ] Internet without Wi-Fi available and tested (USB-C Ethernet adapter, or USB tethering from a second phone).
 - [ ] Restore procedure rehearsed once: Device Manager → MediaTek adapter → update driver from the exported folder.
-- [ ] Toolchain installed: Visual Studio with the C++ workload, Windows SDK and WDK of matching version.
+- [x] Toolchain installed (2026-11-10): Visual Studio 2026 (v18.10) with the MSVC x64 tools, the "Windows Driver Kit" component (`Component.Microsoft.Windows.DriverKit`) and the Spectre-mitigated libraries; WDK from NuGet (`Microsoft.Windows.WDK.x64` 10.0.28000.2526 plus the `Microsoft.Windows.SDK.CPP` packages it pulls in) restored to `D:\mtdrop-tools\packages`.
+
+### Building the proxy driver
+
+```powershell
+& "C:\Program Files\Microsoft Visual Studio8\Community\MSBuild\Current\Binmd64\MSBuild.exe" `
+  driver\proxy\mtdrop_proxy.vcxproj /p:Configuration=Release /p:Platform=x64 /nologo /v:m
+```
+
+- Restore the packages once: `nuget.exe install Microsoft.Windows.WDK.x64 -Version 10.0.28000.2526 -OutputDirectory D:\mtdrop-tools\packages`. Another location: `/p:WdkPkgRoot=<folder>\`.
+- `dotnet build` does not work with the WDK.
+- The build does not sign, create certificates or install anything. Output: `driver\proxyd\Release\` (git-ignored).
 
 ## Things that never go into the repository
 

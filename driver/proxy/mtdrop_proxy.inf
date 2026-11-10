@@ -1,0 +1,75 @@
+; SPDX-License-Identifier: MIT
+; User-mode register proxy for the MediaTek MT7921 (PCI 14C3:7961).
+; Derived from winawdl @ 0db7031, driver/regproxy/winawdl_regproxy.inf (MIT).
+;
+; Matches only the generic class-code ID, which ranks below the vendor driver's
+; subsystem match, so adding this package to the driver store takes over nothing.
+; The device gets this driver only when it is installed on it explicitly.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = MtdropRadio
+ClassGuid   = {2b9a7c1e-58f4-4d0b-8a36-71c5e0d4f9a2}
+Provider    = %Provider%
+CatalogFile = mtdrop_proxy.cat
+DriverVer   = ; stamped by the build
+PnpLockdown = 1
+
+[ClassInstall32]
+AddReg = Class_AddReg
+
+[Class_AddReg]
+HKR,,,,%ClassName%
+HKR,,Icon,,"-5"
+
+[Manufacturer]
+%Provider% = Models, NT$ARCH$.10.0...19041
+
+[Models.NT$ARCH$.10.0...19041]
+%DeviceDesc% = RegProxy, PCI\VEN_14C3&DEV_7961&CC_0280
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+mtdrop_proxy.dll = 1
+
+[DestinationDirs]
+RegProxy_Copy = 13
+
+[RegProxy.NT]
+CopyFiles = RegProxy_Copy
+Include   = WUDFRD.inf
+Needs     = WUDFRD.NT
+
+[RegProxy_Copy]
+mtdrop_proxy.dll
+
+[RegProxy.NT.HW]
+Include = WUDFRD.inf
+Needs   = WUDFRD.NT.HW
+AddReg  = RegProxy_HwAddReg
+
+[RegProxy_HwAddReg]
+; Device object reachable by SYSTEM and Administrators only.
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[RegProxy.NT.Services]
+Include = WUDFRD.inf
+Needs   = WUDFRD.NT.Services
+
+[RegProxy.NT.Wdf]
+UmdfService               = mtdrop_proxy, RegProxy_Umdf
+UmdfServiceOrder          = mtdrop_proxy
+UmdfDirectHardwareAccess  = AllowDirectHardwareAccess
+UmdfRegisterAccessMode    = RegisterAccessUsingUserModeMapping
+
+[RegProxy_Umdf]
+UmdfLibraryVersion = $UMDFVERSION$
+ServiceBinary      = %13%\mtdrop_proxy.dll
+
+[Strings]
+Provider   = "mtdrop project"
+ClassName  = "mtdrop user-space radios"
+DeviceDesc = "MT7921 user-space register proxy (mtdrop)"
+DiskName   = "mtdrop register proxy"
