@@ -87,16 +87,41 @@ int mt_ring_tx_wait(struct mt792x *dev, struct mt792x_ring *r, uint32_t timeout_
 /* Takes one completed descriptor from an RX ring, copies it into dev->evt, re-arms one slot.
  * Returns 1 if an event was taken, 0 if none is pending, < 0 on error. */
 int mt_ring_rx_take(struct mt792x *dev, struct mt792x_ring *r);
+/* Same into any buffer; kick = 0 defers the cpu_idx write until mt_ring_rx_flush. */
+int mt_ring_rx_take_buf(struct mt792x *dev, struct mt792x_ring *r, uint8_t *dst, uint32_t cap, uint32_t *out_len,
+                        int kick);
+int mt_ring_rx_flush(struct mt792x *dev, struct mt792x_ring *r);
+uint32_t mt_ring_rx_completed(const struct mt792x *dev, const struct mt792x_ring *r);
 
 /* ---- MCU (mcu.c) ---- */
 #define MT_MCU_TIMEOUT_US   3000000u   /* mt7921/pci_mcu.c: mcu.timeout = 3 * HZ */
+#define MT_MCU_SHUTDOWN_TIMEOUT_US 500000u /* [HOST] best-effort commands during shutdown */
 #define MT_TX_DONE_TIMEOUT_US 1000000u /* ASSUMPTION: mt76 has no TX-done timeout (it reaps lazily) */
 uint8_t mt_mcu_next_seq(struct mt792x *dev);
-/* Sends a 64-byte-header command on TX17; waits for TX consumption; if want_resp, waits for the
- * response with the same seq and stores it in dev->evt. result_byte receives byte 0x20 for
- * PATCH_SEM_CONTROL / PATCH_FINISH_REQ (else 0). */
+/* Sends one command. 'cmd' is encoded like mt76 (MT_MCU_CMD / _EXT / _UNI / _CE, regs.h): UNI
+ * commands get the 48-byte header, all others the 64-byte one (mt76_connac2_mcu_fill_message).
+ * Waits for TX consumption; if wait, waits up to timeout_us for the response with the same seq
+ * (stored in dev->evt). *result: byte 0x20 for PATCH_SEM_CONTROL / PATCH_FINISH_REQ, the le32
+ * status for the UNI status commands (mt7921_mcu_parse_response), else 0. Logged at INFO. */
+int mt_mcu_send(struct mt792x *dev, const char *name, uint32_t cmd, const uint8_t *payload, uint32_t payload_len,
+                int wait, uint32_t timeout_us, int *result);
+/* Plain MCU_CMD(cid) with the 3 s timeout (bring-up commands). */
 int mt_mcu_cmd(struct mt792x *dev, uint8_t cid, const uint8_t *payload, uint32_t payload_len,
                int want_resp, int *result_byte);
 int mt_mcu_send_firmware(struct mt792x *dev, const uint8_t *data, uint32_t len);
+/* Counts / logs one MCU event that is not (or no longer) awaited. */
+void mt_mcu_note_event(struct mt792x *dev, const uint8_t *e, uint32_t len, uint32_t ring, int solicited);
+
+/* ---- RX (rx.c) ---- */
+/* Handles one packet taken from a data ring while no frame is wanted (command waits): counts it. */
+void mt_rx_account_packet(struct mt792x *dev, const uint8_t *p, uint32_t len, uint32_t ring, int in_cmd);
+
+/* ---- step bookkeeping (bringup.c) ---- */
+int mt_step_fail(struct mt792x *dev, int step, int err, uint64_t t0);
+void mt_step_done(struct mt792x *dev, int step);
+
+/* ---- post-boot / sniffer (postboot.c) ---- */
+int mt_postboot(struct mt792x *dev);
+void mt_sniffer_shutdown(struct mt792x *dev);
 
 #endif /* MT792X_SRC_INTERNAL_H */

@@ -27,6 +27,8 @@
 #define L1_WFSYS       0x18000140u
 #define L1_TOP_LPCR    0x18060010u
 
+#define R_WTBL_UPDATE  0x34230u
+
 #define GLO_TX_EN      0x1u
 #define GLO_RX_EN      0x4u
 #define GLO_TX_WB      0x40u
@@ -87,6 +89,18 @@ static uint8_t *dma_ptr(struct fake_chip *f, uint32_t bus, uint32_t len, uint32_
     return h->dma_virt + (bus - h->dma_bus);
 }
 
+/* registers of mt7921_mac_init / mt792x_mac_init_band after fixed-map translation */
+static int is_mac_reg(uint32_t off)
+{
+    static const uint32_t regs[] = { 0x0f000u, 0x0f004u, R_WTBL_UPDATE, 0x210f4u, 0xa10f4u, 0x217c4u, 0xa17c4u, 0x21780u,
+                                     0xa1780u, 0x24804u, 0xa4804u, 0x21e00u, 0xa1e00u, 0x23408u, 0xa3408u,
+                                     0x21090u, 0x21094u, 0x210a4u, 0x20884u, 0x20c80u };
+    unsigned i;
+    for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++)
+        if (regs[i] == off) return 1;
+    return 0;
+}
+
 static uint32_t glo(const struct fake_chip *f) { return mock_get_reg(f->m, R_GLO); }
 uint32_t fake_glo_cfg(const struct fake_chip *f) { return glo(f) & ~0xau; }
 
@@ -113,40 +127,91 @@ static uint32_t ring_base(const struct fake_chip *f, int rx, uint32_t n) { retur
 
 /* ---- events ---- */
 
-static void emit(struct fake_chip *f, uint32_t ring, const uint8_t *ev, uint32_t len)
+/* Writes one descriptor completion into an armed RX slot, like the chip's DMA. 'claim' != 0 writes
+ * that length into ctrl without data (bad-length injection). Returns 1 if written. */
+static int emit_desc(struct fake_chip *f, uint32_t ring, const uint8_t *ev, uint32_t len, int last, uint32_t claim)
 {
     uint32_t size = ring_size(f, 1, ring), slot, ctrl, buflen, bufbus;
     uint8_t *d, *buf;
 
     if (!(glo(f) & GLO_RX_EN) || !size || f->rx_dma[ring] == f->rx_cpu[ring]) {
         f->events_dropped++;
-        return;
+        return 0;
     }
     slot = f->rx_dma[ring];
     d = dma_ptr(f, ring_base(f, 1, ring) + slot * 16u, 16, 4, "RX descriptor");
-    if (!d) return;
+    if (!d) return 0;
     ctrl = le32(d + 4);
     if (ctrl & 0x80000000u) {
         violation(f, "RX ring %u slot %u handed to the chip with DMA_DONE set (not armed)", ring, slot);
         f->events_dropped++;
-        return;
+        return 0;
     }
     buflen = (ctrl >> 16) & 0x3fffu;
-    if (buflen < len || le32(d + 8) != 0 || le32(d + 12) != 0 || (ctrl & 0x4000ffffu)) {
+    if ((!claim && buflen < len) || le32(d + 8) != 0 || le32(d + 12) != 0 || (ctrl & 0x4000ffffu)) {
         violation(f, "RX ring %u slot %u malformed: ctrl 0x%08x buf1 0x%08x info 0x%08x (event %u bytes)", ring, slot,
                   ctrl, le32(d + 8), le32(d + 12), len);
         f->events_dropped++;
-        return;
+        return 0;
     }
     bufbus = le32(d);
     buf = dma_ptr(f, bufbus, buflen, 4, "RX buffer");
-    if (!buf) return;
-    memcpy(buf, ev, len);
-    ctrl = (len << 16) | 0x40000000u;
+    if (!buf) return 0;
+    if (!claim) memcpy(buf, ev, len);
+    ctrl = ((claim ? claim : len) & 0x3fffu) << 16;
+    if (last) ctrl |= 0x40000000u;
     if (glo(f) & GLO_RX_WB) ctrl |= 0x80000000u;
     put32(d + 4, ctrl);
     f->rx_dma[ring] = (slot + 1u) % size;
     f->events_sent[ring]++;
+    return 1;
+}
+
+static void emit(struct fake_chip *f, uint32_t ring, const uint8_t *ev, uint32_t len)
+{
+    (void)emit_desc(f, ring, ev, len, 1, 0);
+}
+
+int fake_inject(struct fake_chip *f, unsigned ring, const uint8_t *pkt, uint32_t len)
+{
+    int ok = ring < 8 ? emit_desc(f, ring, pkt, len, 1, 0) : 0;
+    if (ring < 8) {
+        if (ok) f->rx_injected[ring]++;
+        else f->rx_inject_dropped[ring]++;
+    }
+    return ok;
+}
+
+int fake_inject_frag(struct fake_chip *f, unsigned ring, const uint8_t *pkt, uint32_t len, uint32_t chunk)
+{
+    uint32_t off = 0;
+    int ok = 1;
+    if (ring >= 8 || !chunk) return 0;
+    while (off < len && ok) {
+        uint32_t n = len - off < chunk ? len - off : chunk;
+        ok = emit_desc(f, ring, pkt + off, n, off + n == len, 0);
+        off += n;
+    }
+    return ok;
+}
+
+int fake_inject_badlen(struct fake_chip *f, unsigned ring, uint32_t claim_len)
+{
+    if (ring >= 8) return 0;
+    return emit_desc(f, ring, NULL, 0, 1, claim_len ? claim_len : 0x3fffu + 1u);
+}
+
+int fake_find_cmd(const struct fake_chip *f, uint32_t key, unsigned from, unsigned nth)
+{
+    unsigned i;
+    for (i = from; i < f->n_cmds && i < FAKE_MAX_CMDS; i++) {
+        const struct fake_cmd *c = &f->cmds[i];
+        if (c->ring == 17 && FAKE_KEY(c->fmt, c->cid, c->ext) == key) {
+            if (nth == 0) return (int)i;
+            nth--;
+        }
+    }
+    return -1;
 }
 
 static void emit_response(struct fake_chip *f, uint32_t ring, uint8_t eid, uint8_t seq, uint8_t result, uint32_t total)
@@ -194,6 +259,9 @@ static void log_cmd(struct fake_chip *f, uint8_t cid, uint8_t seq, uint32_t len,
         f->cmds[f->n_cmds].seq = seq;
         f->cmds[f->n_cmds].total_len = len;
         f->cmds[f->n_cmds].ring = ring;
+        f->cmds[f->n_cmds].fmt = FAKE_FMT_CMD;
+        f->cmds[f->n_cmds].ext = 0;
+        f->cmds[f->n_cmds].raw = NULL;
     }
     f->n_cmds++;
 }
@@ -209,18 +277,31 @@ static int dl_incomplete(struct fake_chip *f)
     return d && d->got != d->len;
 }
 
+static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint8_t ext, uint8_t seq,
+                             const uint8_t *pl, uint32_t plen);
+
 static void mcu_command(struct fake_chip *f, const uint8_t *p, uint32_t len)
 {
-    uint32_t i, plen;
-    uint8_t cid, seq, expect;
-    const uint8_t *pl = p + 64;
+    uint32_t i, plen, hdr;
+    uint8_t cid, seq, expect, ext = 0;
+    unsigned fmt;
+    const uint8_t *pl;
 
     f->cmd_count++;
-    if (len < 64) {
-        violation(f, "MCU command of %u bytes is shorter than the 64-byte header", len);
+    if (len < 48) {
+        violation(f, "MCU command of %u bytes is shorter than any header", len);
         return;
     }
-    plen = len - 64u;
+    /* struct mt76_connac2_mcu_uni_txd has the cid where the 64-byte header has pq_id 0x8000 and
+     * option 0x07 at 0x2b */
+    fmt = ((p[0x22] | (p[0x23] << 8)) != 0x8000 && p[0x2b] == 0x07) ? FAKE_FMT_UNI : FAKE_FMT_CMD;
+    hdr = fmt == FAKE_FMT_UNI ? 48u : 64u;
+    if (len < hdr) {
+        violation(f, "MCU command of %u bytes is shorter than its %u-byte header", len, hdr);
+        return;
+    }
+    pl = p + hdr;
+    plen = len - hdr;
     if ((le32(p) & 0xffffu) != len) violation(f, "TXD0 TX_BYTES %u != descriptor length %u", le32(p) & 0xffffu, len);
     if (((le32(p) >> 23) & 3u) != 2u) violation(f, "TXD0 PKT_FMT %u (want 2 = CMD)", (le32(p) >> 23) & 3u);
     if ((le32(p) >> 25) != 0x20u) violation(f, "TXD0 Q_IDX 0x%x (want 0x20)", le32(p) >> 25);
@@ -229,11 +310,33 @@ static void mcu_command(struct fake_chip *f, const uint8_t *p, uint32_t len)
     for (i = 8; i < 32; i++)
         if (p[i]) violation(f, "TXD byte 0x%x non-zero", i);
     if ((uint32_t)(p[0x20] | (p[0x21] << 8)) != len - 32u) violation(f, "len field %u (want %u)", p[0x20] | (p[0x21] << 8), len - 32u);
-    if ((p[0x22] | (p[0x23] << 8)) != 0x8000) violation(f, "pq_id 0x%04x (want 0x8000)", p[0x22] | (p[0x23] << 8));
-    cid = p[0x24];
-    if (p[0x25] != 0xa0) violation(f, "pkt_type 0x%02x (want 0xa0)", p[0x25]);
-    if (p[0x26] != 3) violation(f, "cmd 0x%02x set_query %u (want 3 = MCU_Q_NA)", cid, p[0x26]);
     seq = p[0x27];
+    if (fmt == FAKE_FMT_UNI) {
+        if (p[0x23] != 0) violation(f, "UNI cid 0x%04x above 0xff", p[0x22] | (p[0x23] << 8));
+        cid = p[0x22];
+        if (p[0x24] || p[0x26] || p[0x28] || p[0x29] || p[0x2a]) violation(f, "UNI cmd 0x%02x: rsv/frag/checksum/s2d not 0", cid);
+        if (p[0x25] != 0xa0) violation(f, "pkt_type 0x%02x (want 0xa0)", p[0x25]);
+        for (i = 0x2c; i < 0x30; i++)
+            if (p[i]) violation(f, "UNI TXD rsv1 byte 0x%x non-zero", i);
+    } else {
+        cid = p[0x24];
+        ext = p[0x29];
+        if (p[0x25] != 0xa0) violation(f, "pkt_type 0x%02x (want 0xa0)", p[0x25]);
+        if (p[0x26] == 3) {
+            fmt = FAKE_FMT_CMD;
+            if (p[0x28] || p[0x29] || p[0x2a] || p[0x2b]) violation(f, "cmd 0x%02x: rev/ext_cid/s2d/ext_cid_ack not 0", cid);
+        } else if (cid == 0xed) {
+            fmt = FAKE_FMT_EXT;
+            if (!ext || p[0x2b] != 1 || p[0x26] > 1 || p[0x28] || p[0x2a])
+                violation(f, "EXT cmd 0x%02x: ext_cid_ack %u set_query %u", ext, p[0x2b], p[0x26]);
+        } else {
+            fmt = FAKE_FMT_CE;
+            if (ext || p[0x2b] || p[0x26] > 1 || p[0x28] || p[0x2a])
+                violation(f, "CE cmd 0x%02x: ext %u ack %u set_query %u", cid, ext, p[0x2b], p[0x26]);
+        }
+        for (i = 0x2c; i < 0x40; i++)
+            if (p[i]) violation(f, "TXD rsv byte 0x%x non-zero", i);
+    }
     expect = next_seq(f);
     if (seq != expect) {
         /* After an injected fault (e.g. a stalled FWDL ring) the chip never saw some chunks whose
@@ -241,10 +344,20 @@ static void mcu_command(struct fake_chip *f, const uint8_t *p, uint32_t len)
         if (f->fault_idx) f->seq_counter = seq;
         else violation(f, "cmd 0x%02x seq %u, expected %u", cid, seq, expect);
     }
-    if (p[0x28] || p[0x29] || p[0x2a] || p[0x2b]) violation(f, "cmd 0x%02x: rev/ext_cid/s2d/ext_cid_ack not 0", cid);
-    for (i = 0x2c; i < 0x40; i++)
-        if (p[i]) violation(f, "TXD rsv byte 0x%x non-zero", i);
     log_cmd(f, cid, seq, len, 17);
+    if (f->n_cmds <= FAKE_MAX_CMDS) {
+        struct fake_cmd *c = &f->cmds[f->n_cmds - 1u];
+        c->fmt = (uint8_t)fmt;
+        c->ext = ext;
+        c->set_query = fmt == FAKE_FMT_UNI ? 0 : p[0x26];
+        c->raw = (uint8_t *)malloc(len);
+        if (c->raw) memcpy(c->raw, p, len);
+        c->pl_first = plen ? pl[0] : 0;
+    }
+    if (fmt != FAKE_FMT_CMD) {
+        postboot_command(f, fmt, cid, ext, seq, pl, plen);
+        return;
+    }
 
     switch (cid) {
     case 0x04: /* NIC_POWER_CTRL */
@@ -349,6 +462,252 @@ static void mcu_command(struct fake_chip *f, const uint8_t *p, uint32_t len)
         violation(f, "unknown MCU command 0x%02x", cid);
         break;
     }
+}
+
+/* ---- post-boot / sniffer commands (spec 11) ---- */
+
+static const uint8_t default_nic_reply[] = {
+    6, 0, 0, 0,                                                   /* n_element 6, rsv */
+    5, 0, 0, 0, 8, 0, 0, 0, 0x10, 0, 0x61, 0x79, 0, 0, 0, 0,      /* HW_VER: 8 raw bytes */
+    6, 0, 0, 0, 8, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,               /* SW_VER: 8 raw bytes */
+    7, 0, 0, 0, 6, 0, 0, 0, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55,   /* MAC (locally administered, fake) */
+    8, 0, 0, 0, 12, 0, 0, 0, 1, 1, 1, 2, 2, 0, 1, 1, 1, 1, 3, 1,  /* PHY: nss 2, hw_path 3, he 1 */
+    0x20, 0, 0, 0, 8, 0, 0, 0, 0x09, 0, 0, 0, 0, 0, 0, 0,         /* CHIP_CAP: CLC_EVT_EN | WF_RF_PIN_CTRL_EVT_EN */
+    0x18, 0, 0, 0, 1, 0, 0, 0, 0,                                 /* 6G: none */
+};
+
+static void pb_reply(struct fake_chip *f, uint32_t key, uint8_t seq, const uint8_t *payload, uint32_t plen,
+                     uint32_t delay_us)
+{
+    uint8_t ev[1024];
+    uint32_t total = 36u + (plen < 4u ? 4u : plen);
+    if ((f->drop_response_nth && f->cmd_count == f->drop_response_nth) || (f->drop_key && f->drop_key == key) ||
+        (f->drop_all_from_cmd && f->cmd_count >= (unsigned)f->drop_all_from_cmd)) {
+        f->responses_dropped_by_knob++;
+        mark_fault(f);
+        return;
+    }
+    if (total > sizeof(ev)) {
+        violation(f, "fake: reply too large");
+        return;
+    }
+    if (delay_us) mock_advance(f->m, delay_us);
+    if (f->inject_unsolicited) emit_response(f, f->event_ring, 0x27, 0, 0, 40);
+    if (f->inject_stale) emit_response(f, f->event_ring, 0x01, (uint8_t)((seq + 13u) % 15u + 1u), 0x55, 40);
+    memset(ev, 0, total);
+    put32(ev, total | (7u << 27));
+    ev[0x18] = (uint8_t)total;
+    ev[0x19] = (uint8_t)(total >> 8);
+    ev[0x1c] = 0x01;
+    ev[0x1d] = seq;
+    if (plen) memcpy(ev + 36, payload, plen);
+    emit(f, f->event_ring, ev, total);
+}
+
+static void uni_status_reply(struct fake_chip *f, uint32_t key, uint8_t cid, uint8_t seq, uint32_t status)
+{
+    uint8_t pl[8];
+    memset(pl, 0, sizeof(pl));
+    pl[0] = cid;
+    put32(pl + 4, status);
+    pb_reply(f, key, seq, pl, sizeof(pl), 0);
+}
+
+static int all_zero(const uint8_t *p, uint32_t n)
+{
+    uint32_t i;
+    for (i = 0; i < n; i++)
+        if (p[i]) return 0;
+    return 1;
+}
+
+static void retune(struct fake_chip *f, int by_switch, uint8_t ch, uint8_t band)
+{
+    if (f->tune_by == 0 || (f->tune_by == 1 && by_switch) || (f->tune_by == 2 && !by_switch)) {
+        f->channel = ch;
+        f->band = band;
+        f->tunes++;
+    }
+}
+
+static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint8_t ext, uint8_t seq,
+                             const uint8_t *pl, uint32_t plen)
+{
+    uint32_t key = FAKE_KEY(fmt, id, ext);
+    const struct fake_cmd *c = &f->cmds[(f->n_cmds - 1u) % FAKE_MAX_CMDS];
+
+    if (!f->fw_started) violation(f, "post-boot command fmt %u id 0x%02x/0x%02x before FW_START", fmt, id, ext);
+    if (fmt != FAKE_FMT_UNI && c->set_query != 1)
+        violation(f, "fmt %u id 0x%02x/0x%02x: set_query %u (want 1 = SET)", fmt, id, ext, c->set_query);
+
+    if (fmt == FAKE_FMT_CE) {
+        switch (id) {
+        case 0x8a: /* GET_NIC_CAPAB */
+            if (plen) violation(f, "GET_NIC_CAPAB with %u payload bytes", plen);
+            f->nic_queried = 1;
+            pb_reply(f, key, seq, f->nic_reply ? f->nic_reply : default_nic_reply,
+                     f->nic_reply ? f->nic_reply_len : (uint32_t)sizeof(default_nic_reply), 0);
+            return;
+        case 0xca: { /* CHIP_CONFIG */
+            char text[64];
+            size_t n;
+            if (plen != 328 || !all_zero(pl, 8) || pl[327] != 0) {
+                violation(f, "CHIP_CONFIG payload %u bytes / header not zero", plen);
+                return;
+            }
+            memcpy(text, pl + 8, sizeof(text) - 1);
+            text[sizeof(text) - 1] = '\0';
+            n = strlen(text);
+            if (!all_zero(pl + 8 + n, 320u - (uint32_t)n)) violation(f, "CHIP_CONFIG data not NUL-padded");
+            if (strcmp(text, "DowngradeTxStreamTemp 105 115") == 0) f->thermal_set = 1;
+            else if (strcmp(text, "KeepFullPwr 1") == 0) f->keep_full_pwr = 1;
+            else if (strcmp(text, "KeepFullPwr 0") == 0) f->keep_full_pwr = 0;
+            else violation(f, "CHIP_CONFIG text not expected: %s", text);
+            return;
+        }
+        case 0xc5: /* FWLOG_2_HOST */
+            if (plen != 4 || pl[0] != 1 || !all_zero(pl + 1, 3)) violation(f, "FWLOG_2_HOST payload");
+            f->fwlog_on = 1;
+            return;
+        case 0x0f: { /* SET_CHAN_DOMAIN */
+            uint32_t n, i;
+            if (plen < 12) {
+                violation(f, "SET_CHAN_DOMAIN payload %u", plen);
+                return;
+            }
+            n = (uint32_t)pl[8] + pl[9] + pl[10];
+            if (plen != 12u + 8u * n || pl[0] != '0' || pl[1] != '0' || pl[2] || pl[3] || pl[4] != 0 || pl[5] != 3 ||
+                pl[6] != 3 || pl[7] || pl[11])
+                violation(f, "SET_CHAN_DOMAIN header/length wrong (%u bytes, %u channels)", plen, n);
+            for (i = 0; i < n && 12u + 8u * i + 8u <= plen; i++)
+                if (!all_zero(pl + 12 + 8 * i + 1, 7) || pl[12 + 8 * i] == 0) violation(f, "SET_CHAN_DOMAIN channel %u entry", i);
+            if (!f->mac_enabled) violation(f, "SET_CHAN_DOMAIN before MAC enable");
+            f->chan_domain_n2 = pl[8];
+            f->chan_domain_n5 = pl[9];
+            return;
+        }
+        case 0x0a: /* SET_RX_FILTER */
+            if (plen != 68 || !all_zero(pl, 4) || !all_zero(pl + 5, 3) || !all_zero(pl + 17, 51)) {
+                violation(f, "SET_RX_FILTER payload");
+                return;
+            }
+            if (pl[4] == 1) {
+                if (!(le32(pl + 8) & 0x80000000u) || le32(pl + 12) || pl[16]) violation(f, "SET_RX_FILTER mode 1 fields");
+                f->rx_filter_fif = le32(pl + 8);
+            } else if (pl[4] == 2) {
+                if (le32(pl + 8) || pl[16] != 2 || le32(pl + 12) != 0x800u) violation(f, "SET_RX_FILTER mode 2 fields");
+                else f->other_beacon_drop_cleared = 1;
+            } else {
+                violation(f, "SET_RX_FILTER mode %u", pl[4]);
+            }
+            return;
+        case 0x17: /* SET_BSS_ABORT */
+            if (plen != 4 || !all_zero(pl, 4)) violation(f, "SET_BSS_ABORT payload");
+            f->bss_aborts++;
+            return;
+        default:
+            break;
+        }
+    } else if (fmt == FAKE_FMT_EXT) {
+        switch (ext) {
+        case 0x21: /* EFUSE_BUFFER_MODE */
+            if (plen != 4 || pl[0] != 0 || pl[1] != 1 || pl[2] || pl[3]) violation(f, "EFUSE_BUFFER_MODE payload");
+            if (!f->nic_queried) violation(f, "EFUSE_BUFFER_MODE before GET_NIC_CAPAB");
+            f->efuse_mode_set = 1;
+            pb_reply(f, key, seq, NULL, 0, 0);
+            return;
+        case 0x3e: /* PROTECT_CTRL */
+            if (plen != 12 || pl[0] != 1 || pl[1] || pl[2] || pl[3] || le32(pl + 4) != 0x92bu || le32(pl + 8) != 2u)
+                violation(f, "PROTECT_CTRL payload");
+            if (!f->efuse_mode_set || f->wtbl_updates < 20) violation(f, "PROTECT_CTRL before EFUSE mode / MAC init");
+            f->rts_set = 1;
+            pb_reply(f, key, seq, NULL, 0, 0);
+            return;
+        case 0x46: /* MAC_INIT_CTRL */
+            if (plen != 4 || pl[0] > 1 || pl[1] || pl[2] || pl[3]) violation(f, "MAC_INIT_CTRL payload");
+            if (pl[0] && (!f->efuse_mode_set || !f->rts_set)) violation(f, "MAC enable before EFUSE mode / RTS");
+            if (!pl[0] && (f->sniffer_on || f->bss_active || f->dev_active))
+                violation(f, "MAC disable with the sniffer/BSS/DEV still active");
+            f->mac_enabled = pl[0];
+            pb_reply(f, key, seq, NULL, 0, 0);
+            return;
+        case 0x4e:   /* SET_RX_PATH */
+        case 0x08: { /* CHANNEL_SWITCH */
+            uint8_t want_rx = ext == 0x4e ? 3u : 2u;
+            if (plen != 76 || pl[1] != pl[0] || pl[2] != 0 || pl[3] != 2 || pl[4] != want_rx || pl[5] != 0 || pl[6] ||
+                pl[7] || pl[8] || pl[9] || pl[10] > 1 || !all_zero(pl + 11, 65))
+                violation(f, "%s payload", ext == 0x4e ? "SET_RX_PATH" : "CHANNEL_SWITCH");
+            if (!f->mac_enabled) violation(f, "channel command before MAC enable");
+            retune(f, 1, pl[0], pl[10]);
+            pb_reply(f, key, seq, NULL, 0, f->tune_delay_us);
+            return;
+        }
+        case 0x05: /* ID_RADIO_ON_OFF_CTRL */
+            if (plen != 4 || pl[0] < 1 || pl[0] > 3 || pl[1] || pl[2] || pl[3]) violation(f, "ID_RADIO_ON_OFF_CTRL payload");
+            f->radio_led = pl[0];
+            return;
+        case 0xbd: /* WF_RF_PIN_CTRL */
+            if (plen != 2 || pl[0] || pl[1]) violation(f, "WF_RF_PIN_CTRL payload");
+            f->rf_pin_inits++;
+            return;
+        default:
+            break;
+        }
+    } else if (fmt == FAKE_FMT_UNI) {
+        switch (id) {
+        case 0x01: /* DEV_INFO_UPDATE */
+            if (plen != 16 || !all_zero(pl, 4) || pl[4] || pl[5] || pl[6] != 12 || pl[7] || pl[8] > 1 || pl[9]) {
+                violation(f, "DEV_INFO_UPDATE payload");
+                return;
+            }
+            if (pl[8]) {
+                if (!f->mac_enabled) violation(f, "DEV_INFO active before MAC enable");
+                if ((pl[10] & 1u) || all_zero(pl + 10, 6)) violation(f, "DEV_INFO with an invalid MAC");
+                memcpy(f->dev_mac, pl + 10, 6);
+            } else if (f->bss_active) {
+                violation(f, "DEV_INFO inactive while the BSS is active");
+            }
+            if (f->uni_wrong_cid && !f->uni_wrong_cid_sent) {
+                f->uni_wrong_cid_sent = 1;
+                uni_status_reply(f, 0, 0x02, seq, 0); /* same seq, wrong cid: must be skipped */
+            }
+            if (f->uni_status_dev == 0) f->dev_active = pl[8];
+            uni_status_reply(f, key, 0x01, seq, f->uni_status_dev);
+            return;
+        case 0x02: /* BSS_INFO_UPDATE */
+            if (plen != 36 || !all_zero(pl, 4) || pl[4] || pl[5] || pl[6] != 32 || pl[7] || pl[8] > 1 ||
+                !all_zero(pl + 9, 3) || le32(pl + 12) != 0x00010002u || pl[16] != 1 || !all_zero(pl + 17, 19)) {
+                violation(f, "BSS_INFO_UPDATE payload");
+                return;
+            }
+            if (pl[8] && !f->dev_active) violation(f, "BSS_INFO active before DEV_INFO");
+            if (f->uni_status_bss == 0) f->bss_active = pl[8];
+            uni_status_reply(f, key, 0x02, seq, f->uni_status_bss);
+            return;
+        case 0x24: /* SNIFFER */
+            if (plen == 12 && all_zero(pl, 4) && pl[4] == 0 && pl[5] == 0 && pl[6] == 8 && pl[7] == 0 && pl[8] <= 1 &&
+                all_zero(pl + 9, 3)) {
+                if (!f->mac_enabled) violation(f, "SNIFFER enable before MAC enable");
+                f->sniffer_on = pl[8];
+                pb_reply(f, key, seq, NULL, 0, 0);
+                return;
+            }
+            if (plen == 20 && all_zero(pl, 4) && pl[4] == 1 && pl[5] == 0 && pl[6] == 16 && pl[7] == 0 && pl[8] == 0 &&
+                pl[9] == 0 && (pl[10] == 1 || pl[10] == 2) && pl[11] == 0 && pl[13] == 0 && pl[14] == pl[12] && pl[15] == 0 &&
+                pl[16] <= 1 && all_zero(pl + 17, 3)) {
+                if (!f->sniffer_on) violation(f, "SNIFFER config while the sniffer is off");
+                f->drop_err = pl[16];
+                retune(f, 0, pl[12], (uint8_t)(pl[10] - 1u));
+                pb_reply(f, key, seq, NULL, 0, f->tune_delay_us);
+                return;
+            }
+            violation(f, "SNIFFER payload (%u bytes)", plen);
+            return;
+        default:
+            break;
+        }
+    }
+    violation(f, "unknown MCU command fmt %u id 0x%02x ext 0x%02x (%u bytes payload)", fmt, id, ext, plen);
 }
 
 static void fw_chunk(struct fake_chip *f, const uint8_t *p, uint32_t len)
@@ -479,6 +838,7 @@ static void l1_write(struct fake_chip *f, uint32_t logical, uint32_t v)
             f->fw_started = 0;
             f->nic_powered = 0;
             f->top_lpcr_fw_own = 1;
+    f->keep_full_pwr = -1;
         } else if ((v & 1u) && f->wfsys_asserted) {
             if (now(f) - f->wfsys_assert_time < 50000u)
                 violation(f, "WFSYS reset released after %u us (< 50 ms)", (unsigned)(now(f) - f->wfsys_assert_time));
@@ -543,6 +903,8 @@ static void on_read(void *user, uint32_t off, uint32_t *value)
             (logical == L1_WFSYS && f->wfsys_never_done && f->wfsys_resets) ||
             (logical == L1_TOP_LPCR && f->drv_own2_never))
             mark_fault(f);
+    } else if (off == R_WTBL_UPDATE) {
+        *value = f->wtbl_busy_never ? (*value | 0x80000000u) : (*value & ~0x80000000u);
     } else if (off == R_GLO) {
         *value = (*value & ~0xau) | (f->dma_busy_stuck ? 0x2u : 0u);
         if (f->dma_busy_stuck) mark_fault(f);
@@ -584,6 +946,12 @@ static void on_write(void *user, uint32_t off, uint32_t v)
         l1_write(f, l1_logical(f, off), v);
     } else if (off == R_INT_ENA) {
         if (v) violation(f, "HOST_INT_ENA written 0x%08x (non-zero)", v);
+    } else if (is_mac_reg(off)) {
+        if (!f->fw_started) violation(f, "MAC register 0x%05x written before the firmware runs", off);
+        if (off == R_WTBL_UPDATE) {
+            if ((v & 0x3ffu) >= 20u || !(v & 0x1000u)) violation(f, "WTBL_UPDATE 0x%08x", v);
+            f->wtbl_updates++;
+        }
     } else if (off == R_GLO) {
         if (v & (GLO_TX_EN | GLO_RX_EN)) {
             mark_enabling(f);
@@ -669,6 +1037,10 @@ void fake_init(struct fake_chip *f, struct mock *m)
 void fake_free(struct fake_chip *f)
 {
     unsigned i;
+    for (i = 0; i < f->n_cmds && i < FAKE_MAX_CMDS; i++) {
+        free(f->cmds[i].raw);
+        f->cmds[i].raw = NULL;
+    }
     for (i = 0; i < f->n_dl && i < FAKE_MAX_DL; i++) free(f->dl[i].data);
     f->n_dl = 0;
 }

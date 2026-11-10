@@ -78,6 +78,8 @@ TEST(real_firmware_metadata)
     CHECK(err == 0);
     printf("    fw_ver '%s' build_date '%s' chip_id 0x%02x eco %u format_ver %u format_flag %u crc 0x%08lx\n",
            r->fw_ver, r->build_date, r->chip_id, r->eco_code, r->format_ver, r->format_flag, (unsigned long)r->crc);
+    printf("    release-info feature byte 0x%02x (status %d): CNM %s, NAN %s\n", r->fw_features, r->fw_features_status,
+           (r->fw_features & MT792X_FW_CAP_CNM) ? "yes" : "no", (r->fw_features & MT792X_FW_CAP_NAN) ? "yes" : "no");
     printf("    regions %lu, data %lu bytes, download %lu bytes, FW_START option %lu addr 0x%08lx\n",
            (unsigned long)r->n_regions, (unsigned long)r->data_len, (unsigned long)r->total_dl_bytes,
            (unsigned long)r->fw_start_option, (unsigned long)r->override_addr);

@@ -48,6 +48,44 @@ uint32_t mt792x_patch_dl_mode(uint32_t info, int *known)
     return mode;
 }
 
+/* mt792x_get_offload_capability (mt792x_core.c:861-929): after the concatenated region data
+ * ('regions_len' = sum of all region lengths, as mt76_connac2_fw_check returns it) come 16
+ * bytes, then a release-info header {le16 len; u8 pad_len; u8 tag} whose 'len' bytes hold a
+ * sequence of release-info entries (same header, then len data bytes and pad_len padding).
+ * The entry with tag MT792X_FW_TAG_FEATURE holds struct mt792x_fw_features {u8 segment;
+ * u8 data; u8 rsv[14]} (mt792x.h:72-82); 'data' is the feature byte.
+ * Returns 1 = found, 0 = no feature entry, -1 = malformed/missing (mt76: "Invalid firmware"). */
+static int ram_features(const uint8_t *data, uint64_t fw_end, uint64_t regions_len, uint8_t *features)
+{
+    uint64_t p, end;
+    uint32_t len;
+
+    *features = 0;
+    if (regions_len > fw_end || fw_end - regions_len < 16u + 4u) return -1;
+    p = regions_len + 16u;
+    len = mt_get_le16(data + p);
+    p += 4u;
+    if (len > fw_end - p) return -1;
+    end = p + len;
+    while (p < end) {
+        uint32_t elen, pad;
+        uint8_t tag;
+        if (end - p < 4u) return -1;
+        elen = mt_get_le16(data + p);
+        pad = data[p + 2u];
+        tag = data[p + 3u];
+        p += 4u;
+        if (elen > end - p || pad > end - p - elen) return -1;
+        if (tag == MT792X_FW_TAG_FEATURE) {
+            if (elen < 16u) return -1;
+            *features = data[p + 1u];
+            return 1;
+        }
+        p += (uint64_t)elen + pad;
+    }
+    return 0;
+}
+
 uint32_t mt792x_ram_dl_mode(uint8_t fs)
 {
     uint32_t mode = 0;
@@ -189,5 +227,6 @@ int mt792x_ram_parse(const uint8_t *data, size_t len, struct mt792x_ram_info *ou
     out->data_len = (uint32_t)data_len;
     out->total_dl_bytes = (uint32_t)total;
     out->fw_start_option = out->override_addr ? FW_START_OVERRIDE : 0u;
+    out->fw_features_status = (int8_t)ram_features(data, data_len, offset, &out->fw_features);
     return 0;
 }

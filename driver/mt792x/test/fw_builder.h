@@ -29,6 +29,10 @@ uint8_t *fwb_patch(const struct fwb_section *s, unsigned n, size_t *out_len);
 /* RAM: region data concatenated from offset 0, then n x 40-byte regions, then the 36-byte trailer. */
 uint8_t *fwb_ram(const struct fwb_region *r, unsigned n, size_t *out_len);
 
+/* RAM image with a release-info block after the region data: features < 0 = block without a
+ * feature tag, else a feature tag carrying that byte (MT792X_FW_CAP_CNM = 0x80). */
+uint8_t *fwb_ram_features(const struct fwb_region *r, unsigned n, int features, size_t *out_len);
+
 /* The default images used by most bring-up tests (see fw_builder.c for the exact content). */
 #define FWB_DEFAULT_SECTIONS 3u
 #define FWB_DEFAULT_REGIONS 4u

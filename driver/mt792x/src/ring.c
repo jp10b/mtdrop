@@ -173,26 +173,64 @@ int mt_ring_tx_wait(struct mt792x *dev, struct mt792x_ring *r, uint32_t timeout_
     }
 }
 
-/* Completion detected by DMA_DONE in the descriptor (mt76_dma_dequeue), never by dma_idx. */
-int mt_ring_rx_take(struct mt792x *dev, struct mt792x_ring *r)
+/* Announces re-armed slots to the chip (one cpu_idx write for any number of them). */
+int mt_ring_rx_flush(struct mt792x *dev, struct mt792x_ring *r)
+{
+    if (!r->rearm_pending) return dev->bus_dead ? MT792X_E_BUS_DEAD : 0;
+    r->rearm_pending = 0;
+    mt_wr(dev, r->regs + MT_RING_CPU_IDX, r->head);
+    return dev->bus_dead ? MT792X_E_BUS_DEAD : 0;
+}
+
+/* Number of armed descriptors the chip has completed and the host has not taken yet. Reads ring
+ * memory only. Used to notice a ring that ran full (every armed slot completed). */
+uint32_t mt_ring_rx_completed(const struct mt792x *dev, const struct mt792x_ring *r)
+{
+    uint32_t n = 0, slot = r->tail;
+    while (n < r->queued && (mt_dma_ld32(dev, desc_at(r, slot) + MT_DESC_CTRL) & MT_DMA_CTL_DMA_DONE)) {
+        n++;
+        slot = (slot + 1u) % r->ndesc;
+    }
+    return n;
+}
+
+/* Completion detected by DMA_DONE in the descriptor (mt76_dma_dequeue), never by dma_idx.
+ * One descriptor per call. A packet spread over several descriptors (LAST_SEC0 clear on all but
+ * the last, dma.c:523-524) is dropped as a whole: every descriptor of the chain returns 2, the
+ * chain end is counted once in rxc.frag_packets (spec R14; mt76 reassembles instead). */
+int mt_ring_rx_take_buf(struct mt792x *dev, struct mt792x_ring *r, uint8_t *dst, uint32_t cap, uint32_t *out_len,
+                        int kick)
 {
     uint32_t ctrl, len, slot = r->tail;
     int rc = 1, err;
 
+    *out_len = 0;
     if (r->queued == 0) return 0;
     ctrl = mt_dma_ld32(dev, desc_at(r, slot) + MT_DESC_CTRL);
     if (!(ctrl & MT_DMA_CTL_DMA_DONE)) return 0;
 
     len = (ctrl >> MT_DMA_CTL_SD_LEN0_SHIFT) & MT_DMA_CTL_SD_LEN0_MASK;
-    if (len == 0 || len > r->buf_size || !(ctrl & MT_DMA_CTL_LAST_SEC0)) {
-        /* R14: fragments and oversized lengths are dropped, as mt76 drops them. */
-        mt_logf(dev, MT_LOG_WARN, "RX ring %u slot %u: dropped descriptor ctrl 0x%08x", r->hw_idx, slot, ctrl);
+    if (len == 0 || len > r->buf_size || len > cap) {
+        dev->rxc.bad_desc_len++;
+        mt_logf(dev, MT_LOG_WARN, "RX ring %u slot %u: descriptor length %u invalid (ctrl 0x%08x), dropped", r->hw_idx,
+                slot, len, ctrl);
         rc = 2;
-        dev->evt_len = 0;
+        if (ctrl & MT_DMA_CTL_LAST_SEC0) r->in_frag = 0;
+        else r->in_frag = 1;
+    } else if (!(ctrl & MT_DMA_CTL_LAST_SEC0) || r->in_frag) {
+        dev->rxc.frag_descs++;
+        rc = 2;
+        if (ctrl & MT_DMA_CTL_LAST_SEC0) {
+            r->in_frag = 0;
+            dev->rxc.frag_packets++;
+            mt_logf(dev, MT_LOG_WARN, "RX ring %u: multi-descriptor packet dropped (last part %u bytes)", r->hw_idx, len);
+        } else {
+            r->in_frag = 1;
+        }
     } else {
-        mt_dma_read(dev, buf_at(r, slot), dev->evt, len);
-        dev->evt_len = len;
-        dev->evt_ring = r->hw_idx;
+        mt_dma_read(dev, buf_at(r, slot), dst, len);
+        *out_len = len;
+        if (len >= 4u) dev->rxc.pkt_type[(dst[3] >> 3) & 0x1fu]++; /* RXD0 PKT_TYPE GENMASK(31,27) */
     }
     r->tail = (r->tail + 1u) % r->ndesc;
     r->queued--;
@@ -202,7 +240,20 @@ int mt_ring_rx_take(struct mt792x *dev, struct mt792x_ring *r)
     if (err) return err;
     r->head = (r->head + 1u) % r->ndesc;
     r->queued++;
-    mt_wr(dev, r->regs + MT_RING_CPU_IDX, r->head);
+    r->rearm_pending++;
+    if (kick) {
+        err = mt_ring_rx_flush(dev, r);
+        if (err) return err;
+    }
     if (dev->bus_dead) return MT792X_E_BUS_DEAD;
+    return rc;
+}
+
+int mt_ring_rx_take(struct mt792x *dev, struct mt792x_ring *r)
+{
+    uint32_t len = 0;
+    int rc = mt_ring_rx_take_buf(dev, r, dev->evt, sizeof(dev->evt), &len, 1);
+    dev->evt_len = rc == 1 ? len : 0;
+    if (rc == 1) dev->evt_ring = r->hw_idx;
     return rc;
 }

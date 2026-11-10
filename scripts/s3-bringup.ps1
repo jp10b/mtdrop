@@ -22,7 +22,10 @@
 
 param(
     [switch]$IUnderstandWifiGoesDown,
-    [string]$Stages = '1',
+    [string]$Stages = '',
+    # Alternative to -Stages: radiod command lines separated by ';'. The token @fw is replaced by the
+    # patch and RAM firmware paths, e.g.  -Commands 'bringup 6 @fw;sniff 1 10 @fw'
+    [string]$Commands = '',
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
     [string]$ToolsRoot = 'D:\mtdrop-tools',
     [int]$WatchdogSeconds = 240
@@ -55,7 +58,7 @@ $taken = $false
 $watchdog = $null
 $exit = 1
 try {
-    Say "=== S3: radiod bringup, stages $Stages, as $([Security.Principal.WindowsIdentity]::GetCurrent().Name) ==="
+    Say "=== S3: radiod session [$Stages] [$Commands], as $([Security.Principal.WindowsIdentity]::GetCurrent().Name) ==="
     if (-not $IUnderstandWifiGoesDown) { throw 'Refusing to run without -IUnderstandWifiGoesDown.' }
     $identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Not elevated.' }
@@ -66,8 +69,17 @@ try {
     $fwDir = Get-ChildItem (Join-Path $PrivateRoot 'vendor-driver-backup') -Directory | Sort-Object Name | Select-Object -Last 1
     $patch = Join-Path $fwDir.FullName 'WIFI_MT7961_patch_mcu_1_2_hdr.bin'
     $ram = Join-Path $fwDir.FullName 'WIFI_RAM_CODE_MT7961_1.bin'
-    $stageList = @($Stages -split ',' | ForEach-Object { [int]$_.Trim() })
-    if ($stageList.Count -eq 0 -or ($stageList | Where-Object { $_ -lt 1 -or $_ -gt 5 })) { throw "bad -Stages '$Stages'" }
+    $commandList = @()
+    if ($Stages) {
+        foreach ($n in ($Stages -split ',')) {
+            $v = [int]$n.Trim()
+            if ($v -lt 1 -or $v -gt 6) { throw "bad -Stages '$Stages'" }
+            $commandList += "bringup $v @fw"
+        }
+    }
+    if ($Commands) { $commandList += @($Commands -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    if ($commandList.Count -eq 0) { throw 'nothing to run: give -Stages or -Commands' }
+    foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
     foreach ($need in $patch, $ram) { if (-not (Test-Path $need)) { throw "missing firmware file: $need" } }
     $inf2cat = Get-ChildItem (Join-Path $ToolsRoot 'packages') -Recurse -Filter Inf2Cat.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     $builtInf = Join-Path $built 'mtdrop_proxy.inf'                                   # stamped by the build
@@ -149,13 +161,14 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
     # ---- the actual experiment -----------------------------------------------------------------
     Start-Sleep -Seconds 2
     $exit = 0
-    foreach ($n in $stageList) {
-        Say "--- radiod bringup $n"
-        $result = & $regtool bringup $n $patch $ram 2>&1
+    foreach ($c in $commandList) {
+        Say "--- radiod $c"
+        $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } else { $_ } })
+        $result = & $regtool @argv 2>&1
         $code = $LASTEXITCODE
         $result | ForEach-Object { Say "  radiod: $_" }
-        Say "radiod bringup $n exit code: $code"
-        if ($code -ne 0) { $exit = 1; Say "stopping: stage $n failed"; break }
+        Say "radiod $c -> exit code: $code"
+        if ($code -ne 0) { $exit = 1; Say "stopping: '$c' failed"; break }
         Start-Sleep -Seconds 1
     }
 }

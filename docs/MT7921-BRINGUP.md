@@ -1079,3 +1079,180 @@ TODO-VERIFY (not answered by the source): whether the firmware ACKs unicast fram
 15. Raw TX while sniffing: required wcid/OMAC, token/TX-free handling (9.6).
 16. Firmware ACK of unicast frames to our MAC in sniffer mode (9.7).
 17. Licence note carried over from CLAUDE.md: BSD-3-Clause-Clear compatibility with GPL-3.0 for any code derived from these files.
+
+---
+
+## 11. Post-boot and sniffer: verified details
+
+Added for the M3 sniffer step (library `driver/mt792x`, files `src/postboot.c`, `src/rx.c`, `src/mcu.c`). Same clone and conventions as above. This section supersedes the brief section 9 where they differ; section 9 is left as written. Everything here was re-read from the source; places where the implementation deviates from mt76 are marked **[HOST]**, open questions **TODO-VERIFY** with the option that selects the alternative.
+
+### 11.1 Command word and the three header formats
+
+mt76 encodes every command as an `int cmd` (`mt76_connac_mcu.h:1225-1245`): bits 7:0 id, 15:8 ext id, `BIT(16)` QUERY, `BIT(17)` UNI, `BIT(18)` CE. `MCU_EXT_CMD(x)` = id `0xed` + ext id; `MCU_CE_CMD(x)` = id + CE flag; `MCU_UNI_CMD(x)` = id + UNI flag. `mt76_connac2_mcu_fill_message` (`mt76_connac_mcu.c:3545-3618`) builds:
+
+| format | header | fields that differ |
+|---|---|---|
+| plain `MCU_CMD` (bring-up) | 64 bytes (4.1) | `set_query` 3 (`MCU_Q_NA`), `ext_cid` 0, `ext_cid_ack` 0 |
+| `MCU_CE_CMD` | 64 bytes | `cid` = id, `set_query` = 0 if QUERY flag else 1, `ext_cid` 0, `ext_cid_ack` 0 (`mt76_connac_mcu.c:3598-3606`) |
+| `MCU_EXT_CMD` | 64 bytes | `cid` 0xed, `ext_cid` = ext id, `set_query` 0/1 as CE, `ext_cid_ack` 1 |
+| `MCU_UNI_CMD` | 48 bytes (4.2) | `len` = total − 32, `cid` LE16 at 0x22 (no `pq_id`), `pkt_type` 0xa0, `seq`, `s2d_index` 0, `option` 0x07 (`MCU_CMD_UNI_EXT_ACK`), rest 0 (`mt76_connac_mcu.c:3577-3587`) |
+
+Every command except `FW_SCATTER` consumes one sequence number (1..15, never 0) and goes to TX ring 17. Response matching is by `seq` only (`mcu.c:116-131`); response handling per command (`mt7921/mcu.c:16-92`):
+
+- `MCU_UNI_CMD(DEV_INFO_UPDATE / BSS_INFO_UPDATE / STA_REC_UPDATE / HIF_CTRL / OFFLOAD / SUSPEND)`: event ≥ 36 + 8 bytes, payload `{u8 cid; u8 pad[3]; le32 status}`; `cid` ≠ command id → `-EAGAIN` (keep waiting); result = `status` (0 = success). On a BSS **de**activation, status `0xc0000001` (`MT76_CONNAC_MCU_STATUS_WLAN_FAILURE`) is ignored (`mt76_connac_mcu.h:1963-1980`).
+- every other command used here (CE, EXT, UNI `SNIFFER`): event ≥ 36 bytes, result 0, **no status checked**. The library logs the first payload word at INFO anyway (diagnostic only).
+
+Timeout 3 s, no retry (4.5). [HOST] best-effort commands during shutdown use 500 ms and stop at the first failure. [HOST] while waiting, RX ring 2 is drained first (frames are counted as `discarded_in_cmd`, events are matched like on rings 0/4) once post-boot has completed, so the data ring cannot stall during commands.
+
+### 11.2 Sequence after `FW_START` (stage 6 = S24–S31)
+
+mt76 order: `mt7921_run_firmware` (`mt7921/mcu.c:682-704`) → `__mt7921_init_hardware` (`mt7921/init.c:96-104`) → end of `mt7921_init_work` (`mt7921/init.c:167`) → first command of `__mt7921_start` (`mt7921/main.c:232`).
+
+| step | command | cmd | payload (bytes) | awaited | source |
+|---|---|---|---|---|---|
+| S24 | `GET_NIC_CAPAB` | CE 0x8a, set_query 1 | none | yes | `mt7921/mcu.c:597-667` |
+| — | CLC (`EFUSE_ACCESS` query of `MT_EE_HW_TYPE`, CLC tables from the RAM file's `NON_DL` region of type 2, later `SET_CLC`) | — | — | — | **not sent**, 11.3 |
+| S25 | `CHIP_CONFIG` "DowngradeTxStreamTemp 105 115" | CE 0xca | 328: `le16 id 0, u8 type 0, u8 resp_type 0, le16 data_size 0, le16 resv 0, char data[320]` (`mt76_connac_mcu.h:1874-1881`) | no | `mt7921/mcu.c:1521-1532`, `mt76_connac_mcu.c:2047-2057` |
+| S26 | `FWLOG_2_HOST` | CE 0xc5 | 4: `{1, 0, 0, 0}` | no | `mt7921/mcu.c:669-680,703` |
+| S27 | `EFUSE_BUFFER_MODE` | EXT 0x21 | 4: `{buffer_mode 0 = EE_MODE_EFUSE, format 1 = EE_FORMAT_WHOLE, le16 len 0}` | yes | `mt7921/mcu.c:972-985`, `mt76_connac_mcu.h:1193-1202` |
+| S28 | `mt7921_mac_init` registers (11.4) | — | — | — | `mt7921/init.c:64-79` |
+| S29 | `PROTECT_CTRL` (RTS threshold) | EXT 0x3e | 12: `{prot_idx 1, band 0, rsv[2], le32 0x92b, le32 pkt_thresh 2}` | yes | `mt7921/init.c:80`, `mt76_connac_mcu.c:255-272` |
+| S30 | `CHIP_CONFIG` "KeepFullPwr 1" | CE 0xca | 328 as S25 | no | `mt76_connac_mcu.c:2060-2067`; **[HOST]** mt76 sends "KeepFullPwr 0" here (deep sleep on by default, `mt7921/init.c:210-216`); "1" is what mt76 sends for a monitor interface (`mt7921/main.c:611-614`) and what the project needs |
+| S31 | `MAC_INIT_CTRL` enable | EXT 0x46 | 4: `{enable 1, band 0, rsv[2]}` | yes | `mt7921/main.c:232`, `mt76_connac_mcu.c:216-230` |
+
+`mt76_eeprom_override` (`mt7921/init.c:96`) is host-only. `set_query` for every CE/EXT command above is 1 (no QUERY flag).
+
+`GET_NIC_CAPAB` reply (after `skb_pull` of the 36-byte event header): `{le16 n_element; u8 rsv[2]}` then `n_element` × `{le32 type; le32 len; u8 data[len]}`. Parsing stops (no error) when fewer than 8 bytes remain for a TLV header or `len` exceeds what remains (`mt7921/mcu.c:620-634`). Types used (`mt76_connac_mcu.h:1471-1492`): `MT_NIC_CAP_HW_VER` 5 and `SW_VER` 6 (not parsed by mt76; the library keeps the first 16 raw bytes for the log), `MAC_ADDR` 7 (used if ≥ 6 bytes), `PHY` 8 (`struct mt7921_phy_cap` 12 bytes, used if ≥ 11: `antenna_mask = BIT(nss) − 1`, `hw_path` bit 0 = 2.4 GHz, bit 1 = 5 GHz; `mt7921/mcu.c:563-595`), `6G` 0x18 (byte 0), `CHIP_CAP` 0x20 (u64 if ≥ 8; bits `mt792x.h:29-36`, e.g. `BIT(3)` `WF_RF_PIN_CTRL_EVT_EN`). A reply shorter than its 4-byte header is an error (`-EINVAL`, `mt7921/mcu.c:613-616`).
+
+### 11.3 What is deliberately not sent, and why
+
+| mt76 action | why skipped | effect if wrong |
+|---|---|---|
+| `mt7921_load_clc` (`mt7921/mcu.c:442-531`; enabled on PCIe, `mt7921/regd.c:22-29`) | regulatory per-country channel/power tables for TX; the first thing it sends is an `EFUSE_ACCESS` query, the tables go out later as `SET_CLC` (`mt7921/mcu.c:1362-1487`) | none expected for RX; needed before transmitting (M4) |
+| TX power, `mt76_connac_mcu_set_rate_txpower` (`mt7921/main.c:244,1294-1308`, `mt76_connac_mcu.c:2188-2352`) | per-rate TX power limits (SKU) | TX only (M4) |
+| `mt792x_mac_reset_counters` (`mt7921/main.c:248,489`) | reads (clears) MIB counters | statistics only |
+| `ID_RADIO_ON_OFF_CTRL` on start is **sent** (SN3); `WF_RF_PIN_CTRL` is sent only if `CHIP_CAP BIT(3)` (SN4), as mt76 | — | — |
+
+### 11.4 `mt7921_mac_init` registers (S28)
+
+All through the fixed map (1.2); written with read-modify-write as mt76 does (`mt76_rmw/set/clear` always write).
+
+| register (logical → BAR) | operation | source |
+|---|---|---|
+| `MT_MDP_DCR1` 0x820cd004 → 0x0f004 | rmw `GENMASK(15,3)` = 1536 (0x3000) | `mt7921/init.c:68`, `mt7921/regs.h:16-17` |
+| `MT_MDP_DCR0` 0x820cd000 → 0x0f000 | set `BIT(15)` DAMSDU_EN; set `BIT(19)` RX_HDR_TRANS_EN (option `no_rx_hdr_trans` skips the second) | `mt7921/init.c:70-72`, `mt7921/regs.h:12-14` |
+| `MT_WTBL_UPDATE` 0x820d4230 → 0x34230, idx 0..19 | rmw(`GENMASK(9,0)`, idx \| `BIT(12)`); poll `BIT(31)` == 0, 5 ms, 10 µs tick; **poll result ignored** | `mt7921/init.c:74-76`, `mt7921/mac.c:19-26`, `mt7921/regs.h:74-79`, `mt792x_regs.h:159-162` |
+| per band b = 0, 1 (`mt792x_mac_init_band`, `mt792x_mac.c:289-316`): | | |
+| `MT_TMAC_CTCR0` 0x820e40f4/0x820f40f4 → 0x210f4/0xa10f4 | rmw `GENMASK(5,0)` = 0x3f; set `BIT(18)\|BIT(17)` | `mt792x_regs.h:48-51` |
+| `MT_WF_RMAC_MIB_TIME0` +0x3c4 → 0x217c4/0xa17c4; `MT_WF_RMAC_MIB_AIRTIME0` +0x380 → 0x21780/0xa1780 | set `BIT(30)` | `mt792x_regs.h:220-259` |
+| `MT_MIB_SCR1` 0x820ed004/0x820fd004 → 0x24804/0xa4804 | set `BIT(8)`, then set `BIT(9)` | `mt792x_regs.h:97-102` |
+| `MT_DMA_DCR0` 0x820e7000/0x820f7000 → 0x21e00/0xa1e00 | rmw `GENMASK(15,3)` = 1536; clear `BIT(23)` RXD_G5_EN ("hw issues") | `mt792x_regs.h:56-61` |
+| `MT_WTBLOFF_TOP_RSCR` +0x008 → 0x23408/0xa3408 | rmw mask 0xc3000000 = 0x03000000 (RCPI mode 0, param 3) | `mt792x_regs.h:64-69` |
+
+Fixed-map check for 0x820cd000: entry #22 (0x820cc000, size 0x1000) matches through the `ofs == size` off-by-one and yields 0x0e000 + 0x1000 = 0x0f000, the same BAR offset as entry #23. Band-1 registers are written although MT7921 has one band, as mt76 does.
+
+### 11.5 Monitor interface and sniffer start (SN1–SN13)
+
+mt76 has no single "monitor start" function; with mac80211 the following callbacks run when a monitor interface comes up. **ASSUMPTION**: the order below (start → add_interface → configure_filter → config(MONITOR) → channel) is mac80211's; mt76 does not fix it.
+
+| step | command | cmd | payload | awaited | source |
+|---|---|---|---|---|---|
+| SN1 | `SET_CHAN_DOMAIN` | CE 0x0f | 12-byte header `{alpha2[4], bw_2g 0, bw_5g 3, bw_6g 3, pad, n_2ch, n_5ch, n_6ch, pad2}` + per channel `{le16 hw_value, le16 pad, le32 flags}` | no | `mt7921/main.c:236`, `mt76_connac_mcu.c:123-213` |
+| SN2 | `SET_RX_PATH` | EXT 0x4e | 76, 11.6 (rx_streams = antenna **mask**) | yes | `mt7921/main.c:240`, `mt7921/mcu.c:912-970` |
+| — | TX power | — | — | — | not sent (11.3) |
+| SN3 | `ID_RADIO_ON_OFF_CTRL` 1 (LED ctrl enable), then 2 (radio on LED) | EXT 0x05 | 4: `{ctrlid, rsv[3]}` | no | `mt7921/main.c:253-261`, `mt7921/mcu.c:707-718`, `mt7921/mt7921.h:40-42` |
+| SN4 | `WF_RF_PIN_CTRL` init, only if `CHIP_CAP BIT(3)` | EXT 0xbd | 2: `{action 0, value 0}`; awaited only if action ≠ 0 | no | `mt7921/main.c:263-266`, `mt7921/mcu.c:1506-1519` |
+| SN5 | `DEV_INFO_UPDATE` active | UNI 0x01 | 16: `{omac_idx 0, band_idx 0, le16 pad}` + `{le16 tag 0 (DEV_INFO_ACTIVE), le16 len 12, active 1, link_idx 0, omac_addr[6]}` | yes, status | `mt7921/main.c:311-325`, `mt76_connac_mcu.c:1194-1225,1280-1291` |
+| SN6 | `BSS_INFO_UPDATE` basic | UNI 0x02 | 36: `{bss_idx 0, pad[3]}` + `struct mt76_connac_bss_basic_tlv` (32 bytes, `mt76_connac_mcu.h:1517-1545`): tag 0, len 32, active 1, omac 0, hw_bss_idx 0, band 0, `conn_type` LE32 0x00010002 (`CONNECTION_INFRA_AP` for `NL80211_IFTYPE_MONITOR`), conn_state 1, wmm 0, bssid 0, `bmc_tx_wlan_idx` 0, bcn_interval 0, dtim 0, phymode 0, `sta_idx` 0, rest 0 | yes, status | `mt76_connac_mcu.c:1226-1301` |
+| SN7 | `mt7921_mac_wtbl_update(19, ADM_COUNT_CLEAR)` | register | — | — | `mt7921/main.c:332-340` |
+| SN8 | `SET_RX_FILTER` mode 1 | CE 0x0a | 68: `{rsv[4], mode, rsv2[3], le32 fif, le32 bit_map, bit_op, pad[51]}`; `fif = BIT(31) ENABLE \| BIT(2) FCSFAIL? \| BIT(5) CONTROL? \| BIT(6) OTHER_BSS?` | no | `mt7921/main.c:666-691`, `mt7921/mcu.c:1534-1554`, `mt7921/mt7921.h:10-13` |
+| SN9 | `SNIFFER` enable | UNI 0x24 | 12: `{band_idx 0, pad[3]}` + `{le16 tag 0, le16 len 8, enable 1, pad[3]}` | yes | `mt7921/main.c:610`, `mt7921/mcu.c:1185-1213` |
+| SN10 | `CHIP_CONFIG` "KeepFullPwr 1" | CE 0xca | 328 | no | `mt7921/main.c:612-614` |
+| SN11 | `SET_BSS_ABORT` | CE 0x17 | 4: `{bss_idx 0, pad[3]}` | no | `mt7921/main.c:616-617`, `mt7921/mcu.c:1145,1062-1097` |
+| SN12 | `SET_RX_FILTER` mode 2 | CE 0x0a | `bit_op` 2 (`MT7921_FIF_BIT_CLR`), `bit_map` `BIT(11)` `MT_WF_RFCR_DROP_OTHER_BEACON` | no | `mt7921/mcu.c:1149-1151`, `mt792x_regs.h:234` |
+| SN13 | tune (11.6) | | | | |
+
+Notes, all FACT unless marked:
+
+- The monitor vif gets index 0 = `omac_idx` 0, band 0, `wmm_idx` 0 (`mt7921/main.c:311-321`). `mt76_connac_mcu_uni_add_dev` is called **before** `wcid.idx` is set to `MT792x_WTBL_RESERVED − idx` = 19 (`mt7921/main.c:323-335`), so `bmc_tx_wlan_idx` and `sta_idx` carry the still-zero wcid index 0. The library reproduces that.
+- `hw_bss_idx` = `omac_idx` (0) because it is not > `EXT_BSSID_START` 0x10 (`mt76_connac_mcu.c:1277-1278`, `mt76_connac.h:73,78`).
+- The MAC address in `DEV_INFO` is the vif address (`bss_conf->addr`); for a monitor vif that is the hardware address, i.e. the one from `GET_NIC_CAPAB`. The library takes it from there unless the caller passes one.
+- `mt792x_init_wiphy` sets `no_active_monitor` and `WANT_MONITOR_VIF` (`mt792x_core.c:824,841`): mt76 does not claim the chip ACKs in monitor mode (9.7 still applies).
+- SN1 **[HOST]**: Linux fills the channel list from cfg80211 after regulatory processing (disabled channels left out, `flags` = cfg80211 channel flags, which are not defined in mt76). The library sends mt76's own band tables (`mac80211.c:30-82`: 2.4 GHz 1–14, 5 GHz 36–177; only bands `GET_NIC_CAPAB` reports) with `flags` 0 and `alpha2` "00" (mt7921's world regdomain name, `mt7921/regd.c:15`; `dev->alpha2` is `char[3]`, `mt76.h:1022`). `bw_*` values as in the source. **TODO-VERIFY** whether the firmware uses this for RX at all; option `skip_chan_domain` omits it. Not awaited, so a rejection is invisible.
+- Sniffer stop (mt76 order): `SNIFFER` enable 0 (config `CHANGE_MONITOR`, `mt7921/main.c:610`), then `mt76_connac_mcu_uni_add_dev(enable = false)`: **BSS first, then DEV** (`mt76_connac_mcu.c:1282-1299`), both with `active` 0. mt76 would also send "KeepFullPwr 0" when monitor goes away (`mt7921/main.c:612-614`); **[HOST]** not sent. Interface stop (`mt7921_stop`, `mt7921/main.c:284-298` → `mt792x_stop`, `mt792x_core.c:232-252`): `ID_RADIO_ON_OFF_CTRL` 3 (radio off LED, not awaited), then `MAC_INIT_CTRL {enable 0}` (awaited). `mt792x_shutdown` runs these (spec 7.3 step 1) before the register part, only if the bus is alive; state flags are set **before** each enabling command so that a command whose response was lost is still undone.
+
+### 11.6 Which command tunes the radio
+
+The deciding bit is **not** in `GET_NIC_CAPAB`: it is `MT792x_FW_CAP_CNM` (`BIT(7)`, `mt792x.h:27`) of the feature byte that `mt792x_get_offload_capability` reads **from the RAM firmware file** at probe (`mt792x_core.c:861-929`, used in `mt792x_get_mac80211_ops`, `mt792x_core.c:938-976`, stored as `dev->fw_features`, `mt7921/pci.c:338,360`). File layout: after the concatenated region data (`offset` = sum of all region lengths, `mt76_connac2_fw_check`, `mt76_connac_mcu.c:3048-3078`) skip 16 bytes; then `struct mt792x_realease_info {le16 len; u8 pad_len; u8 tag}` whose `len` bytes contain entries of the same header + `len` data + `pad_len` padding; tag 4 (`MT792x_FW_TAG_FEATURE`) holds `struct mt792x_fw_features {u8 segment; u8 data; u8 rsv[14]}`, `data` is the feature byte (`mt792x.h:25-27,72-82`). A malformed block makes mt76 log "Invalid firmware" and use 0. The library parses this in `mt792x_ram_parse` (`fw_features`, `fw_features_status`).
+
+- **Without CNM**: mac80211 emulates channel contexts (`ieee80211_emulate_*`, `mt792x_core.c:962-973`) and retunes through `config(IEEE80211_CONF_CHANGE_CHANNEL)` → `mt76_update_channel` → `mt7921_set_channel` → `MCU_EXT_CMD(CHANNEL_SWITCH)` (`mt7921/main.c:477-499,640-644`, `mac80211.c:1057-1118`), followed by `mt792x_mac_set_timeing` (11.6.1). The sniffer config TLV is never sent.
+- **With CNM**: `assign_vif_chanctx` only records the context (`mt792x_core.c:463-480`, `mac80211.c:1043-1055`, no command); a channel change of a monitor vif goes through `mt7921_change_chanctx` → `SNIFFER` enable 1 + `SNIFFER` config (`mt7921/main.c:1411-1436`). No `CHANNEL_SWITCH`.
+- In both cases `__mt7921_start` has already sent `SET_RX_PATH` with the current channel (SN2).
+
+`CHANNEL_SWITCH` / `SET_RX_PATH` payload (76 bytes, `mt7921/mcu.c:917-941`), 20 MHz: `control_ch` = channel, `center_ch` = channel (center frequency of a 20 MHz channel), `bw` = `CMD_CBW_20MHZ` = `IEEE80211_STA_RX_BW_20` = 0 (`mt76_connac.h:56-60,379-397`; the enum value 0 is from `include/net/mac80211.h`, not mt76), `tx_streams_num` = popcount(antenna mask), `rx_streams` = mask for `SET_RX_PATH`, popcount for `CHANNEL_SWITCH` (`mt7921/mcu.c:960-961`), `switch_reason` 0 (`CH_SWITCH_NORMAL`: `SET_RX_PATH`, or monitor and not off-channel, `mt7921/mcu.c:948-951`), `band_idx` 0, `center_ch2` 0, `cac_case` 0, `channel_band` = nl80211 band (0 = 2.4 GHz, 1 = 5 GHz; uapi enum), rest 0.
+
+`SNIFFER` config payload (20 bytes, `mt7921/mcu.c:1215-1281`): `{band_idx 0, pad[3]}` + `{le16 tag 1, le16 len 16, u16 aid 0, ch_band (1 = 2.4, 2 = 5, 3 = 6 GHz), bw (0 for 20/40), control_ch, sco (0 when control == center), center_ch, center_ch2 0, drop_err = !(rxfilter & FCSFAIL), pad[3]}`.
+
+Library: option `tune_mode` = `MT792X_TUNE_AUTO` (mt76 rule above), `_CHANNEL_SWITCH`, `_SNIFFER_CONFIG`, `_BOTH`. `mt792x_sniffer_set_channel` measures from the first command sent to the last awaited response.
+
+**MEASURED (file, not chip)**: the maintainer's vendor RAM image (build `20250922193119`, package 3.5.0.1349) contains a valid release-info block (132 bytes between the region data and the region table) **without** a feature tag → feature byte 0 → mt76 would use `CHANNEL_SWITCH`.
+
+#### 11.6.1 `mt792x_mac_set_timeing` after `CHANNEL_SWITCH`
+
+`mt792x_mac.c:35-74`, band 0, `coverage_class` 0, `slottime` 9 (`mt792x_core.c:771`): set `BIT(8)|BIT(9)` (TX/RX disable) in `MT_ARB_SCR` 0x820e3080 → BAR 0x20c80; 1 µs; write `MT_TMAC_CDTR` (0x21090) = 231 \| 48 << 16; `MT_TMAC_ODTR` (0x21094) = 60 \| 28 << 16; `MT_TMAC_ICR0` (0x210a4) = EIFS 360 \| RIFS 2 << 10 \| SIFS (10 at 2.4 GHz, 16 at 5 GHz) << 16 \| slot 9 << 24 (= 0x090a0968 / 0x09100968); rmw `MT_AGG_ACR0` (0x20884) `GENMASK(13,0)` = 0x49 (`MT792x_CFEND_RATE_DEFAULT`, slot < 20); clear `BIT(8)|BIT(9)` in `MT_ARB_SCR` (`mt792x_regs.h:37-46,179-215`). The CNM path never runs it. The library logs `MT_ARB_SCR` before the update: if the firmware leaves `RX_DISABLE` set, reception would depend on this function (**TODO-VERIFY**; option `skip_set_timing`).
+
+### 11.7 RX packet classification (all RX rings)
+
+`mt7921_queue_rx_skb` (`mt7921/mac.c:578-621`) dispatches by `RXD0` bits 31:27 on every ring alike: type 7 with `PKT_FLAG` 1 is re-typed to 8; 0 `TXS` → records of 8 words after 2 header words; 6 `TXRX_NOTIFY` → TX-free (`struct mt76_connac_tx_free {le16 rx_byte_cnt; le16 ctrl; le32 txd}`, `ctrl` bits 9:0 = MSDU count, then LE32 entries; an entry with `BIT(31)` is a wcid pair and does not count, `mt7921/mac.c:476-551`, `mt76_connac.h:233-237`, `mt76_connac2_mac.h:40-48`); 7 → MCU event (11.1, `mt7921/mcu.c:379-414`); 2 and 8 → 802.11 frame (11.8); anything else dropped. The library counts all of these (`mt792x_rx_counters`), returns only frames, logs unsolicited events at DEBUG with id and length (firmware log text of `MCU_EVENT_DBG_MSG` 0x27 type 3, `mt7921/mcu.c:237-261`, printed sanitised).
+
+Rings: events arrived on RX ring 0 in F-006; the library polls rings 0, 4 and 2 and treats them identically. A descriptor without `LAST_SEC0` starts a multi-descriptor packet (`dma.c:523-524`); mt76 reassembles it into one skb for data queues; **[HOST]** the library drops the whole chain and counts it (`frag_packets`, `frag_descs`). With `MAX_RX_LEN` 1536 (11.4) and 2048-byte buffers this is not expected for frames; an event larger than 2048 bytes (e.g. a long `GET_NIC_CAPAB` reply) would be lost the same way and end in a timeout, with a WARN line naming the dropped chain.
+
+TX-free notifications: mt76 uses them to free TX tokens; nothing in the source says the firmware needs them consumed beyond the ring being re-armed. With no TX they are not expected.
+
+### 11.8 RX descriptor of a frame (`mt7921_mac_fill_rx`, `mt7921/mac.c:168-436`; masks `mt76_connac2_mac.h:184-300`)
+
+Rejected (mt76 `-EINVAL`): `RXD1` `BAND_IDX` (b28); `RXD2` `AMSDU_ERR` (b23); `HDR_TRANS` (RXD2 b13) together with `CM` (RXD1 b23); `RXD2` `MAX_LEN_ERROR` (b24); a group that reaches the end of the packet; `HDR_TRANS` on a first fragment (needs a station, `mt7921/mac.c:381-392`). Flagged, not dropped: `FCS_ERR` (RXD1 b27), `ICV_ERR` (b25, mt76 `RX_FLAG_ONLY_MONITOR`), `TKIP_MIC_ERR` (b26), decrypted (`SEC_MODE` 20:16 ≠ 0 and no `CLM`/`CM`).
+
+Channel: `RXD3` bits 15:8 = `CH_FREQ`, converted by `mt792x_get_status_freq_info` (`mt792x.h:444-456`): > 180 → 6 GHz channel `(n − 181) · 4 + 1`; > 14 → 5 GHz; else 2.4 GHz. `RXD3` bits 17:16 = 1 → unicast to us.
+
+Optional groups after the 24-byte base, in this order, each present only if its `RXD1` bit is set; after each group mt76 requires at least one more byte (`(u8 *)rxd - skb->data >= skb->len` → `-EINVAL`):
+
+| group | `RXD1` bit | size | used |
+|---|---|---|---|
+| 4 | b14 | 16 | word 0: frame control 15:0 |
+| 1 | b11 | 16 | IV (decrypted frames only) |
+| 2 | b12 | 8 | word 0 = timestamp |
+| 3 (P-RXV) | b13 | 8 | word 0: rate (`TX_RATE` 6:0, `NSTS` 9:7, `HT_AD_CODE` b11, `FRAME_MODE` 14:12, `HT_SGI` 16:15, `HT_STBC` 23:22, `TX_MODE` 27:24); word 1: RCPI0..3 in bytes 0..3 |
+| 5 (C-RXV) | b15, **only evaluated if group 3** | 72 | RCPI word = group-5 word 0 after skipping 6 words, i.e. byte 24 of the group ("Monitor mode would use RCPI described in GROUP 5 instead") |
+
+Group 5 announced without group 3 is not skipped by mt76 either; the library flags it (`MT792X_RXF_G5_WITHOUT_G3`). `MT_DMA_DCR0_RXD_G5_EN` is cleared in S28, so group 5 should not appear.
+
+Per-chain RSSI = `(RCPI − 220) / 2` (`mt7921/mt7921.h:114`); mt76 computes it in unsigned arithmetic and stores it in an `s8`, which rounds towards −∞ for odd negative differences; the library does the same. Combined RSSI = `mt76_rx_signal(antenna_mask, chains)` (`mac80211.c:1229-1256`): start −128, take the strongest chain, add 3 / 2 / 1 dB when the next chain is within 0 / ≤ 2 / ≤ 6 dB.
+
+Frame start: base RXD + groups + `2 × HDR_OFFSET` (RXD2 15:14) bytes (`mt7921/mac.c:257,380`). If `HDR_TRANS` is clear and `RXD4` bits 1:0 (A-MSDU payload format) ≠ 0, mt76 moves the 802.11 header 2 bytes forward over two padding bytes (`memmove(data + 2, data, hdrlen)`, `mt7921/mac.c:397-400`); the library does the same for data frames (`hdrlen` = 24, +6 with both DS bits, +2 QoS, +4 HT control) and rejects the flag on other frame types.
+
+**FCS**: mt76 never declares `IEEE80211_HW_RX_INCLUDES_FCS` (no occurrence in the tree), so mac80211 treats the delivered frame as **FCS-less**; no code strips 4 bytes. That is the library default (`MT792X_FCS_MT76`). TODO-VERIFY on hardware: every frame is checked whether its last 4 bytes are the CRC-32 of the rest (`MT792X_RXF_FCS_TRAILER`, counter `fcs_trailer`); options `MT792X_FCS_STRIP` and `MT792X_FCS_AUTO`.
+
+**Header translation**: `mt7921_mac_init` enables `MT_MDP_DCR0_RX_HDR_TRANS_EN` globally; whether a frame is translated is controlled per station in the WTBL (`mt76_connac_mcu_sta_update_hdr_trans`, `mt76_connac_mcu.c:549-574`, called from `mt7921_sta_set_decap_offload`, `mt7921/main.c:1207-1227`). mt76 has nothing monitor-specific: it handles translated frames (`RX_FLAG_8023`) and raw ones. **ASSUMPTION**: frames from transmitters without a WTBL entry (everything a sniffer sees) arrive untranslated. The library returns translated frames flagged `MT792X_RXF_HDR_TRANS`, logs the first one at INFO and counts them; option `no_rx_hdr_trans` leaves the global enable off.
+
+`RXD0` bits 15:0 should equal the received length; mt76 does not check it on PCIe; the library flags a difference (`MT792X_RXF_LEN_MISMATCH`). **[HOST]** a frame with fewer than 10 bytes (an ACK without FCS) is rejected.
+
+### 11.9 Polling host specifics
+
+- One `cpu_idx` write per up to 32 re-armed RX ring-2 descriptors, and always before `mt792x_rx_poll` returns 0 (mt76 refills after each NAPI batch, `dma.c:1097`). Rings 0 and 4 are re-armed immediately.
+- Liveness every 250 ms inside `mt792x_rx_poll` (the data path itself reads no registers): `MT_CONN_ON_MISC` bits 1:0 must stay 3 (`MT792X_E_FW_DEAD` otherwise), `MT_WFDMA_DUMMY_CR` bit 1 must stay set (`MT792X_E_DMA_REINIT`, risk R6); an all-ones read is `MT792X_E_BUS_DEAD`.
+- A ring that ran full is noticed when every armed descriptor is complete at poll time (`rx2_full`).
+
+### 11.10 To be decided on hardware
+
+| # | question | default (mt76) | alternative (option) | log line that tells |
+|---|---|---|---|---|
+| H1 | Which command retunes in sniffer mode on this firmware | `CHANNEL_SWITCH` (feature byte 0) | `tune_mode` = sniffer config / both | per-frame channel counts in `radiod sniff` vs. the tuned channel; `channel -> N via ...: X us` |
+| H2 | FCS included in the frame | no | `fcs_mode` strip / auto | counter `fcs_trailer` vs. `frames` |
+| H3 | Header translation in sniffer mode | enabled | `no_rx_hdr_trans` | "first frame with hardware header translation"; `S28 MAC init: MDP_DCR0 ... (RX header translation ON/off)` |
+| H4 | `ARB_SCR` RX_DISABLE left set by the firmware | `set_timeing` runs after `CHANNEL_SWITCH` | `skip_set_timing` | "had RX_DISABLE set before the update" |
+| H5 | Is `SET_CHAN_DOMAIN` with flags 0 accepted / needed | sent | `skip_chan_domain` | not awaited: only RX behaviour tells |
+| H6 | Are `DEV_INFO`/`BSS_INFO` needed for the sniffer | sent | `skip_add_dev` | `MCU DEV_INFO_UPDATE ... result` |
+| H7 | Events on ring 0 or 4 after post-boot | both polled | — | `response ring N` in every INFO command line |
+| H8 | Firmware log volume | `FWLOG_2_HOST 1` | `skip_fw_log` | event counter 0x27 |
+| H9 | Antenna mask when `GET_NIC_CAPAB` has no PHY TLV | 0 (mt76) | `antenna_mask` override | `S24 PHY ...` line |

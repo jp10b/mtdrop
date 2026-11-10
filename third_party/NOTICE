@@ -9,7 +9,7 @@ driver/proxy/mtdrop_proxy.c        <-  raph559/winawdl @ 0db7031, driver/regprox
 driver/proxy/mtdrop_proxy_ioctl.h  <-  raph559/winawdl @ 0db7031, driver/regproxy/regproxy_ioctl.h, MIT; GUID, names changed
 driver/proxy/mtdrop_proxy.inf      <-  raph559/winawdl @ 0db7031, driver/regproxy/winawdl_regproxy.inf, MIT; hardware ID, class, names changed
 driver/tools/awe_probe/awe_probe.c <-  raph559/winawdl @ 0db7031, probes/awe_probe.c, MIT; unchanged except the provenance notice
-driver/mt792x/src/*                <-  openwrt/mt76 @ 0936617, register definitions and the MT7921 bring-up sequence derived from mt792x_regs.h, mt7921/{regs.h,mt7921.h,pci.c,pci_mcu.c,mcu.c,init.c}, mt792x_{core,dma}.c, mt76_connac_mcu.{c,h}, mt76_connac2_mac.h, dma.{c,h}, mcu.c, util.c; BSD-3-Clause-Clear (c) 2020-2023 MediaTek Inc., (c) 2016 Felix Fietkau, (c) 2019 Lorenzo Bianconi; re-implemented in portable C, licence text in driver/mt792x/LICENSE.mt76
+driver/mt792x/src/*                <-  openwrt/mt76 @ 0936617, register definitions, the MT7921 bring-up / post-boot / sniffer command sequences and the RX descriptor parsing derived from mt792x_regs.h, mt792x.h, mt7921/{regs.h,mt7921.h,pci.c,pci_mcu.c,mcu.{c,h},init.c,main.c,mac.c,regd.c}, mt792x_{core,dma,mac}.c, mt76_connac_mcu.{c,h}, mt76_connac.h, mt76_connac2_mac.h, mt76_connac_mac.c, mac80211.c, dma.{c,h}, mcu.c, util.c; BSD-3-Clause-Clear (c) 2020-2023 MediaTek Inc., (c) 2016 Felix Fietkau, (c) 2019 Lorenzo Bianconi; re-implemented in portable C, licence text in driver/mt792x/LICENSE.mt76
 
 When code is reused, add one entry per file:
   <our path>  <-  <project> @ <commit>, <their path>, <licence>, <what was changed>

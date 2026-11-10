@@ -52,6 +52,12 @@ static void be32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)v;
 }
 
+static void le16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+
 static void le32(uint8_t *p, uint32_t v)
 {
     p[0] = (uint8_t)v;
@@ -126,6 +132,48 @@ uint8_t *fwb_ram(const struct fwb_region *r, unsigned n, size_t *out_len)
     memcpy(t + 0x07, "TEST000001", 10);
     memcpy(t + 0x11, "20261110123456Z", 15);
     le32(t + 0x20, 0xcafef00du);
+    *out_len = total;
+    return b;
+}
+
+uint8_t *fwb_ram_features(const struct fwb_region *r, unsigned n, int features, size_t *out_len)
+{
+    /* region data | 16 bytes | release-info {le16 len; pad_len; tag} | entries | regions | trailer
+     * (mt792x_get_offload_capability, mt792x_core.c:861-929). Entries: one unrelated tag 1 (8 bytes,
+     * 2 padding), then, if features >= 0, tag 4 with struct mt792x_fw_features (16 bytes). */
+    size_t base_len = 0, data = 0, gap, total, i;
+    uint8_t *base = fwb_ram(r, n, &base_len), *b, *q;
+    uint32_t inner;
+    if (!base) return NULL;
+    for (i = 0; i < n; i++) data += r[i].len;
+    inner = 4u + 8u + 2u + (features >= 0 ? 4u + 16u : 0u);
+    gap = 16u + 4u + inner;
+    total = base_len + gap;
+    b = (uint8_t *)calloc(1, total);
+    if (!b) {
+        free(base);
+        return NULL;
+    }
+    memcpy(b, base, data);
+    memcpy(b + data + gap, base + data, base_len - data);
+    q = b + data + 16u;
+    le16(q, (uint16_t)inner);
+    q[2] = 0;
+    q[3] = 0x7;              /* outer tag: not looked at by mt76 */
+    q += 4;
+    le16(q, 8);
+    q[2] = 2;
+    q[3] = 1;
+    memset(q + 4, 0xab, 8);
+    q += 4 + 8 + 2;
+    if (features >= 0) {
+        le16(q, 16);
+        q[2] = 0;
+        q[3] = 4;            /* MT792x_FW_TAG_FEATURE */
+        q[4] = 0;            /* segment */
+        q[5] = (uint8_t)features;
+    }
+    free(base);
     *out_len = total;
     return b;
 }

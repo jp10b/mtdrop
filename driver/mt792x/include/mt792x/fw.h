@@ -93,8 +93,18 @@ struct mt792x_ram_info {
     uint32_t total_dl_bytes;
     uint32_t override_addr; /* 0 = none */
     uint32_t fw_start_option;
+    /* Release-info feature byte (mt792x_get_offload_capability, mt792x_core.c:861-929): tag
+     * MT792X_FW_TAG_FEATURE inside the release-info block that follows the region data.
+     * fw_features_status: 1 = found, 0 = block valid but no feature tag, -1 = block missing or
+     * malformed (mt76 then logs "Invalid firmware" and uses 0). Never a parse error. */
+    uint8_t fw_features;
+    int8_t fw_features_status;
     struct mt792x_ram_region reg[MT792X_FW_MAX_REGIONS];
 };
+
+#define MT792X_FW_TAG_FEATURE   4u      /* mt792x.h:25 */
+#define MT792X_FW_CAP_NAN       0x20u   /* BIT(5), mt792x.h:26 */
+#define MT792X_FW_CAP_CNM       0x80u   /* BIT(7), mt792x.h:27: firmware has the channel manager (real chanctx ops) */
 
 /* Parse and validate. Return 0 or a negative MT792X_E_FW_* code (see mt792x.h). */
 int mt792x_patch_parse(const uint8_t *data, size_t len, struct mt792x_patch_info *out);

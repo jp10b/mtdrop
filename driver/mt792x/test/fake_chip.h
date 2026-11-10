@@ -36,10 +36,22 @@ struct fake_dl {
     uint32_t chunks;
 };
 
+/* command formats as the fake decodes them from the header */
+#define FAKE_FMT_CMD 0u    /* 64-byte header, set_query 3 (bring-up) */
+#define FAKE_FMT_CE  1u    /* 64-byte header, ext_cid 0, set_query 0/1 */
+#define FAKE_FMT_EXT 2u    /* 64-byte header, cid 0xed, ext_cid != 0 */
+#define FAKE_FMT_UNI 3u    /* 48-byte header */
+/* key for knobs: FAKE_KEY(fmt, id, ext) */
+#define FAKE_KEY(fmt, id, ext) (((uint32_t)(fmt) << 16) | ((uint32_t)(id) << 8) | (uint32_t)(ext))
+
 struct fake_cmd {
     uint8_t cid, seq;
+    uint8_t fmt, ext;   /* FAKE_FMT_*, ext id for EXT */
+    uint8_t set_query;  /* 64-byte formats only */
     uint32_t total_len;
     uint32_t ring;      /* 17 or 16 (16 = FW_SCATTER chunk) */
+    uint8_t *raw;       /* copy of the whole command as fetched by DMA (TX17 only), malloc'd */
+    uint32_t pl_first;  /* first payload byte, for quick checks */
 };
 
 struct fake_chip {
@@ -71,6 +83,18 @@ struct fake_chip {
     int inject_unsolicited;     /* before each response: DBG_MSG event with seq 0 */
     int inject_stale;           /* before each response: a response with another seq */
     int nic_power_responds;     /* answer NIC_POWER_CTRL although mt76 does not wait for it */
+    /* post-boot / sniffer knobs */
+    const uint8_t *nic_reply;   /* GET_NIC_CAPAB payload to return (NULL = the default one) */
+    uint32_t nic_reply_len;
+    uint32_t uni_status_dev;    /* status in the DEV_INFO_UPDATE reply */
+    uint32_t uni_status_bss;    /* status in the BSS_INFO_UPDATE reply */
+    int uni_wrong_cid;          /* first DEV_INFO reply carries a wrong cid before the right one */
+    uint32_t drop_key;          /* FAKE_KEY of a command never answered (0 = none) */
+    int drop_all_from_cmd;      /* 1-based TX17 command index from which nothing is answered (0 = never) */
+    int tune_by;                /* 0: SET_RX_PATH/CHANNEL_SWITCH and sniffer config both retune;
+                                   1: only SET_RX_PATH/CHANNEL_SWITCH; 2: only sniffer config */
+    uint32_t tune_delay_us;     /* virtual time spent before answering a retuning command */
+    int wtbl_busy_never;        /* WTBL_UPDATE BUSY never clears */
 
     /* ---- state ---- */
     uint32_t accesses;
@@ -105,6 +129,25 @@ struct fake_chip {
     unsigned n_enabling;
     unsigned tx_kicks[18];
     uint32_t fault_idx;         /* trace index at which a knob fault was injected/observed; 0 = none */
+    /* post-boot / sniffer state */
+    int nic_queried, efuse_mode_set, thermal_set, fwlog_on, rts_set;
+    int keep_full_pwr;          /* -1 = never configured, else the KeepFullPwr value */
+    int mac_enabled;
+    unsigned chan_domain_n2, chan_domain_n5;
+    uint8_t channel, band;      /* what the radio is tuned to (per tune_by) */
+    unsigned tunes;             /* number of effective retunes */
+    int sniffer_on;
+    int drop_err;               /* last sniffer config drop_err */
+    int dev_active, bss_active;
+    uint8_t dev_mac[6];
+    uint32_t rx_filter_fif;
+    int other_beacon_drop_cleared;
+    unsigned bss_aborts;
+    int radio_led;              /* last ID_RADIO_ON_OFF_CTRL ctrlid */
+    unsigned rf_pin_inits;
+    unsigned wtbl_updates;
+    unsigned rx_injected[8], rx_inject_dropped[8];
+    unsigned uni_wrong_cid_sent;
 
     /* ---- violations ---- */
     unsigned violations;
@@ -121,6 +164,16 @@ const struct fake_dl *fake_find_dl(const struct fake_chip *f, uint32_t addr);
 
 /* Number of DMA-enabling writes with trace index > idx. */
 unsigned fake_enabling_after(const struct fake_chip *f, uint32_t idx);
+
+/* RX injection (as the chip would DMA a packet): returns 1 if written, 0 if the ring had no armed
+ * descriptor (dropped, like a full ring). 'chunk' > 0 splits the packet over several descriptors
+ * (LAST_SEC0 only on the last). */
+int fake_inject(struct fake_chip *f, unsigned ring, const uint8_t *pkt, uint32_t len);
+int fake_inject_frag(struct fake_chip *f, unsigned ring, const uint8_t *pkt, uint32_t len, uint32_t chunk);
+/* A descriptor completion that claims 'claim_len' bytes (0 or > buffer) without data. */
+int fake_inject_badlen(struct fake_chip *f, unsigned ring, uint32_t claim_len);
+/* Index of the n-th (0-based) TX17 command with this key at or after 'from', or -1. */
+int fake_find_cmd(const struct fake_chip *f, uint32_t key, unsigned from, unsigned nth);
 
 /* GLO_CFG as the chip holds it. */
 uint32_t fake_glo_cfg(const struct fake_chip *f);

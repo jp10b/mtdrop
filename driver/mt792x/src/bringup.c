@@ -26,14 +26,14 @@
 #define N9_RDY_POLL_US      1500000u
 #define EXPECTED_HW_REV_LO  0x10u      /* MEASURED on the target laptop (docs/FINDINGS.md F-004) */
 
-static const char *const stage_names[] = { "?", "OWNERSHIP", "RESET", "RINGS", "MCU", "FIRMWARE" };
+static const char *const stage_names[] = { "?", "OWNERSHIP", "RESET", "RINGS", "MCU", "FIRMWARE", "POSTBOOT" };
 
 static uint32_t ms_since(const struct mt792x *dev, uint64_t t0)
 {
     return (uint32_t)((mt_now(dev) - t0) / 1000u);
 }
 
-static int fail(struct mt792x *dev, int step, int err, uint64_t t0)
+int mt_step_fail(struct mt792x *dev, int step, int err, uint64_t t0)
 {
     if (dev->bus_dead && err != MT792X_E_BUS_DEAD && err != MT792X_E_DMA_ADDR) err = MT792X_E_BUS_DEAD;
     dev->failed_step = step;
@@ -42,10 +42,13 @@ static int fail(struct mt792x *dev, int step, int err, uint64_t t0)
     return err;
 }
 
-static void done(struct mt792x *dev, int step)
+void mt_step_done(struct mt792x *dev, int step)
 {
     dev->last_step = step;
 }
+
+#define fail mt_step_fail
+#define done mt_step_done
 
 /* ---- S1 / S2: ownership handshakes on MT_CONN_ON_LPCTL ---- */
 
@@ -562,6 +565,10 @@ static int validate_fw(struct mt792x *dev, const struct mt792x_fw *fw)
         mt_logf(dev, MT_LOG_INFO, "RAM: version %s build %s chip 0x%02x eco %u, %u region(s), %u bytes to download",
                 dev->ram.fw_ver, dev->ram.build_date, dev->ram.chip_id, dev->ram.eco_code, dev->ram.n_regions,
                 dev->ram.total_dl_bytes);
+        mt_logf(dev, MT_LOG_INFO, "RAM: release-info feature byte 0x%02x (%s): CNM %s, NAN %s",
+                dev->ram.fw_features,
+                dev->ram.fw_features_status > 0 ? "found" : dev->ram.fw_features_status == 0 ? "no feature tag" : "block missing/invalid",
+                (dev->ram.fw_features & MT792X_FW_CAP_CNM) ? "yes" : "no", (dev->ram.fw_features & MT792X_FW_CAP_NAN) ? "yes" : "no");
         for (i = 0; i < dev->ram.n_regions; i++) {
             const struct mt792x_ram_region *r = &dev->ram.reg[i];
             mt_logf(dev, MT_LOG_INFO, "  region %u: file 0x%x addr 0x%08x len 0x%x feature 0x%02x type %u%s mode 0x%08x cmd 0x%02x",
@@ -615,7 +622,10 @@ static int run(struct mt792x *dev, const struct mt792x_fw *fw, enum mt792x_stage
     } else {
         mt_logf(dev, MT_LOG_INFO, "S17-S20 skipped: ROM patch already loaded (PATCH_IS_DL)");
     }
-    return load_ram(dev, fw->ram);
+    if ((err = load_ram(dev, fw->ram)) != 0) return err;
+    if (until == MT792X_STAGE_FIRMWARE) return 0;
+
+    return mt_postboot(dev);
 }
 
 int mt792x_init(struct mt792x *dev, struct mt_hal *hal)
@@ -625,6 +635,7 @@ int mt792x_init(struct mt792x *dev, struct mt_hal *hal)
     mt_memset(dev, 0, sizeof(*dev));
     dev->last_step = -1;
     dev->failed_step = -1;
+    dev->sniff_failed_step = -1;
     if (!hal->rr || !hal->wr || !hal->sleep_us || !hal->now_us || !hal->dma_virt) return MT792X_E_INVAL;
     dev->hal = hal;
     err = mt_layout_init(dev);
@@ -643,8 +654,8 @@ int mt792x_bringup(struct mt792x *dev, const struct mt792x_fw *fw, enum mt792x_s
 
     if (!dev) return MT792X_E_INVAL;
     if (dev->state != MT_ST_READY) return MT792X_E_STATE;
-    if ((int)until < (int)MT792X_STAGE_OWNERSHIP || (int)until > (int)MT792X_STAGE_FIRMWARE) return MT792X_E_INVAL;
-    if (until == MT792X_STAGE_FIRMWARE && (!fw || !fw->patch || !fw->ram)) return MT792X_E_FW_MISSING;
+    if ((int)until < (int)MT792X_STAGE_OWNERSHIP || (int)until > (int)MT792X_STAGE_POSTBOOT) return MT792X_E_INVAL;
+    if ((int)until >= (int)MT792X_STAGE_FIRMWARE && (!fw || !fw->patch || !fw->ram)) return MT792X_E_FW_MISSING;
 
     /* Untrusted files are validated completely before the first register access. */
     err = validate_fw(dev, fw);
@@ -697,8 +708,10 @@ void mt792x_shutdown(struct mt792x *dev)
     t0 = mt_now(dev);
     dev->in_shutdown = 1;
     if (dev->bus_dead) mt_logf(dev, MT_LOG_WARN, "shutdown: bus was dead during bring-up; trying anyway");
-    dev->bus_dead = 0;
     mt_logf(dev, MT_LOG_INFO, "shutdown: start (last step S%d)", dev->last_step);
+    /* 7.3 step 1: sniffer off, BSS/DEV off, radio off, MAC disable - only on a live bus. */
+    mt_sniffer_shutdown(dev);
+    dev->bus_dead = 0;
 
     /* 7.1 row 2: make sure the driver owns the chip (CLR_OWN only; never SET_OWN). */
     err = drv_own(dev, &attempt, &v);
@@ -747,8 +760,14 @@ void mt792x_shutdown(struct mt792x *dev)
         }
     }
 
-    for (i = 0; i < MT792X_RING_COUNT; i++) dev->ring[i].head = dev->ring[i].tail = dev->ring[i].queued = 0;
+    for (i = 0; i < MT792X_RING_COUNT; i++) {
+        dev->ring[i].head = dev->ring[i].tail = dev->ring[i].queued = dev->ring[i].rearm_pending = 0;
+        dev->ring[i].in_frag = 0;
+    }
     dev->sem_held = 0;
+    dev->sniff_started = 0;
+    dev->rx_active = dev->sniffer_on = dev->bss_active = dev->dev_active = dev->radio_on = dev->mac_enabled = 0;
+    dev->postboot_done = 0;
     dev->in_shutdown = 0;
     dev->state = MT_ST_SHUTDOWN;
     mt_logf(dev, MT_LOG_INFO, "shutdown: done in %u ms%s", (uint32_t)((mt_now(dev) - t0) / 1000u),
@@ -814,6 +833,11 @@ const char *mt792x_strerror(int err)
     case MT792X_E_FW_LENGTH: return "firmware length zero or address wraps";
     case MT792X_E_FW_ENC_TYPE: return "unknown firmware encryption type";
     case MT792X_E_FW_OVERRIDE: return "firmware override address 0";
+    case MT792X_E_MCU_STATUS: return "MCU command answered with an error status";
+    case MT792X_E_NIC_CAPAB: return "NIC capability reply unusable";
+    case MT792X_E_NO_MAC: return "no usable MAC address";
+    case MT792X_E_FW_DEAD: return "firmware no longer ready";
+    case MT792X_E_DMA_REINIT: return "WFDMA lost its configuration (NEED_REINIT cleared)";
     default: return "unknown error";
     }
 }

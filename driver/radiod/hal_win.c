@@ -39,6 +39,7 @@ struct halwin {
     uint32_t low_blocks_seen;
     uint32_t io_errors;
     LARGE_INTEGER qpc_frequency;
+    int log_level;              /* messages above this level are not printed */
 };
 
 static void set_error(char *error, size_t len, const char *text, DWORD code) {
@@ -110,7 +111,7 @@ static void hal_sleep_us(void *ctx, uint32_t us) {
 
 static void hal_log(void *ctx, enum mt_log_level level, const char *message) {
     static const char *const names[] = {"ERROR", "WARN ", "INFO ", "DEBUG"};
-    (void)ctx;
+    if ((int)level > ((struct halwin *)ctx)->log_level) return;
     SYSTEMTIME t;
     GetLocalTime(&t);
     printf("%02u:%02u:%02u.%03u %s %s\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
@@ -122,6 +123,7 @@ struct halwin *halwin_create(char *error, size_t error_len) {
     struct halwin *h = calloc(1, sizeof(*h));
     if (!h) return NULL;
     h->proxy = INVALID_HANDLE_VALUE;
+    h->log_level = MT_LOG_DEBUG;
     QueryPerformanceFrequency(&h->qpc_frequency);
 
     if (!enable_lock_memory_privilege()) {
@@ -269,4 +271,8 @@ void halwin_destroy(struct halwin *h) {
         FreeUserPhysicalPages(GetCurrentProcess(), &one, &h->block_frame);
     }
     free(h);
+}
+
+void halwin_set_log_level(struct halwin *h, int level) {
+    if (h) h->log_level = level;
 }

@@ -36,6 +36,9 @@ uint64_t halwin_dma_phys(const struct halwin *h);
 uint32_t halwin_low_blocks_seen(const struct halwin *h);
 uint32_t halwin_io_errors(const struct halwin *h);
 
+/* Library messages above this level (enum mt_log_level) are not printed; default MT_LOG_DEBUG. */
+void halwin_set_log_level(struct halwin *h, int level);
+
 /* Closes the proxy handle (which triggers the close ops) and frees the DMA block. */
 void halwin_destroy(struct halwin *h);
 

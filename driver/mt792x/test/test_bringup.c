@@ -358,7 +358,7 @@ TEST(api_misuse_touches_nothing)
     CHECK(rig_init(&r, 0) == 0);
     CHECK(mt792x_bringup(r.dev, NULL, MT792X_STAGE_FIRMWARE) == MT792X_E_FW_MISSING);
     CHECK(mt792x_bringup(r.dev, &r.fw, (enum mt792x_stage)0) == MT792X_E_INVAL);
-    CHECK(mt792x_bringup(r.dev, &r.fw, (enum mt792x_stage)6) == MT792X_E_INVAL);
+    CHECK(mt792x_bringup(r.dev, &r.fw, (enum mt792x_stage)7) == MT792X_E_INVAL);
     CHECK(mt792x_bringup(NULL, &r.fw, MT792X_STAGE_OWNERSHIP) == MT792X_E_INVAL);
     bad = r.fw;
     bad.patch_len = 95;                                  /* invalid file, even for stage 1 */

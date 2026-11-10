@@ -171,3 +171,26 @@ void rig_replay_stop_ops(struct rig *r)
         }
     }
 }
+
+int rig_postboot(struct rig *r)
+{
+    return mt792x_bringup(r->dev, &r->fw, MT792X_STAGE_POSTBOOT);
+}
+
+int rig_sniff(struct rig *r, uint8_t channel, uint32_t flags)
+{
+    struct mt792x_sniffer_cfg cfg;
+    int err = rig_postboot(r);
+    if (err || !channel) return err;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.channel = channel;
+    cfg.band = channel > 14 ? MT792X_BAND_5GHZ : MT792X_BAND_2GHZ;
+    cfg.flags = flags;
+    return mt792x_sniffer_start(r->dev, &cfg);
+}
+
+uint32_t rig_shutdown_regs_from(const struct rig *r, uint32_t from)
+{
+    int i = mock_find_write(&r->m, 0xe0010u, from);
+    return i < 0 ? r->m.trace_len : (uint32_t)i;
+}

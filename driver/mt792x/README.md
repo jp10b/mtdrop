@@ -13,7 +13,10 @@ project is structured this way.
 What it does today: **firmware bring-up** of an MT7921 from a polling,
 interrupt-less host, following `docs/MT7921-BRINGUP.md` (steps S0-S23, derived
 from Linux mt76), plus an orderly shutdown and the "stop all DMA" list a proxy
-replays when the client dies.
+replays when the client dies; then the post-boot initialisation, a monitor
+("sniffer") interface on one channel with channel switching, and the RX data path
+delivering raw 802.11 frames with per-frame channel, RSSI, FCS status and rate
+(spec section 11). Nothing transmits yet.
 
 ## Staged bring-up
 
@@ -27,6 +30,31 @@ after any of five stages and be tested one gate at a time:
 | 3 `RINGS` | + S8-S13 | rings programmed and filled, DMA enabled, second driver-own, L0s off | DMA on, no command sent |
 | 4 `MCU` | + S14-S16 | `NIC_POWER_CTRL`, wait for FW state 1, patch semaphore get **and release** | nothing held |
 | 5 `FIRMWARE` | + S17-S23 | ROM patch + RAM download, `FW_START`, wait for `N9_RDY` | firmware running |
+| 6 `POSTBOOT` | + S24-S31 | `GET_NIC_CAPAB` (MAC, antenna mask, chip caps), thermal + firmware-log config, `EFUSE_BUFFER_MODE`, MAC init registers, RTS threshold, `KeepFullPwr 1`, `MAC_INIT_CTRL` enable | MAC enabled, chip kept awake |
+
+## Sniffer and RX (spec section 11)
+
+```c
+err = mt792x_bringup(&dev, &fw, MT792X_STAGE_POSTBOOT);
+struct mt792x_sniffer_cfg cfg = { .channel = 6, .band = MT792X_BAND_2GHZ,
+                                  .flags = MT792X_SNIFF_CONTROL | MT792X_SNIFF_OTHER_BSS };
+err = mt792x_sniffer_start(&dev, &cfg);            /* SN1-SN13: monitor vif, filters, sniffer on, tune */
+for (;;) {
+    struct mt792x_rx_frame fr;
+    int rc = mt792x_rx_poll(&dev, &fr);            /* 1 = frame, 0 = nothing pending, < 0 = error */
+    ...                                             /* fr.data/fr.len valid until the next call */
+}
+err = mt792x_sniffer_set_channel(&dev, 11, MT792X_BAND_2GHZ, &elapsed_us);
+mt792x_shutdown(&dev);                             /* sniffer off, BSS/DEV off, radio off, MAC off, then DMA */
+```
+
+The tuning command follows mt76: firmware whose RAM file carries the CNM feature
+bit gets the sniffer config TLV, other firmware `CHANNEL_SWITCH` (+ the MAC timing
+update). Points where mt76 leaves room for doubt are selectable in
+`dev.opt` (`tune_mode`, `fcs_mode`, `no_rx_hdr_trans`, `skip_*`, `antenna_mask`)
+and listed in spec 11.10 with the log line that decides them on hardware.
+`mt792x_rx_counters()` counts frames, FCS errors, malformed packets by reason,
+fragments, events by id, TX status / TX-free packets and more.
 
 ```c
 static struct mt792x dev;
@@ -77,6 +105,8 @@ src/ring.c                descriptor rings (prepare, program, TX kick/wait, RX t
 src/mcu.c                 MCU command header, sequence numbers, response matching
 src/fw.c                  patch / RAM file parsing
 src/bringup.c             steps S0-S23, shutdown, stop list, status
+src/postboot.c            S24-S31, NIC capability parsing, sniffer start/stop, channel switch
+src/rx.c                  RX classification, RXD parser, rx_poll, counters, liveness check
 src/util.c                freestanding helpers and a tiny log formatter
 test/test.h               minimal single-header test framework
 test/hal_mock.[ch]        mock HAL: sparse register space, hooks, trace,
@@ -84,6 +114,7 @@ test/hal_mock.[ch]        mock HAL: sparse register space, hooks, trace,
 test/fake_chip.[ch]       simulated MT7921 on top of the mock (see below)
 test/fw_builder.[ch]      synthetic firmware images in the real file formats
 test/rig.[ch]             mock + fake + device + default firmware, shared checks
+test/rx_builder.[ch]      synthetic RX packets (RXD + groups + 802.11 frames)
 test/test_*.c             tests (listed explicitly in CMakeLists.txt)
 LICENSE.mt76              licence of the mt76 code the register map and sequence derive from
 ```
@@ -130,6 +161,22 @@ bus-dead sweep across the whole bring-up; shutdown after every stage; the stop
 list equal to spec 7.2 and leaving DMA disabled when replayed; firmware parser
 rejection cases, all truncations and a deterministic fuzz loop on exactly sized
 buffers.
+
+For post-boot and the sniffer the fake decodes the three command header formats
+(64-byte CMD/CE/EXT, 48-byte UNI) and checks every new command's payload, its
+order dependencies (e.g. no `SET_CHAN_DOMAIN` before MAC enable, BSS after DEV,
+MAC disable only with sniffer/BSS/DEV off) and the MAC-init registers; it answers
+`GET_NIC_CAPAB` with a synthetic TLV list, keeps MAC/sniffer/channel state (which
+command retunes is a knob), delays tuning answers on the virtual clock, and can
+inject packets into any RX ring (frames, fragments over several descriptors,
+impossible descriptor lengths, TXS/TX-free/event packets) until the ring is full.
+Tests compare whole commands with bytes written out by hand from mt76, cover
+both tuning paths and the forced modes, every RXD group combination, malformed
+packets, a fuzz loop that runs the parser on the same bytes with two different
+tails (any read past the length shows up as a difference), ring wrap and ring
+full, frames during command waits, channel-switch latency, shutdown ordering,
+and fault paths (lost responses, error status, wrong cid, bus dead mid-sniff,
+firmware no longer ready, WFDMA re-init).
 
 ### Windows (MSVC + Ninja, out-of-tree)
 

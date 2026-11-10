@@ -38,6 +38,13 @@ unsigned rig_check_set_own_only_in_s1(const struct rig *r);
  * WFDMA reset released, a WFSYS reset happened, remap restored to 'remap'. */
 unsigned rig_check_shutdown(const struct rig *r, uint32_t from, unsigned wfsys_resets_before, uint32_t remap);
 
+/* Bring-up to MT792X_STAGE_POSTBOOT, then (if channel != 0) mt792x_sniffer_start on that channel
+ * (band derived from the number) with the given MT792X_SNIFF_* flags and the chip's MAC. */
+int rig_postboot(struct rig *r);
+int rig_sniff(struct rig *r, uint8_t channel, uint32_t flags);
+/* Trace index of the drv-own write that starts the register part of a shutdown begun at 'from'. */
+uint32_t rig_shutdown_regs_from(const struct rig *r, uint32_t from);
+
 /* Replays mt792x_stop_ops through the raw HAL like the proxy does (set/clear = read-modify-write). */
 void rig_replay_stop_ops(struct rig *r);
 
