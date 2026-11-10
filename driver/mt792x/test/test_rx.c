@@ -33,7 +33,7 @@ static int parse_copy(const uint8_t *pkt, uint32_t len, uint8_t fcs_mode, uint8_
 TEST(rx_parse_every_group_combination)
 {
     uint8_t frame[128], pkt[512], got[512];
-    uint32_t flen, len, glen;
+    uint32_t flen, len, glen = 0;
     unsigned combo, pad;
     flen = rxb_beacon(frame, sizeof(frame), ap, "home", 6);
     for (combo = 0; combo < 32; combo++) {
@@ -94,7 +94,7 @@ TEST(rx_parse_every_group_combination)
 TEST(rx_parse_channel_band_flags)
 {
     uint8_t frame[128], pkt[512], got[512];
-    uint32_t flen, len, glen;
+    uint32_t flen, len, glen = 0;
     struct rxb b;
     struct mt792x_rx_frame fr;
     flen = rxb_data(frame, sizeof(frame), sta, ap, ap, 7, 1, 40);
@@ -149,7 +149,7 @@ TEST(rx_parse_channel_band_flags)
 TEST(rx_parse_rejects_like_mt76)
 {
     uint8_t frame[64], pkt[512], got[512];
-    uint32_t flen, len, glen;
+    uint32_t flen, len, glen = 0;
     struct rxb b;
     struct mt792x_rx_frame fr;
     flen = rxb_ack(frame, sizeof(frame), sta);
@@ -188,7 +188,7 @@ TEST(rx_parse_rejects_like_mt76)
 TEST(rx_parse_amsdu_header_move)
 {
     uint8_t frame[128], sub[130], pkt[512], got[512];
-    uint32_t flen, len, glen;
+    uint32_t flen, len, glen = 0;
     struct rxb b;
     struct mt792x_rx_frame fr;
     flen = rxb_data(frame, sizeof(frame), sta, ap, ap, 3, 1, 30);  /* QoS data: 26-byte header */
@@ -217,7 +217,7 @@ TEST(rx_parse_amsdu_header_move)
 TEST(rx_parse_fcs_modes_and_rssi)
 {
     uint8_t frame[128], pkt[512], got[512];
-    uint32_t flen, len, glen;
+    uint32_t flen, len, glen = 0;
     struct rxb b;
     struct mt792x_rx_frame fr;
     static const uint8_t crc_check[9] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
