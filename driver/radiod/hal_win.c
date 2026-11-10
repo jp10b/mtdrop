@@ -26,6 +26,7 @@
 #define PAGES_PER_BLOCK (HALWIN_DMA_BLOCK_BYTES / PAGE_BYTES)
 #define FRAME_AT_4GIB (0x100000000ull / PAGE_BYTES)
 #define BLOCKS_REQUESTED 64u
+#define BLOCKS_MAX 512u
 
 typedef BOOL(WINAPI *AllocatePages2Fn)(HANDLE, PULONG_PTR, PULONG_PTR, PMEM_EXTENDED_PARAMETER, ULONG);
 
@@ -137,24 +138,36 @@ struct halwin *halwin_create(char *error, size_t error_len) {
         return NULL;
     }
 
-    ULONG_PTR blocks[BLOCKS_REQUESTED];
-    ULONG_PTR count = BLOCKS_REQUESTED;
+    /* Under memory pressure a large request fails outright (error 1450, seen with 0.8 GiB free),
+     * so ask in rounds, halving the request when it fails. Blocks already obtained are kept
+     * until the end: that forces later rounds to return different blocks. Stop as soon as a
+     * block below 4 GiB turns up. */
+    static ULONG_PTR blocks[BLOCKS_MAX];
+    ULONG_PTR count = 0, request = BLOCKS_REQUESTED, best = 0;
+    DWORD last_error = 0;
     MEM_EXTENDED_PARAMETER large;
     memset(&large, 0, sizeof(large));
     large.Type = MemExtendedParameterAttributeFlags;
     large.ULong64 = MEM_EXTENDED_PARAMETER_NONPAGED_LARGE;
-    if (!allocate(GetCurrentProcess(), &count, blocks, &large, 1) || count == 0) {
-        set_error(error, error_len, "no 2 MiB locked blocks could be allocated", GetLastError());
+    while (request > 0 && count < BLOCKS_MAX) {
+        ULONG_PTR got = request < BLOCKS_MAX - count ? request : BLOCKS_MAX - count;
+        if (!allocate(GetCurrentProcess(), &got, &blocks[count], &large, 1) || got == 0) {
+            last_error = GetLastError();
+            request /= 2;
+            continue;
+        }
+        for (ULONG_PTR i = count; i < count + got; i++) {
+            if (blocks[i] + PAGES_PER_BLOCK > FRAME_AT_4GIB) continue;
+            h->low_blocks_seen++;
+            if (!best || blocks[i] < best) best = blocks[i];
+        }
+        count += got;
+        if (best) break;
+    }
+    if (count == 0) {
+        set_error(error, error_len, "no 2 MiB locked blocks could be allocated (free some RAM: close large programs)", last_error);
         free(h);
         return NULL;
-    }
-
-    /* Keep the lowest block that ends below 4 GiB; free every other block one by one. */
-    ULONG_PTR best = 0;
-    for (ULONG_PTR i = 0; i < count; i++) {
-        if (blocks[i] + PAGES_PER_BLOCK > FRAME_AT_4GIB) continue;
-        h->low_blocks_seen++;
-        if (!best || blocks[i] < best) best = blocks[i];
     }
     for (ULONG_PTR i = 0; i < count; i++) {
         if (blocks[i] == best) continue;

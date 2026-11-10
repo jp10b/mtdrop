@@ -83,6 +83,11 @@ try {
     if ($before.DriverProviderName -notlike 'MediaTek*') { throw "card is not on the MediaTek driver now ($($before.DriverProviderName) / $($before.InfName)); run wifi-giveback.ps1 first" }
     Say ("card driver before: {0} / {1} / {2}" -f $before.DriverProviderName, $before.InfName, $before.DriverVersion)
 
+    # Pre-flight without touching the device: the DMA block must be obtainable now, before Wi-Fi goes down.
+    $probe = & $regtool dma-probe 2>&1
+    $probe | ForEach-Object { Say "  preflight: $_" }
+    if ($LASTEXITCODE -ne 0) { throw 'pre-flight failed: no usable DMA block (close large programs to free RAM, then retry)' }
+
     # ---- stage, catalog, sign ------------------------------------------------------------------
     $stage = Join-Path $ToolsRoot 'stage\proxy'
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
