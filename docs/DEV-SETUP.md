@@ -15,8 +15,8 @@ Status: 2026-11-09. Only the protocol tools need a setup today. The driver secti
 
 Nothing below is automated. Every command that changes driver, boot or network-adapter state is shown together with its rollback command and run only after explicit confirmation by the machine's owner.
 
-- [ ] System Restore point created and named.
-- [ ] Vendor Wi-Fi driver package exported to a folder outside the repository.
+- [x] System Restore point created and named. (`scripts/prepare-driver-work.ps1`, 2026-11-10: "mtdrop: before driver work")
+- [x] Vendor Wi-Fi driver package exported to a folder outside the repository. (same script, 2026-11-10: `oem12.inf`, version 3.5.0.1349, 21 files)
 - [ ] Device Encryption / BitLocker state re-checked; recovery key saved off the machine if enabled.
 - [ ] Internet without Wi-Fi available and tested (USB-C Ethernet adapter, or USB tethering from a second phone).
 - [ ] Restore procedure rehearsed once: Device Manager → MediaTek adapter → update driver from the exported folder.
