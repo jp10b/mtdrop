@@ -34,7 +34,19 @@ $log = Join-Path $PrivateRoot 'driver-swap.log'
 $giveback = Join-Path $PSScriptRoot 'wifi-giveback.ps1'
 New-Item -ItemType Directory -Force -Path $PrivateRoot | Out-Null
 function Say([string]$m) { $line = "{0:yyyy-MM-dd HH:mm:ss} [s1] {1}" -f (Get-Date), $m; Add-Content -Path $log -Value $line; Write-Output $line }
-function Get-CardDriver { Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceID -like $HardwareMatch } | Select-Object -First 1 }
+function Get-CardDriver {
+    # Live PnP properties. Win32_PnPSignedDriver (CIM) lags behind a driver swap by several seconds (seen in F-004).
+    $dev = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like $HardwareMatch } | Select-Object -First 1
+    if (-not $dev) { return $null }
+    $get = { param($k) (Get-PnpDeviceProperty -InstanceId $dev.InstanceId -KeyName $k -ErrorAction SilentlyContinue).Data }
+    [pscustomobject]@{
+        DeviceID           = $dev.InstanceId
+        DriverProviderName = (& $get 'DEVPKEY_Device_DriverProvider')
+        InfName            = (& $get 'DEVPKEY_Device_DriverInfPath')
+        DriverVersion      = (& $get 'DEVPKEY_Device_DriverVersion')
+        Status             = $dev.Status
+    }
+}
 
 $taken = $false
 $watchdog = $null
@@ -49,7 +61,9 @@ try {
     $built = Join-Path $repo 'driver\proxy\x64\Release\mtdrop_proxy'
     $regtool = Join-Path $repo 'driver\tools\Mtdrop.RegTool\bin\Debug\net10.0\regtool.exe'
     $inf2cat = Get-ChildItem (Join-Path $ToolsRoot 'packages') -Recurse -Filter Inf2Cat.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    foreach ($need in (Join-Path $built 'mtdrop_proxy.inf'), (Join-Path $built 'mtdrop_proxy.dll'), $regtool, $giveback) {
+    $builtInf = Join-Path $built 'mtdrop_proxy.inf'                                   # stamped by the build
+    $builtDll = Join-Path $repo 'driver\proxy\x64\Release\mtdrop_proxy.dll'
+    foreach ($need in $builtInf, $builtDll, $regtool, $giveback) {
         if (-not (Test-Path $need)) { throw "missing: $need (build the proxy and the tool first)" }
     }
     if (-not $inf2cat) { throw 'Inf2Cat.exe not found under the WDK packages' }
@@ -64,7 +78,7 @@ try {
     $stage = Join-Path $ToolsRoot 'stage\proxy'
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    Copy-Item (Join-Path $built 'mtdrop_proxy.inf'), (Join-Path $built 'mtdrop_proxy.dll') $stage
+    Copy-Item $builtInf, $builtDll $stage
     $out = & $inf2cat.FullName "/driver:$stage" /os:10_X64 /uselocaltime 2>&1
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $stage 'mtdrop_proxy.cat'))) { $out | ForEach-Object { Say "  inf2cat: $_" }; throw "Inf2Cat failed ($LASTEXITCODE)" }
     Say 'catalog created'

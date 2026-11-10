@@ -24,14 +24,24 @@ New-Item -ItemType Directory -Force -Path $PrivateRoot | Out-Null
 function Say([string]$m) { $line = "{0:yyyy-MM-dd HH:mm:ss} [giveback] {1}" -f (Get-Date), $m; Add-Content -Path $log -Value $line; Write-Output $line }
 
 function Get-CardDriver {
-    Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceID -like $HardwareMatch } | Select-Object -First 1
+    # Live PnP properties. Win32_PnPSignedDriver (CIM) lags behind a driver swap by several seconds (seen in F-004).
+    $dev = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like $HardwareMatch } | Select-Object -First 1
+    if (-not $dev) { return $null }
+    $get = { param($k) (Get-PnpDeviceProperty -InstanceId $dev.InstanceId -KeyName $k -ErrorAction SilentlyContinue).Data }
+    [pscustomobject]@{
+        DeviceID           = $dev.InstanceId
+        DriverProviderName = (& $get 'DEVPKEY_Device_DriverProvider')
+        InfName            = (& $get 'DEVPKEY_Device_DriverInfPath')
+        DriverVersion      = (& $get 'DEVPKEY_Device_DriverVersion')
+        Status             = $dev.Status
+    }
 }
 function Get-OurPackages {
     # pnputil can print XML, which does not depend on the display language.
     $xml = [xml]((& pnputil.exe /enum-drivers /format xml) -join "`n")
     @($xml.SelectNodes('//Driver') | Where-Object { $_.OriginalName -eq $OurInf } | ForEach-Object { $_.DriverName })
 }
-function Test-VendorBound($d) { $d -and $d.DriverProviderName -like 'MediaTek*' -and $d.InfName -notin (Get-OurPackages) }
+function Test-VendorBound($d) { $d -and $d.Status -eq 'OK' -and $d.DriverProviderName -like 'MediaTek*' -and $d.InfName -notin (Get-OurPackages) }
 
 $failed = $false
 try {

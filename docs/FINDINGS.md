@@ -249,3 +249,64 @@ Automated tests at this point: 76 C# tests and 18 Python tests pass.
 
 - Not verified without a radio: anything involving the real phone's reactions (certificate acceptance, decline status, how long it waits for `/Ask`).
 - The multicast loopback option must stay enabled on Windows for a same-machine query to reach the responder (it acts on the receiving side there).
+
+---
+
+## F-004 – Spike S1: a UMDF register proxy reads the MT7921 chip ID on Windows
+
+- **Date:** 2026-11-10
+- **Milestone:** M3, spike S1 of ADR-0002
+- **Machine:** Windows 11 Home build 26200, Secure Boot off, no test-signing mode
+- **Code:** `driver/proxy`, `driver/tools/Mtdrop.RegTool`, `scripts/s1-chipid.ps1`, `scripts/wifi-giveback.ps1`
+
+### Hypothesis (written before the run, in the script header and ADR-0002)
+
+A UMDF 2 driver signed with a locally trusted certificate can be bound to the Wi-Fi card in place of the vendor driver without test mode, map BAR0, and read `MT_HW_CHIPID` = `0x7961` through the L1 remap window; afterwards the vendor driver rebinds without a reboot.
+
+### What would falsify it
+
+Windows refuses the package or the forced install; the proxy cannot map BAR0; the chip ID block reads all zeros/ones or another value; the vendor driver does not come back.
+
+### Method
+
+`s1-chipid.ps1`: catalog with Inf2Cat, self-signed code-signing certificate added to LocalMachine Root and TrustedPublisher (private key deleted after signing), `pnputil /add-driver`, forced `UpdateDriverForPlugAndPlayDevicesW` on hardware ID `PCI\VEN_14C3&DEV_7961&CC_0280`, `regtool chipid`, then `wifi-giveback.ps1` (`pnputil /delete-driver … /uninstall /force`, `/scan-devices`). A watchdog process was armed to give the card back after 150 s.
+
+### Raw result (FACT)
+
+| Step | Result |
+|---|---|
+| Package accepted, proxy bound | yes, 2.9 s, device status OK, no reboot requested |
+| BAR0 | 0x100000 bytes, mapped directly into the driver host (`direct mapped: True`) |
+| `MT_HIF_REMAP_L1` (0xFE24C) as found | `0x18451800` |
+| `MT_CONN_ON_LPCTL` (0xE0010) | `0x00000000` |
+| `MT_CONN_ON_MISC` (0xE00F0) | `0x00000001` |
+| `MT_WFDMA0_GLO_CFG` (0xD4208) | `0x1010B870` – TX and RX DMA enable bits clear |
+| `MT_WFDMA0_HOST_INT_ENA` (0xD4204) | `0x00000000` |
+| `MT_PCIE_MAC_INT_ENABLE` (0x10188) | `0x000000FF` |
+| `MT_HW_CHIPID` | **`0x00007961`** |
+| `MT_HW_REV` | `0x00008A10` → ASIC revision `79610010`, identical to Linux (F-001) |
+| `MT_HW_BOUND` | `0x00000018` (bit 7 clear → MT7921, not MT7920) |
+| Remap register restored | yes, read back `0x18451800` |
+| Vendor driver back | yes, ~15 s after the give-back started, same package and version, no reboot |
+| Wi-Fi down in total | ~20 s between swap and vendor driver bound |
+| Bluetooth (USB function) | device status OK after the test |
+| Whole script | 69 s, of which ~30 s waiting for a Wi-Fi connection that had been switched off by the user beforehand |
+
+Side effects observed:
+
+- The network adapter was re-created: **all 32 saved Wi-Fi networks were gone** and were re-added from the export made before the swap (keys stay encrypted for the machine). The Wi-Fi software switch, which the user had turned off, came back on.
+- `Win32_PnPSignedDriver` (CIM) still reported the vendor driver while the proxy was bound. The scripts now read live PnP properties instead.
+- The signing certificate stays trusted on the machine until `wifi-giveback.ps1 -RemoveCertificate` is run.
+
+### Conclusion
+
+1. **Hypothesis confirmed.** Option A of ADR-0002 clears its first gate on MediaTek hardware: no kernel code of ours, no test mode.
+2. The vendor driver leaves the chip with DMA disabled and host interrupts masked when it unloads – a clean starting point for our bring-up.
+3. The chip ID block is readable right after the swap without any ownership handshake.
+4. Driver swap in both directions works without a reboot and takes seconds; the saved-network loss must be handled on every give-back (it is).
+
+### Follow-ups
+
+- S2: can we get DMA-capable memory below 4 GiB from user mode on this machine (32-bit DMA mask)?
+- Not tested: behaviour across sleep/hibernate while the proxy is bound; a crash of the driver host process.
+- TODO-VERIFY: meaning of `MT_CONN_ON_MISC = 1` (firmware state after the vendor driver unloads) – read the mt76 definitions before S3.
