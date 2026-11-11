@@ -5,11 +5,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-int rig_init(struct rig *r, uint32_t dma_bus)
+static int rig_init_ex(struct rig *r, uint32_t dma_bus, int paged)
 {
     memset(r, 0, sizeof(*r));
     if (mock_init(&r->m, RIG_DMA_LEN) != 0) return -1;
     if (dma_bus) r->m.hal.dma_bus = dma_bus;
+    if (paged) {
+        /* Page i lives at a pseudo-random distinct page frame: frame = 0x1000 + (i * 197) mod 512, spread
+         * further by a stride of 3 pages, so neighbours in CPU order are never neighbours on the bus. */
+        uint32_t i, n = RIG_DMA_LEN / 4096u;
+        for (i = 0; i < n; i++) r->page_bus[i] = (0x1000u + ((i * 197u) % n) * 3u) * 4096u;
+        r->m.hal.dma_bus = 0;
+        r->m.hal.dma_page_bus = r->page_bus;
+    }
     r->f = (struct fake_chip *)calloc(1, sizeof(*r->f));
     r->dev = (struct mt792x *)calloc(1, sizeof(*r->dev));
     if (!r->f || !r->dev) return -1;
@@ -24,6 +32,9 @@ int rig_init(struct rig *r, uint32_t dma_bus)
     r->init_err = mt792x_init(r->dev, mock_hal(&r->m));
     return r->init_err;
 }
+
+int rig_init(struct rig *r, uint32_t dma_bus) { return rig_init_ex(r, dma_bus, 0); }
+int rig_init_paged(struct rig *r) { return rig_init_ex(r, 0, 1); }
 
 void rig_set_fw(struct rig *r, uint8_t *patch, size_t patch_len, uint8_t *ram, size_t ram_len)
 {

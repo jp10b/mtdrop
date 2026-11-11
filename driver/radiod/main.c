@@ -26,9 +26,16 @@ static int dma_probe(void) {
         return 1;
     }
     struct mt_hal *hal = halwin_hal(h);
-    printf("DMA block: bus address 0x%08x, length 0x%x, low blocks seen %u\n", hal->dma_bus, hal->dma_len,
-           halwin_low_blocks_seen(h));
-    int ok = halwin_dma_phys(h) + hal->dma_len <= 0x100000000ull && (hal->dma_bus & 0x1FFFFFu) == 0;
+    uint32_t pages = hal->dma_len / 4096u, lo = 0xFFFFFFFFu, hi = 0, runs = 1;
+    int ok = hal->dma_page_bus != NULL && pages == halwin_low_pages(h);
+    for (uint32_t i = 0; ok && i < pages; i++) {
+        uint32_t p = hal->dma_page_bus[i];
+        ok = p != 0 && (p & 0xFFFu) == 0 && (uint64_t)p + 4096u <= 0x100000000ull;
+        if (p < lo) lo = p;
+        if (p > hi) hi = p;
+        if (i && p != hal->dma_page_bus[i - 1] + 4096u) runs++;
+    }
+    printf("DMA region: %u pages of 4 KiB below 4 GiB, bus addresses 0x%08x..0x%08x, %u contiguous run(s)\n", pages, lo, hi, runs);
     for (uint32_t i = 0; i < hal->dma_len; i += 4096) hal->dma_virt[i] = (uint8_t)(i >> 12);
     hal->dma_virt[hal->dma_len - 1] = 0xA5;
     for (uint32_t i = 0; i < hal->dma_len; i += 4096) ok = ok && hal->dma_virt[i] == (uint8_t)(i >> 12);

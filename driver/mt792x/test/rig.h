@@ -21,10 +21,13 @@ struct rig {
     size_t patch_len, ram_len;
     struct mt792x_fw fw;
     int init_err;
+    uint32_t page_bus[RIG_DMA_LEN / 4096u];
 };
 
 /* dma_bus 0 = keep the mock default. Builds the default firmware and calls mt792x_init. */
 int rig_init(struct rig *r, uint32_t dma_bus);
+/* Same, but the DMA region is made of scattered 4 KiB pages in a shuffled, non-contiguous order. */
+int rig_init_paged(struct rig *r);
 void rig_free(struct rig *r);
 /* Replace the firmware images (takes ownership of the malloc'd buffers). */
 void rig_set_fw(struct rig *r, uint8_t *patch, size_t patch_len, uint8_t *ram, size_t ram_len);

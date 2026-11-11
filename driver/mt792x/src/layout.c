@@ -18,12 +18,38 @@ _Static_assert(MT792X_RX2_NDESC * MT792X_DESC_SIZE <= MT792X_OFF_IDLE - MT792X_O
 _Static_assert(MT792X_OFF_IDLE + MT792X_IDLE_LEN <= MT792X_OFF_TX16_BUF, "idle page overlaps");
 _Static_assert(MT792X_LAYOUT_TOTAL <= 2u * 1024u * 1024u - 512u * 1024u, "layout must leave margin in a 2 MiB block");
 _Static_assert(MT792X_RX_BUF_SIZE <= 0x3fffu && MT792X_TX_BUF_SIZE <= 0x3fffu, "SD_LEN0 is 14 bits");
+/* Paged DMA regions (hal->dma_page_bus): no object handed to the chip may cross a 4 KiB page. */
+#define MT_PAGE 4096u
+_Static_assert(MT792X_AREA_ALIGN == MT_PAGE, "areas must start on a page");
+_Static_assert(MT792X_TX0_NDESC * MT792X_DESC_SIZE <= MT_PAGE && MT792X_RX2_NDESC * MT792X_DESC_SIZE <= MT_PAGE &&
+               MT792X_TX16_NDESC * MT792X_DESC_SIZE <= MT_PAGE && MT792X_TX17_NDESC * MT792X_DESC_SIZE <= MT_PAGE &&
+               MT792X_RX0_NDESC * MT792X_DESC_SIZE <= MT_PAGE && MT792X_RX4_NDESC * MT792X_DESC_SIZE <= MT_PAGE,
+               "every descriptor array must fit in one page");
+_Static_assert(MT_PAGE % MT792X_RX_BUF_SIZE == 0 && MT_PAGE % MT792X_TX_BUF_SIZE == 0 && MT792X_IDLE_LEN <= MT_PAGE,
+               "buffers must tile a page exactly");
 
 int mt792x_dma_bus(const struct mt792x *dev, uint32_t offset, uint32_t len, uint32_t align, uint32_t *bus)
 {
     uint64_t end, region_end, addr;
 
     if (!dev || !dev->hal || !dev->hal->dma_virt || !bus) return MT792X_E_DMA_ADDR;
+    if (dev->hal->dma_page_bus) {
+        uint32_t in_page = offset % MT_PAGE, pbus;
+        if (align == 0 || (align & (align - 1u)) != 0 || len == 0 || (uint64_t)offset + len > dev->hal->dma_len ||
+            in_page + len > MT_PAGE) {
+            mt_logf(dev, MT_LOG_ERROR, "DMA address refused: offset 0x%x len 0x%x align %u (paged region, len 0x%x)",
+                    offset, len, align, dev->hal->dma_len);
+            return MT792X_E_DMA_ADDR;
+        }
+        pbus = dev->hal->dma_page_bus[offset / MT_PAGE];
+        if (pbus == 0 || pbus % MT_PAGE != 0 || (uint64_t)pbus + MT_PAGE > 0x100000000ull ||
+            ((pbus + in_page) & (align - 1u)) != 0) {
+            mt_logf(dev, MT_LOG_ERROR, "DMA address refused: page %u has bus address 0x%08x", offset / MT_PAGE, pbus);
+            return MT792X_E_DMA_ADDR;
+        }
+        *bus = pbus + in_page;
+        return 0;
+    }
     region_end = (uint64_t)dev->hal->dma_bus + dev->hal->dma_len;
     end = (uint64_t)offset + len;
     addr = (uint64_t)dev->hal->dma_bus + offset;
@@ -57,7 +83,24 @@ int mt_layout_init(struct mt792x *dev)
     uint32_t bus;
     int i;
 
-    if ((uintptr_t)h->dma_virt % 16u != 0 || h->dma_bus % MT792X_AREA_ALIGN != 0 ||
+    uint32_t k;
+
+    if (h->dma_page_bus) {
+        /* Every page must be a distinct, aligned address below 4 GiB. */
+        uint32_t pages = h->dma_len / MT_PAGE, a, b;
+        int bad = (uintptr_t)h->dma_virt % 16u != 0 || h->dma_len % MT_PAGE != 0 || h->dma_len < MT792X_LAYOUT_TOTAL;
+        for (a = 0; !bad && a < pages; a++) {
+            uint32_t p = h->dma_page_bus[a];
+            if (p == 0 || p % MT_PAGE != 0 || (uint64_t)p + MT_PAGE > 0x100000000ull) bad = 1;
+            for (b = 0; !bad && b < a; b++)
+                if (h->dma_page_bus[b] == p) bad = 1;
+        }
+        if (bad) {
+            mt_logf(dev, MT_LOG_ERROR, "S0 paged DMA region unusable: len 0x%x (need >= 0x%x, distinct aligned pages below 4 GiB)",
+                    h->dma_len, MT792X_LAYOUT_TOTAL);
+            return MT792X_E_LAYOUT;
+        }
+    } else if ((uintptr_t)h->dma_virt % 16u != 0 || h->dma_bus % MT792X_AREA_ALIGN != 0 ||
         h->dma_len < MT792X_LAYOUT_TOTAL || (uint64_t)h->dma_bus + h->dma_len > 0x100000000ull) {
         mt_logf(dev, MT_LOG_ERROR,
                 "S0 DMA region unusable: bus 0x%08x len 0x%x (need len >= 0x%x, bus 4 KiB aligned, end <= 4 GiB)",
@@ -83,8 +126,8 @@ int mt_layout_init(struct mt792x *dev)
         const struct mt792x_ring *r = &dev->ring[i];
         if (mt792x_dma_bus(dev, r->desc_off, r->ndesc * MT792X_DESC_SIZE, MT792X_DESC_SIZE, &bus))
             return MT792X_E_LAYOUT;
-        if (r->buf_size && mt792x_dma_bus(dev, r->buf_off, r->ndesc * r->buf_size, 4u, &bus))
-            return MT792X_E_LAYOUT;
+        for (k = 0; r->buf_size && k < r->ndesc; k++)
+            if (mt792x_dma_bus(dev, r->buf_off + k * r->buf_size, r->buf_size, 4u, &bus)) return MT792X_E_LAYOUT;
     }
     if (mt792x_dma_bus(dev, MT792X_OFF_IDLE, MT792X_IDLE_LEN, 4u, &bus)) return MT792X_E_LAYOUT;
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Windows backend of the mt792x HAL: registers through the mtdrop UMDF proxy,
- * DMA memory from one locked 2 MiB physical block below 4 GiB. */
+ * DMA memory from locked 4 KiB pages below 4 GiB, mapped as one 2 MiB view. */
 #ifndef MTDROP_HAL_WIN_H
 #define MTDROP_HAL_WIN_H
 
@@ -21,7 +21,7 @@ struct halwin_close_op {
 
 struct halwin;
 
-/* Allocates the DMA block only (no device needed). Returns NULL and writes a reason on failure.
+/* Allocates the DMA pages only (no device needed). Returns NULL and writes a reason on failure.
  * Requires SeLockMemoryPrivilege, which in practice means running as SYSTEM (docs/FINDINGS.md F-005). */
 struct halwin *halwin_create(char *error, size_t error_len);
 
@@ -32,8 +32,7 @@ int halwin_open_proxy(struct halwin *h, char *error, size_t error_len);
 int halwin_set_close_ops(struct halwin *h, const struct halwin_close_op *ops, uint32_t count);
 
 struct mt_hal *halwin_hal(struct halwin *h);
-uint64_t halwin_dma_phys(const struct halwin *h);
-uint32_t halwin_low_blocks_seen(const struct halwin *h);
+uint32_t halwin_low_pages(const struct halwin *h);   /* pages below 4 GiB obtained (== region pages on success) */
 uint32_t halwin_io_errors(const struct halwin *h);
 
 /* Library messages above this level (enum mt_log_level) are not printed; default MT_LOG_DEBUG. */

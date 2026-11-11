@@ -28,6 +28,11 @@ struct mt_hal {
     uint8_t *dma_virt;                                            /* one DMA-capable region: CPU address ... */
     uint32_t dma_bus;                                             /* ... its 32-bit bus address ... */
     uint32_t dma_len;                                             /* ... and its length in bytes */
+    /* Optional. NULL: the region is physically contiguous and starts at dma_bus.
+     * Non-NULL: the region is made of scattered 4 KiB pages; entry i is the bus address of the page
+     * at CPU offset i * 4096 (dma_len / 4096 entries) and dma_bus is ignored. The library then never
+     * hands the chip an object that crosses a page boundary. */
+    const uint32_t *dma_page_bus;
 };
 
 #ifdef __cplusplus

@@ -590,7 +590,8 @@ static int run(struct mt792x *dev, const struct mt792x_fw *fw, enum mt792x_stage
     if (dev->bus_dead) return fail(dev, 0, MT792X_E_BUS_DEAD, t0);
     dev->remap_saved_valid = 1;
     mt_logf(dev, MT_LOG_INFO, "S0 MT_HIF_REMAP_L1 = 0x%08x saved; DMA region bus 0x%08x len 0x%x, layout 0x%x bytes",
-            dev->remap_saved, dev->hal->dma_bus, dev->hal->dma_len, MT792X_LAYOUT_TOTAL);
+            dev->remap_saved, dev->hal->dma_page_bus ? dev->hal->dma_page_bus[0] : dev->hal->dma_bus, dev->hal->dma_len,
+            MT792X_LAYOUT_TOTAL);
     done(dev, 0);
 
     if ((err = fw_own(dev)) != 0) return err;

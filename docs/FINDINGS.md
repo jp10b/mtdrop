@@ -496,3 +496,42 @@ A command of the sequence is rejected or unanswered; no frame arrives; beacons a
 - Channel hop latency (`--hop`).
 - Licence and source URL of the linux-firmware MT7961 files; add the fetch step to the installer plan.
 - TODO-VERIFY: whether firmware A supports monitor reception through non-UNI commands (not needed if B is used).
+
+---
+
+## F-008 – DMA memory from scattered 4 KiB pages instead of one 2 MiB block
+
+- **Date:** 2026-11-11
+- **Milestone:** M3 (robustness of session start)
+
+### Hypothesis
+
+Free 2 MiB blocks below 4 GiB are too scarce to rely on, but single locked 4 KiB pages below 4 GiB are always available; the chip's rings and buffers can be laid out so that no object crosses a page, so a region built from scattered pages is sufficient.
+
+### What would falsify it
+
+Fewer than the ~231 pages the layout needs can be obtained below 4 GiB; or a descriptor array or buffer does not fit in one page.
+
+### Method
+
+Observed the block allocator across sessions; then changed the layout rules and the Windows HAL and ran the device-free self-test (`radiod dma-probe`) as SYSTEM in the state where the block allocator had just failed.
+
+### Raw result (FACT)
+
+| Situation | 2 MiB blocks below 4 GiB |
+|---|---|
+| 11 h uptime, 2.9 GiB free | 4–16 |
+| 22 h uptime, 0.8 GiB free | allocation failed outright (error 1450) |
+| 40 h uptime, 3.7–6.9 GiB free (also after a Fast Startup "shut down") | 0 |
+| 4 min after a real restart | 64 |
+| 14 min after a real restart | **0** |
+| 20 min after a real restart, 8.5 GiB free | block allocator not retried; **paged allocator: 512 of 512 pages below 4 GiB**, none of them adjacent |
+
+- Layout facts that make paging possible: every descriptor array is at most 4096 bytes (256 × 16), RX buffers are 2048 bytes and TX buffers 4096 bytes, all areas start on a page boundary. Enforced by compile-time assertions.
+- The library takes an optional page table (`hal.dma_page_bus`); `mt792x_dma_bus` refuses any object that crosses a page. The simulated chip resolves bus addresses through the same table and flags anything outside a page. 75 tests pass, including full bring-up and sniffer start on a shuffled page table.
+
+### Conclusion
+
+1. Hypothesis confirmed in the device-free test. Sessions no longer depend on uptime or on a restart.
+2. Not yet exercised on the chip: a bring-up with a paged region (next hardware session does that).
+3. F-005's design conclusion ("fit everything into one low 2 MiB block") is superseded.

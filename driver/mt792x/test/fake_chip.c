@@ -81,6 +81,15 @@ static uint8_t *dma_ptr(struct fake_chip *f, uint32_t bus, uint32_t len, uint32_
 {
     const struct mt_hal *h = &f->m->hal;
     uint64_t end = (uint64_t)bus + len;
+    if (h->dma_page_bus && h->dma_virt && len != 0 && (bus % align) == 0) {
+        /* Paged region: the object must lie inside one of the host's pages. */
+        uint32_t i, pages = h->dma_len / 4096u, in_page = bus % 4096u;
+        if (in_page + len <= 4096u)
+            for (i = 0; i < pages; i++)
+                if (h->dma_page_bus[i] == bus - in_page) return h->dma_virt + (size_t)i * 4096u + in_page;
+        violation(f, "%s: bus address 0x%08x len %u is not inside one page of the paged region", what, bus, len);
+        return NULL;
+    }
     if (!h->dma_virt || len == 0 || bus < h->dma_bus || end > (uint64_t)h->dma_bus + h->dma_len || (bus % align) != 0) {
         violation(f, "%s: bus address 0x%08x len %u align %u outside region 0x%08x+0x%x", what, bus, len, align,
                   h->dma_bus, h->dma_len);

@@ -47,6 +47,7 @@ add_executable(mt792x_tests
   test/rx_builder.c
   test/test_sniffer.c
   test/test_rx.c
+  test/test_paged.c
 )
 target_include_directories(mt792x_tests PRIVATE test)
 target_link_libraries(mt792x_tests PRIVATE mt792x)

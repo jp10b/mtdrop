@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Windows backend of the mt792x HAL. See hal_win.h.
  *
- * DMA memory: AllocateUserPhysicalPages2 with the non-paged-large attribute returns locked
- * 2 MiB blocks with known physical frame numbers (technique measured in docs/FINDINGS.md F-005,
- * first described by the winawdl project). We ask for many, keep the lowest one that lies
- * entirely below 4 GiB, and free the rest immediately. */
+ * DMA memory: ordinary locked 4 KiB pages from AllocateUserPhysicalPages (AWE), which reports
+ * each page's physical frame number. We keep pages below 4 GiB (the MT7921 takes 32-bit DMA
+ * addresses) and map them, in any order, into one contiguous virtual view. The library is told
+ * the bus address of every page (hal.dma_page_bus) and never lets an object cross a page.
+ *
+ * Why not one 2 MiB block (the first design, docs/FINDINGS.md F-005): free 2 MiB blocks below
+ * 4 GiB disappear within minutes of uptime (F-008), while single low pages stay plentiful. */
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -23,20 +26,19 @@
 #endif
 
 #define PAGE_BYTES 4096u
-#define PAGES_PER_BLOCK (HALWIN_DMA_BLOCK_BYTES / PAGE_BYTES)
+#define DMA_PAGES (HALWIN_DMA_BLOCK_BYTES / PAGE_BYTES)
 #define FRAME_AT_4GIB (0x100000000ull / PAGE_BYTES)
-#define BLOCKS_REQUESTED 64u
-#define BLOCKS_MAX 512u
-
-typedef BOOL(WINAPI *AllocatePages2Fn)(HANDLE, PULONG_PTR, PULONG_PTR, PMEM_EXTENDED_PARAMETER, ULONG);
+#define ROUND_PAGES 16384u /* 64 MiB asked per round */
+#define MAX_ROUNDS 48u     /* give up after holding 3 GiB at once */
 
 struct halwin {
     struct mt_hal hal;
     HANDLE proxy;
-    ULONG_PTR block_frame;      /* first 4 KiB frame of our block; 0 = none */
-    ULONG_PTR frames[PAGES_PER_BLOCK];
+    ULONG_PTR frames[DMA_PAGES]; /* physical frame of each page of the view, in view order */
+    uint32_t page_bus[DMA_PAGES]; /* the same as 32-bit bus addresses, for the library */
+    ULONG_PTR frame_count;        /* DMA_PAGES once allocated, 0 before */
     void *view;
-    uint32_t low_blocks_seen;
+    uint32_t low_pages_seen;
     uint32_t io_errors;
     LARGE_INTEGER qpc_frequency;
     int log_level;              /* messages above this level are not printed */
@@ -131,67 +133,60 @@ struct halwin *halwin_create(char *error, size_t error_len) {
         free(h);
         return NULL;
     }
-    AllocatePages2Fn allocate = NULL;
-    HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
-    if (kernelbase) allocate = (AllocatePages2Fn)(void *)GetProcAddress(kernelbase, "AllocateUserPhysicalPages2");
-    if (!allocate) {
-        set_error(error, error_len, "AllocateUserPhysicalPages2 is not available", GetLastError());
-        free(h);
-        return NULL;
-    }
-
-    /* Under memory pressure a large request fails outright (error 1450, seen with 0.8 GiB free),
-     * so ask in rounds, halving the request when it fails. Blocks already obtained are kept
-     * until the end: that forces later rounds to return different blocks. Stop as soon as a
-     * block below 4 GiB turns up. */
-    static ULONG_PTR blocks[BLOCKS_MAX];
-    ULONG_PTR count = 0, request = BLOCKS_REQUESTED, best = 0;
+    /* Ask in rounds and keep everything until enough low pages are found: releasing a round
+     * early would only make Windows hand the same high pages back. */
+    ULONG_PTR *round[MAX_ROUNDS];
+    ULONG_PTR round_len[MAX_ROUNDS];
+    unsigned rounds = 0;
+    ULONG_PTR have = 0;
     DWORD last_error = 0;
-    MEM_EXTENDED_PARAMETER large;
-    memset(&large, 0, sizeof(large));
-    large.Type = MemExtendedParameterAttributeFlags;
-    large.ULong64 = MEM_EXTENDED_PARAMETER_NONPAGED_LARGE;
-    while (request > 0 && count < BLOCKS_MAX) {
-        ULONG_PTR got = request < BLOCKS_MAX - count ? request : BLOCKS_MAX - count;
-        if (!allocate(GetCurrentProcess(), &got, &blocks[count], &large, 1) || got == 0) {
+    memset(round, 0, sizeof(round));
+    while (have < DMA_PAGES && rounds < MAX_ROUNDS) {
+        ULONG_PTR n = ROUND_PAGES;
+        ULONG_PTR *list = malloc(ROUND_PAGES * sizeof(*list));
+        if (!list) break;
+        if (!AllocateUserPhysicalPages(GetCurrentProcess(), &n, list) || n == 0) {
             last_error = GetLastError();
-            request /= 2;
-            continue;
+            free(list);
+            break;
         }
-        for (ULONG_PTR i = count; i < count + got; i++) {
-            if (blocks[i] + PAGES_PER_BLOCK > FRAME_AT_4GIB) continue;
-            h->low_blocks_seen++;
-            if (!best || blocks[i] < best) best = blocks[i];
+        round[rounds] = list;
+        round_len[rounds] = n;
+        rounds++;
+        for (ULONG_PTR i = 0; i < n && have < DMA_PAGES; i++) {
+            if (list[i] == 0 || list[i] >= FRAME_AT_4GIB) continue;
+            h->frames[have++] = list[i];
+            list[i] = 0; /* ours now: must not be freed below */
         }
-        count += got;
-        if (best) break;
     }
-    if (count == 0) {
-        set_error(error, error_len, "no 2 MiB locked blocks could be allocated (free some RAM: close large programs)", last_error);
+    h->low_pages_seen = (uint32_t)have;
+    /* Return everything we do not keep, one page at a time (the kept ones are holes in the lists). */
+    for (unsigned r = 0; r < rounds; r++) {
+        for (ULONG_PTR i = 0; i < round_len[r]; i++) {
+            ULONG_PTR one = 1;
+            if (round[r][i]) FreeUserPhysicalPages(GetCurrentProcess(), &one, &round[r][i]);
+        }
+        free(round[r]);
+    }
+    if (have < DMA_PAGES) {
+        for (ULONG_PTR i = 0; i < have; i++) {
+            ULONG_PTR one = 1;
+            FreeUserPhysicalPages(GetCurrentProcess(), &one, &h->frames[i]);
+        }
+        set_error(error, error_len, "not enough locked pages below 4 GiB could be allocated", last_error);
         free(h);
         return NULL;
     }
-    for (ULONG_PTR i = 0; i < count; i++) {
-        if (blocks[i] == best) continue;
-        ULONG_PTR one = 1;
-        FreeUserPhysicalPages(GetCurrentProcess(), &one, &blocks[i]);
-    }
-    if (!best) {
-        set_error(error, error_len, "no free 2 MiB block below 4 GiB right now (try again, or after a reboot)", 0);
-        free(h);
-        return NULL;
-    }
-    h->block_frame = best;
+    h->frame_count = DMA_PAGES;
 
-    /* A block maps only as 512 individual frames into a plain MEM_PHYSICAL view (F-005). */
-    for (ULONG_PTR i = 0; i < PAGES_PER_BLOCK; i++) h->frames[i] = best + i;
     h->view = VirtualAlloc(NULL, HALWIN_DMA_BLOCK_BYTES, MEM_RESERVE | MEM_PHYSICAL, PAGE_READWRITE);
-    if (!h->view || !MapUserPhysicalPages(h->view, PAGES_PER_BLOCK, h->frames)) {
-        set_error(error, error_len, "could not map the DMA block", GetLastError());
+    if (!h->view || !MapUserPhysicalPages(h->view, DMA_PAGES, h->frames)) {
+        set_error(error, error_len, "could not map the DMA pages", GetLastError());
         halwin_destroy(h);
         return NULL;
     }
     memset(h->view, 0, HALWIN_DMA_BLOCK_BYTES);
+    for (ULONG_PTR i = 0; i < DMA_PAGES; i++) h->page_bus[i] = (uint32_t)((uint64_t)h->frames[i] * PAGE_BYTES);
 
     h->hal.ctx = h;
     h->hal.rr = hal_rr;
@@ -200,7 +195,8 @@ struct halwin *halwin_create(char *error, size_t error_len) {
     h->hal.now_us = hal_now_us;
     h->hal.log = hal_log;
     h->hal.dma_virt = (uint8_t *)h->view;
-    h->hal.dma_bus = (uint32_t)((uint64_t)best * PAGE_BYTES);
+    h->hal.dma_bus = 0;               /* unused in paged mode */
+    h->hal.dma_page_bus = h->page_bus;
     h->hal.dma_len = HALWIN_DMA_BLOCK_BYTES;
     return h;
 }
@@ -253,8 +249,7 @@ int halwin_set_close_ops(struct halwin *h, const struct halwin_close_op *ops, ui
 }
 
 struct mt_hal *halwin_hal(struct halwin *h) { return &h->hal; }
-uint64_t halwin_dma_phys(const struct halwin *h) { return (uint64_t)h->block_frame * PAGE_BYTES; }
-uint32_t halwin_low_blocks_seen(const struct halwin *h) { return h->low_blocks_seen; }
+uint32_t halwin_low_pages(const struct halwin *h) { return h->low_pages_seen; }
 uint32_t halwin_io_errors(const struct halwin *h) { return h->io_errors; }
 
 void halwin_destroy(struct halwin *h) {
@@ -263,12 +258,12 @@ void halwin_destroy(struct halwin *h) {
      * BEFORE the memory the chip may still be using is returned to Windows. */
     if (h->proxy != INVALID_HANDLE_VALUE) CloseHandle(h->proxy);
     if (h->view) {
-        MapUserPhysicalPages(h->view, PAGES_PER_BLOCK, NULL);
+        MapUserPhysicalPages(h->view, DMA_PAGES, NULL);
         VirtualFree(h->view, 0, MEM_RELEASE);
     }
-    if (h->block_frame) {
+    for (ULONG_PTR i = 0; i < h->frame_count; i++) {
         ULONG_PTR one = 1;
-        FreeUserPhysicalPages(GetCurrentProcess(), &one, &h->block_frame);
+        FreeUserPhysicalPages(GetCurrentProcess(), &one, &h->frames[i]);
     }
     free(h);
 }
