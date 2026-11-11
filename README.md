@@ -15,7 +15,7 @@ mtdrop is an independent interoperability project. It is not affiliated with or 
 | The MT7921 in the target laptop receives a photo from an iPhone 15 Pro (iOS 26.5.2) under Linux | Done – [`docs/FINDINGS.md`](docs/FINDINGS.md) F-001 |
 | What iOS 26.5.2 sends, decoded from our own capture | Done – F-002, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
 | Protocol service on Windows (`airdropd`): discovery records, TLS, `/Discover`, `/Ask`, `/Upload`, safe extraction | Works against tests and against a replay of the real capture – F-003. Not yet tested over the air (needs the radio) |
-| Windows radio driver | In progress: a user-mode driver boots the MediaTek firmware on Windows without test-signing (F-004 to F-006). No frames received or sent yet |
+| Windows radio driver | In progress: a user-mode driver boots the MediaTek firmware on Windows without test-signing (F-004 to F-006). Monitor reception works (F-007, needs the linux-firmware image). Nothing transmitted yet |
 | End-to-end receive on Windows | Not started (M6) |
 
 ## Honest limitations

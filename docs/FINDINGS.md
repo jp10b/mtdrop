@@ -424,3 +424,75 @@ Other observations:
 - TODO-VERIFY: why `HOST_INT_ENA` reads 0x20000000 after firmware start, and whether an unhandled interrupt can result (R1). No ill effect was seen in a 470 ms window.
 - TODO-VERIFY: behaviour if `radiod` is killed mid-download (stop list replay) – exercise deliberately before longer sessions.
 - The 50 ms wait in the stop list relies on `Sleep` inside the UMDF host; not yet exercised by a real process death.
+
+---
+
+## F-007 – Monitor reception works on Windows, but only with the linux-firmware image
+
+- **Date:** 2026-11-11
+- **Milestone:** M3 (acceptance part 1: beacons from nearby APs with a per-frame channel)
+- **Code:** `driver/mt792x` (post-boot, sniffer, RX path), `radiod sniff`, `scripts/s3-bringup.ps1`
+- **Firmware compared:** (A) vendor Windows package 3.5.0.1349: RAM `____000000`, build 20250922, release-info feature byte 0x00; (B) linux-firmware as shipped in the mt76 clone: RAM `____010000`, build 20231109, feature byte 0xc0 (CNM). Neither is in the repository.
+
+### Hypothesis
+
+After firmware boot, the mt76 post-boot command sequence followed by the mt76 monitor-interface sequence makes the chip deliver raw 802.11 frames on RX ring 2, with the channel in the RX descriptor equal to the tuned channel.
+
+### What would falsify it
+
+A command of the sequence is rejected or unanswered; no frame arrives; beacons arrive only with bad FCS; the per-frame channel differs from the tuned one.
+
+### Method
+
+`radiod bringup 6`, then `radiod sniff 1 <seconds>` (channel 1 = the home AP's channel), first with firmware A, then A and B back to back with debug logging, each in a driver-swap session as SYSTEM. Machine rebooted beforehand (see "memory" below).
+
+### Raw result (FACT)
+
+**Post-boot (stage 6), firmware A and B alike**
+
+- `GET_NIC_CAPAB`: 21 TLVs; MAC address present; PHY capability: 2 spatial streams, 2.4 and 5 GHz, HE; no chip-capability TLV.
+- `EFUSE_BUFFER_MODE`, `PROTECT_CTRL`, `MAC_INIT_CTRL`: answered, result 0. `EFUSE_BUFFER_MODE` takes ~775 ms.
+- **After firmware start, command responses arrive on RX ring 4** (before it, on ring 0). EXT responses carry event id 0xed, the capability response 0xec, UNI responses 0x01.
+- Stage 6 total: ~1.27 s from cold.
+
+**Sniffer start**
+
+| Step | Firmware A (Windows package) | Firmware B (linux-firmware) |
+|---|---|---|
+| `SET_RX_PATH` (EXT) | result 0 | result 0 |
+| `DEV_INFO_UPDATE` (first UNI command) | **no response at all in 3 s; no event of any kind on any ring** | result 0 after 5.9 ms |
+| `BSS_INFO_UPDATE`, `SNIFFER` enable/config | not reached | result 0 |
+| Tuning command chosen | `CHANNEL_SWITCH` (no CNM bit) – not reached | sniffer config (CNM bit set) |
+
+**Reception with firmware B, channel 1, 8 s**
+
+| Metric | Value |
+|---|---|
+| Frames | 10 652 (1 331 /s) |
+| Per-frame channel field | channel 1 for all 10 652 |
+| Beacons, good FCS | **116**, from 2 distinct SSIDs |
+| Other frames | probe request/response, RTS, CTS, ACK and other control frames, 366 data frames |
+| FCS errors / malformed / fragmented | 0 / 0 / 0 |
+| FCS trailer present in frame bytes | 0 (frames are delivered without FCS) |
+| Header-translated frames | 0 (raw 802.11 headers although translation is enabled in `MDP_DCR0`) |
+| RSSI | −80 … −41 dBm |
+| RX ring 2 (256 descriptors) seen full | 0 times |
+| Shutdown | sniffer off, BSS/DEV off, MAC off all acknowledged; vendor driver rebound |
+
+**Memory**
+
+- Two attempts failed in the pre-flight (no chip access, Wi-Fi untouched): after 40 h of uptime no 2 MiB block below 4 GiB could be had even with 6.9 GiB free. "Shut down" with Fast Startup does not reset this; after a real restart 64 low blocks were seen.
+
+### Conclusion
+
+1. **Hypothesis confirmed with firmware B: the user-mode driver receives raw frames with a correct per-frame channel.** First half of the M3 acceptance criterion is met (beacons). AWDL frames from the iPhone are the remaining half.
+2. **The Windows vendor firmware does not answer UNI commands** (ASSUMPTION about the cause: a different firmware branch without the unified command interface; FACT: silence). The project therefore needs the linux-firmware image, to be fetched from its official repository at install time; F-006's conclusion "vendor files are compatible" holds for download and post-boot only.
+3. Open points of the specification now settled for firmware B: responses on ring 4 after boot; CNM path tunes the radio through the sniffer-config message; frames come without FCS and without header translation.
+4. Session start needs low memory that long uptimes destroy: the service must reserve its DMA block early after boot.
+
+### Follow-ups
+
+- Same test on channels 6 and 44 with the iPhone's share sheet open: AWDL action frames (address 3 = AWDL BSSID). Record iOS version.
+- Channel hop latency (`--hop`).
+- Licence and source URL of the linux-firmware MT7961 files; add the fetch step to the installer plan.
+- TODO-VERIFY: whether firmware A supports monitor reception through non-UNI commands (not needed if B is used).
