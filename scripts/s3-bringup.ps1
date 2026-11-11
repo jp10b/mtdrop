@@ -73,7 +73,7 @@ try {
     $fwDir = Get-ChildItem (Join-Path $PrivateRoot 'vendor-driver-backup') -Directory | Sort-Object Name | Select-Object -Last 1
     $patch = Join-Path $fwDir.FullName 'WIFI_MT7961_patch_mcu_1_2_hdr.bin'
     $ram = Join-Path $fwDir.FullName 'WIFI_RAM_CODE_MT7961_1.bin'
-    if (-not $AltFirmwareDir) { $AltFirmwareDir = Join-Path $repo 'third_party\openwrt_mt76irmware' }
+    if (-not $AltFirmwareDir) { $AltFirmwareDir = Join-Path $repo 'third_party\openwrt_mt76\firmware' }
     $altPatch = Join-Path $AltFirmwareDir 'WIFI_MT7961_patch_mcu_1_2_hdr.bin'
     $altRam = Join-Path $AltFirmwareDir 'WIFI_RAM_CODE_MT7961_1.bin'
     $commandList = @()
