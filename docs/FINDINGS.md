@@ -584,3 +584,52 @@ One driver-swap session as SYSTEM, three `radiod sniff` runs: channel 44 for 15 
 - **Firmware ACK for unicast frames addressed to our MAC in sniffer mode** – the main open risk (mt76 marks MT792x `no_active_monitor`, yet kernel 7.0 offered active monitor in F-001; find what it programs).
 - The 2 trailing bytes on about half of the phone's action frames (F-001): inspect now that we can capture them.
 - Fix the `radiod sniff` PASS rule: allow "AWDL frames on the tuned channel" as a success criterion.
+
+---
+
+## F-010 – First transmission: our probe requests are answered by access points; ACK still undecided
+
+- **Date:** 2026-11-11
+- **Milestone:** M4 (raw TX)
+- **Firmware:** linux-firmware MT7961 image (RAM `____010000`, build 20231109). Channel 1 (2.4 GHz), OFDM 6 Mbit/s, power limits capped at 14 dBm.
+
+### Hypothesis
+
+A host-built 802.11 frame placed on TX ring 0 with mt76's TXD/TXP layout is radiated: a broadcast probe request with our MAC as source makes access points send probe responses addressed to our MAC. If the firmware acknowledges frames addressed to our MAC, those responses are not retransmitted.
+
+### What would falsify it
+
+The chip does not consume the TX descriptor or never returns the token; no probe response addressed to our MAC arrives. For the ACK part: every response sequence number is retransmitted up to the access point's retry limit.
+
+### Method
+
+`radiod txtest 1 --count 5` twice in one session: default interface setup (our MAC in own-MAC slot 0, sniffer on), then `--pair` (slot 0 = zero address with the sniffer, slot 1 = our MAC, as Linux had it in F-001). Five probe requests each, 1 s apart, 300 ms listening after each.
+
+### Raw result (FACT)
+
+| | Default (single) | `--pair` |
+|---|---|---|
+| Probe requests sent / completed | 5 / 5 | 5 / 5 |
+| TX-free returned for every token | yes, status 0, 1 transmission, 0.7–2.8 ms after submit | yes, 0.7–9.4 ms |
+| Lost / quarantined | 0 / 0 | 0 / 0 |
+| Probe responses addressed to our MAC | **9**, from 1 access point | **7**, from 2 access points |
+| Distinct response sequence numbers | 5 | 5 |
+| …of which also seen with the Retry bit | 3 | 2 |
+| Responses without Retry bit | 5 of 9 | 4 of 7 |
+
+- `SET_RATE_TX_POWER` (8 messages) was sent without awaited responses; the chip transmitted afterwards.
+- The frame used the management queue (ALTX), station index 19 (single) / 18 (pair), own-MAC index 0 / 1.
+- Channel 1 is busy: ~300–1300 frames/s were seen there in the listening runs.
+- Shutdown and vendor-driver rebind were normal after transmitting.
+
+### Conclusion
+
+1. **Transmission works**: frames built by the host leave the antenna and are decoded by access points; token completion works.
+2. **ACK is undecided.** About half of the response sequence numbers had a retransmitted copy in both interface setups. That is fewer retransmissions than "never acknowledged" would suggest (an access point usually retries several times) but more than a clean link shows; on a busy channel collisions cause retries too. The two setups do not differ measurably.
+3. The test needs a control: the same probe sent from an address the chip cannot acknowledge, to compare retransmission counts from the same access points in the same run.
+
+### Follow-ups
+
+- Control arm in `txtest` (`--control`), then repeat with more probes per arm.
+- Unicast TX with ACK request and TX status report (TXS): does the access point acknowledge *our* unicast frames, and is that reported?
+- Repeat on channel 44/6 with the iPhone once the AWDL layer can provoke unicast frames.
