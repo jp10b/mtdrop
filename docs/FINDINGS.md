@@ -535,3 +535,52 @@ Observed the block allocator across sessions; then changed the layout rules and 
 1. Hypothesis confirmed in the device-free test. Sessions no longer depend on uptime or on a restart.
 2. Not yet exercised on the chip: a bring-up with a paged region (next hardware session does that).
 3. F-005's design conclusion ("fit everything into one low 2 MiB block") is superseded.
+
+---
+
+## F-009 – AWDL action frames from the iPhone received on Windows; channel hop measured (M3 acceptance)
+
+- **Date:** 2026-11-11
+- **Milestone:** M3 acceptance, part 2
+- **iPhone:** iPhone 15 Pro, iOS 26.5.2, AirDrop "Everyone for 10 Minutes", Personal Hotspot off, share sheet open on the AirDrop screen
+- **Firmware:** linux-firmware MT7961 image (RAM `____010000`, build 20231109). **DMA region:** 512 scattered 4 KiB pages (F-008), first use on the chip.
+
+### Hypothesis
+
+With the sniffer tuned to the channels the phone used under Linux (F-001: 44 and 6), the user-mode driver receives the phone's AWDL action frames (address 3 = `00:25:00:ff:94:73`, category 127, OUI `00:17:f2`), and a channel switch costs about as much as under Linux (~8 ms).
+
+### What would falsify it
+
+No frame with the AWDL BSSID on either channel while the share sheet is open; per-frame channel different from the tuned channel; switch latency of several slots (≫ 64 TU).
+
+### Method
+
+One driver-swap session as SYSTEM, three `radiod sniff` runs: channel 44 for 15 s, channel 6 for 15 s, then hopping 44 ↔ 6 every 300 ms for 20 s.
+
+### Raw result (FACT)
+
+| Run | Frames | AWDL action frames | Per-frame channel | Strongest RSSI bucket |
+|---|---|---|---|---|
+| Channel 44, 15 s | 153 | **149** | 44 for all | −40 … −31 dBm |
+| Channel 6, 15 s | 389 | **127** | 6 for all | −40 … −31 dBm |
+| Hop 44 ↔ 6, 20 s | 224 | **185** (106 while on 44, 118 while on 6) | always equal to the tuned channel | −40 … −31 dBm |
+
+- Every frame carrying the AWDL BSSID was an AWDL action frame. No FCS errors, no malformed or fragmented packets, RX ring never full.
+- The remaining frames: probe requests, CTS, a few data frames. No beacons: no access point nearby uses channels 6 or 44 (the tool's PASS rule counts beacons, so it printed FAIL; the rule is wrong for this test, the data is not).
+- **Channel switch (sniffer-config command, time until its response): min 8.8 ms, median 10.1 ms, max 132 ms** over 62 switches; to channel 44 ≈ 10.5 ms, to channel 6 ≈ 9.0 ms. Two outliers (21 ms, 132 ms).
+- Bring-up, post-boot and sniffer start worked unchanged on the paged DMA region (page bus addresses between 0x010EE000 and 0xC99B3000, no two pages adjacent).
+- After the session the vendor driver rebound and Wi-Fi reconnected by itself.
+
+### Conclusion
+
+1. **M3 acceptance is met**: beacons (F-007) and AWDL action frames from the iPhone with the share sheet open, each verified by the per-frame channel.
+2. The phone is heard on both channel 44 and channel 6 at roughly the same rate (≈ 8–10 action frames per second per channel), consistent with the F-001 sequences.
+3. Channel switching costs ≈ 10 ms, the same order as Linux (7.7 ms median) – about 15 % of a 64 TU slot. Outliers exist and must be tolerated by the scheduler.
+4. The paged DMA design (F-008) is confirmed on hardware.
+
+### Follow-ups (M4)
+
+- Raw TX of an 802.11 frame with a fixed rate, and TX status.
+- **Firmware ACK for unicast frames addressed to our MAC in sniffer mode** – the main open risk (mt76 marks MT792x `no_active_monitor`, yet kernel 7.0 offered active monitor in F-001; find what it programs).
+- The 2 trailing bytes on about half of the phone's action frames (F-001): inspect now that we can capture them.
+- Fix the `radiod sniff` PASS rule: allow "AWDL frames on the tuned channel" as a success criterion.
