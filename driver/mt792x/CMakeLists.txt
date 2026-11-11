@@ -24,6 +24,7 @@ add_library(mt792x STATIC
   src/bringup.c
   src/rx.c
   src/postboot.c
+  src/tx.c
 )
 target_include_directories(mt792x PUBLIC include)
 target_compile_options(mt792x PRIVATE ${MT792X_WARNINGS})
@@ -48,6 +49,7 @@ add_executable(mt792x_tests
   test/test_sniffer.c
   test/test_rx.c
   test/test_paged.c
+  test/test_tx.c
 )
 target_include_directories(mt792x_tests PRIVATE test)
 target_link_libraries(mt792x_tests PRIVATE mt792x)

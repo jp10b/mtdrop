@@ -26,6 +26,7 @@ TEST(layout_fits_with_margin_and_no_overlap)
         { MT792X_OFF_RX0_BUF, MT792X_RX0_NDESC * MT792X_RX_BUF_SIZE },
         { MT792X_OFF_RX4_BUF, MT792X_RX4_NDESC * MT792X_RX_BUF_SIZE },
         { MT792X_OFF_RX2_BUF, MT792X_RX2_NDESC * MT792X_RX_BUF_SIZE },
+        { MT792X_OFF_TX0_SLOT, MT792X_TX0_SLOTS * MT792X_TX0_SLOT_SIZE },
     };
     size_t i, j, n = sizeof(a) / sizeof(a[0]);
     for (i = 0; i < n; i++) {
@@ -33,8 +34,9 @@ TEST(layout_fits_with_margin_and_no_overlap)
         CHECK(a[i].off + a[i].len <= MT792X_LAYOUT_TOTAL);
         for (j = 0; j < i; j++) CHECK(a[i].off >= a[j].off + a[j].len || a[j].off >= a[i].off + a[i].len);
     }
-    CHECK_EQ_U32(MT792X_LAYOUT_TOTAL, 0xe7000u);
-    CHECK(MT792X_LAYOUT_TOTAL <= 2u * 1024u * 1024u / 2u);
+    CHECK_EQ_U32(MT792X_LAYOUT_TOTAL, 0xf7000u);
+    CHECK(MT792X_LAYOUT_TOTAL <= 1024u * 1024u);                 /* 256 pages suffice */
+    CHECK_EQ_U32(MT792X_TX_MAX_FRAME, 4032u);
 }
 
 static void check_bases(uint32_t bus)

@@ -87,7 +87,11 @@ enum mt792x_error {
     MT792X_E_NIC_CAPAB = -41,     /* S24: GET_NIC_CAPAB reply unusable (shorter than its header) */
     MT792X_E_NO_MAC = -42,        /* no usable MAC address (none given, none valid from the chip) */
     MT792X_E_FW_DEAD = -43,       /* liveness check: CONN_ON_MISC no longer reports N9_RDY */
-    MT792X_E_DMA_REINIT = -44     /* liveness check: WFDMA_DUMMY_CR NEED_REINIT cleared (spec R6) */
+    MT792X_E_DMA_REINIT = -44,    /* liveness check: WFDMA_DUMMY_CR NEED_REINIT cleared (spec R6) */
+    /* raw TX (spec 12) */
+    MT792X_E_TX_DENIED = -45,     /* TX not enabled (cfg.allow_tx), sniffer not started, or channel not allowed */
+    MT792X_E_TX_BUSY = -46,       /* no free TX slot / completion record space (poll, then try again) */
+    MT792X_E_TX_FRAME = -47       /* frame rejected by validation (length, type, address, flags) */
 };
 
 /* How the radio is tuned (spec 11.6). AUTO follows mt76: firmware with the CNM feature bit in the
@@ -124,6 +128,40 @@ struct mt792x_options {
     uint8_t fcs_mode;             /* enum mt792x_fcs_mode */
     uint8_t antenna_mask;         /* 0 = from GET_NIC_CAPAB (BIT(nss) - 1), else override */
     uint8_t skip_set_timing;      /* 1 = no mt792x_mac_set_timeing after CHANNEL_SWITCH (mt76 runs it) */
+    /* raw TX and the monitor vif (spec 12) */
+    uint8_t vif_mode;             /* enum mt792x_vif_mode (affects RX-only operation too) */
+    uint8_t tx_power_mode;        /* enum mt792x_tx_power_mode; only used when cfg.allow_tx */
+    uint8_t tx_power_max_half_db; /* 0 = no extra cap; else every TX power limit is min(mt76 value, this), 0.5 dB units */
+    uint8_t tx_spe_mode;          /* enum mt792x_tx_spe_mode */
+    uint8_t tx_data_fixed_rate;   /* 1 = FIX_RATE on unicast data frames too (mt76: only non-data and group frames) */
+    uint8_t tx_wcid_mode;         /* enum mt792x_tx_wcid_mode */
+    uint16_t tx_timeout_ms;       /* no TX-free notification within this time -> LOST, slot quarantined; 0 = 2000 */
+};
+
+/* Which firmware "vifs" (OMAC + BSS entries) the sniffer start creates (spec 12.6). */
+enum mt792x_vif_mode {
+    MT792X_VIF_SINGLE = 0,    /* one monitor vif: OMAC 0 = our MAC (what the library always did) */
+    MT792X_VIF_LINUX_PAIR = 1 /* what Linux does for a plain monitor + an active monitor (the configuration that
+                                 ACKed in docs/FINDINGS.md F-001): OMAC 0 with address 00:00:00:00:00:00 (mac80211
+                                 virtual monitor vif), then after tuning OMAC 1 = our MAC (the active vif) */
+};
+
+/* Per-rate TX power limits (MCU_CE_CMD(SET_RATE_TX_POWER), spec 12.5). */
+enum mt792x_tx_power_mode {
+    MT792X_TXPWR_MT76_PL = 0, /* send the limits mt76 computes for regulatory domain PL without a device tree */
+    MT792X_TXPWR_NONE = 1     /* send nothing: firmware/efuse defaults (absolute power unknown) */
+};
+
+/* TXD7 SPE_IDX of fixed-rate frames (antenna path selection, spec 12.2). */
+enum mt792x_tx_spe_mode {
+    MT792X_SPE_MT76 = 0,      /* current mt76 (openwrt/mt76 @ 0936617): ant_to_spe[mask], 24 when 0 and 2 chains */
+    MT792X_SPE_LINUX_7_0 = 1  /* Linux v7.0 mt76 (used in F-001): SPE_IDX left 0 for MT7921 */
+};
+
+/* TXD1 WLAN_IDX of transmitted frames (spec 12.3). */
+enum mt792x_tx_wcid_mode {
+    MT792X_WCID_VIF = 0,      /* mt792x_tx with a vif and no station: the vif's wcid (19, or 18 for OMAC 1) */
+    MT792X_WCID_GLOBAL = 1    /* the global wcid 0 ("Beacon and mgmt frames should occupy wcid 0") */
 };
 
 /* One ring: host-side state. */
@@ -177,6 +215,8 @@ struct mt792x_sniffer_cfg {
     uint8_t bw;               /* must be 0 (20 MHz) for now */
     const uint8_t *mac;       /* 6 bytes for DEV_INFO, or NULL = the address GET_NIC_CAPAB reported */
     uint32_t flags;           /* MT792X_SNIFF_* */
+    uint8_t allow_tx;         /* 1 = mt792x_tx_frame may transmit; only 2.4 GHz 1-13 and 5 GHz 36/40/44/48 are
+                                 then accepted (sniffer start, channel switches and every frame are checked) */
 };
 
 /* ---- RX ---- */
@@ -259,6 +299,63 @@ struct mt792x_rx_counters {
     uint32_t liveness_checks;
 };
 
+/* ---- raw TX (spec 12) ---- */
+/* Legacy rates; the TXD6 TX_RATE value is MODE << 6 | IDX as in mt76's rate table (mac80211.c:160-173). */
+enum mt792x_tx_rate {
+    MT792X_RATE_CCK_1M = 1, MT792X_RATE_CCK_2M, MT792X_RATE_CCK_5_5M, MT792X_RATE_CCK_11M,
+    MT792X_RATE_OFDM_6M, MT792X_RATE_OFDM_9M, MT792X_RATE_OFDM_12M, MT792X_RATE_OFDM_18M,
+    MT792X_RATE_OFDM_24M, MT792X_RATE_OFDM_36M, MT792X_RATE_OFDM_48M, MT792X_RATE_OFDM_54M
+};
+
+struct mt792x_tx_req {
+    const uint8_t *frame;     /* complete 802.11 MAC header + body, no FCS (the hardware appends it) */
+    uint32_t len;             /* 24 .. MT792X_TX_MAX_FRAME */
+    uint8_t rate;             /* enum mt792x_tx_rate (CCK only on 2.4 GHz). Used for every frame mt76 sends with
+                                 FIX_RATE (management and group-addressed frames); unicast data frames follow
+                                 mt76 and leave the rate to the firmware unless opt.tx_data_fixed_rate */
+    uint8_t want_ack;         /* 1 = unicast: wait for ACK, retry; 0 = TXD3 NO_ACK (required for group addresses) */
+    uint8_t tx_count;         /* TXD3 REM_TX_COUNT, transmissions incl. retries: 1..15, 0 = mt76's 15 */
+    uint8_t want_status;      /* 1 = ask for a TX status report (TXS: ACKed or not, final rate); needs want_ack */
+};
+
+enum mt792x_tx_result {
+    MT792X_TXR_DONE = 1,      /* the chip returned the token (TX-free notification) */
+    MT792X_TXR_LOST = 2,      /* no TX-free within the timeout: buffer quarantined, fate unknown */
+    MT792X_TXR_ABORTED = 3    /* still in flight at shutdown (DMA stopped, chip reset) */
+};
+
+enum mt792x_tx_ack {
+    MT792X_ACK_UNKNOWN = 0,       /* ACK requested but no TX status report */
+    MT792X_ACK_YES = 1,           /* TXS0 ACK_ERROR bits (18:16) clear */
+    MT792X_ACK_NO = 2,            /* TXS0 ACK_TIMEOUT / RTS_TIMEOUT / QUEUE_TIMEOUT */
+    MT792X_ACK_NOT_REQUESTED = 3  /* NO_ACK frame */
+};
+
+struct mt792x_tx_done {
+    uint32_t cookie;          /* as returned by mt792x_tx_frame */
+    uint8_t result;           /* enum mt792x_tx_result */
+    uint8_t acked;            /* enum mt792x_tx_ack */
+    uint8_t free_status;      /* TX-free STATUS (0 = success, else dropped), 0xff = no TX-free seen */
+    uint8_t tx_count;         /* TX-free COUNT = transmissions (retries + 1), 0 = not reported */
+    uint8_t has_txs;          /* a TX status record was matched */
+    uint16_t txs_rate;        /* TXS0 TX_RATE: NSS 12:10, MODE 9:6 (0 CCK, 1 OFDM), IDX 5:0 */
+    uint32_t txs[4];          /* raw TXS words 0-3 (0 without a record) */
+    uint32_t elapsed_us;      /* from mt792x_tx_frame to the event that completed the record */
+};
+
+struct mt792x_tx_counters {
+    uint32_t submitted, done, lost, aborted;
+    uint32_t refused;         /* mt792x_tx_frame calls that returned an error */
+    uint32_t acked, not_acked;
+    uint32_t txfree_entries;  /* MSDU entries in TX-free notifications */
+    uint32_t txfree_unknown;  /* ... whose token is not in flight (logged) */
+    uint32_t txfree_late;     /* ... that released a quarantined slot */
+    uint32_t txs_records;     /* TXS records seen (PKT_TYPE_TXS and MCU TX_DONE events) */
+    uint32_t txs_unmatched;   /* ... not matching a frame that asked for one */
+    uint32_t quarantined;     /* slots currently quarantined */
+    uint32_t desc_reclaimed;  /* TX ring 0 descriptors the chip consumed */
+};
+
 enum {
     MT792X_RING_TX0 = 0,
     MT792X_RING_TX16 = 1,
@@ -267,6 +364,19 @@ enum {
     MT792X_RING_RX4 = 4,
     MT792X_RING_RX2 = 5,
     MT792X_RING_COUNT = 6
+};
+
+#define MT792X_TX_DONE_QUEUE 64u
+
+struct mt792x_tx_slot {
+    uint8_t state;            /* 0 free, 1 in flight, 2 quarantined */
+    uint8_t want_ack, want_status, pid;
+    uint8_t freed;            /* TX-free seen */
+    uint8_t free_status, tx_count, has_txs;
+    uint16_t token, gen;
+    uint32_t cookie;
+    uint32_t txs[4];
+    uint64_t t_submit, t_event;
 };
 
 /* Device state. Public so the caller can allocate it; treat the members as private. */
@@ -319,6 +429,17 @@ struct mt792x {
     uint64_t next_liveness_us;
     struct mt792x_rx_counters rxc;
     uint8_t rx_raw[MT792X_RX_BUF_SIZE]; /* last data-ring packet; mt792x_rx_frame.data points into it */
+
+    /* raw TX (spec 12) */
+    int tx_allowed;           /* cfg.allow_tx of the running sniffer */
+    int pair_active;          /* MT792X_VIF_LINUX_PAIR: DEV/BSS 1 sent (may be in effect) */
+    uint8_t tx_omac, tx_wcid; /* OMAC / WLAN index used in TXD1 */
+    uint8_t next_pid;
+    uint32_t next_cookie;
+    struct mt792x_tx_slot slot[MT792X_TX0_SLOTS];
+    struct mt792x_tx_done done_q[MT792X_TX_DONE_QUEUE];
+    uint32_t done_head, done_count;
+    struct mt792x_tx_counters txc;
 };
 
 /* Firmware images in memory. Untrusted: they are validated completely before any register access. */
@@ -355,6 +476,25 @@ int mt792x_sniffer_stop(struct mt792x *dev);
  * and 4 (events are counted, never block) and the non-frame packets of ring 2. */
 int mt792x_rx_poll(struct mt792x *dev, struct mt792x_rx_frame *out);
 const struct mt792x_rx_counters *mt792x_rx_counters(const struct mt792x *dev);
+/* MAC address given to the firmware for our vif (valid after mt792x_sniffer_start). */
+const uint8_t *mt792x_own_mac(const struct mt792x *dev);
+
+/* ---- raw TX (spec 12); requires a sniffer started with cfg.allow_tx ---- */
+
+/* Validates the request completely, copies the frame into a free TX slot and hands it to TX ring 0.
+ * Never waits for the chip (at most one dma_idx read to reclaim descriptors). Returns 0 and a cookie
+ * that reappears in exactly one struct mt792x_tx_done, or an error (no cookie, nothing sent). The
+ * frame's address 2 must be our own MAC; group-addressed frames need want_ack = 0; the sequence
+ * number in the header is transmitted as given (TXD3 SN_VALID, like an injected frame in mt76). */
+int mt792x_tx_frame(struct mt792x *dev, const struct mt792x_tx_req *req, uint32_t *cookie);
+/* Completion records. TX-free notifications and TX status reports are taken from the RX rings by
+ * mt792x_rx_poll (and while commands wait), so call that regularly. This function reclaims consumed
+ * ring descriptors, applies the timeouts and returns 1 with one record, 0 if none is ready, < 0 on
+ * error. Also usable after mt792x_shutdown (records of aborted frames). */
+int mt792x_tx_done_get(struct mt792x *dev, struct mt792x_tx_done *out);
+const struct mt792x_tx_counters *mt792x_tx_counters(const struct mt792x *dev);
+/* TXD6 TX_RATE value (MODE << 6 | IDX) of a rate, 0xffff if invalid. Exposed for tests and logs. */
+uint16_t mt792x_tx_rate_value(uint8_t rate);
 const struct mt792x_nic_caps *mt792x_nic_caps(const struct mt792x *dev);
 /* Resolved tune mode (MT792X_TUNE_CHANNEL_SWITCH / _SNIFFER_CONFIG / _BOTH) after sniffer start. */
 int mt792x_tune_mode_used(const struct mt792x *dev);

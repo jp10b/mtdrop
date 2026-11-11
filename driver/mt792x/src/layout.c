@@ -16,7 +16,11 @@ _Static_assert(MT792X_RX0_NDESC * MT792X_DESC_SIZE <= MT792X_OFF_RX4_DESC - MT79
 _Static_assert(MT792X_RX4_NDESC * MT792X_DESC_SIZE <= MT792X_OFF_RX2_DESC - MT792X_OFF_RX4_DESC, "RX4 descriptors overlap");
 _Static_assert(MT792X_RX2_NDESC * MT792X_DESC_SIZE <= MT792X_OFF_IDLE - MT792X_OFF_RX2_DESC, "RX2 descriptors overlap");
 _Static_assert(MT792X_OFF_IDLE + MT792X_IDLE_LEN <= MT792X_OFF_TX16_BUF, "idle page overlaps");
-_Static_assert(MT792X_LAYOUT_TOTAL <= 2u * 1024u * 1024u - 512u * 1024u, "layout must leave margin in a 2 MiB block");
+_Static_assert(MT792X_LAYOUT_TOTAL <= 1024u * 1024u, "layout must fit in 256 pages (1 MiB)");
+_Static_assert(MT792X_OFF_TX0_SLOT % 4096u == 0 && MT792X_TX0_SLOT_SIZE == 4096u, "TX0 slots must be whole pages");
+_Static_assert(MT792X_TX_MAX_FRAME <= 0x0fffu, "TXP len0 is 12 bits (MT_TXD_LEN_MASK)");
+_Static_assert(MT792X_TX_MAX_FRAME + 32u <= 0xffffu, "TXD0 TX_BYTES is 16 bits");
+_Static_assert(MT792X_TX0_SLOTS * 512u <= 8192u, "tokens (slot + 16 * generation) must stay below MT7921_TOKEN_SIZE");
 _Static_assert(MT792X_RX_BUF_SIZE <= 0x3fffu && MT792X_TX_BUF_SIZE <= 0x3fffu, "SD_LEN0 is 14 bits");
 /* Paged DMA regions (hal->dma_page_bus): no object handed to the chip may cross a 4 KiB page. */
 #define MT_PAGE 4096u
@@ -130,6 +134,9 @@ int mt_layout_init(struct mt792x *dev)
             if (mt792x_dma_bus(dev, r->buf_off + k * r->buf_size, r->buf_size, 4u, &bus)) return MT792X_E_LAYOUT;
     }
     if (mt792x_dma_bus(dev, MT792X_OFF_IDLE, MT792X_IDLE_LEN, 4u, &bus)) return MT792X_E_LAYOUT;
+    for (k = 0; k < MT792X_TX0_SLOTS; k++)
+        if (mt792x_dma_bus(dev, MT792X_OFF_TX0_SLOT + k * MT792X_TX0_SLOT_SIZE, MT792X_TX0_SLOT_SIZE, 4u, &bus))
+            return MT792X_E_LAYOUT;
 
     /* Zero everything; nothing has been handed to the chip yet. */
     mt_memset(h->dma_virt, 0, h->dma_len);

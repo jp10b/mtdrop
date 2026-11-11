@@ -62,6 +62,11 @@ void mt_mcu_note_event(struct mt792x *dev, const uint8_t *e, uint32_t len, uint3
     if (len > MT_MCU_RXD_EID) dev->rxc.event_by_id[e[MT_MCU_RXD_EID]]++;
     if (solicited) return;
     dev->rxc.unsolicited++;
+    /* MCU_EVENT_TX_DONE: struct mt7921_mcu_tx_done_event, txs[] after 28 bytes (mt7921/mcu.c:277-286) */
+    if (len >= MT_MCU_RXD_LEN + MT_TX_DONE_EVENT_TXS_OFF + 16u && e[MT_MCU_RXD_EID] == MCU_EVENT_TX_DONE) {
+        mt_tx_on_txs(dev, e + MT_MCU_RXD_LEN + MT_TX_DONE_EVENT_TXS_OFF, ring);
+        return;
+    }
     if (len < MT_MCU_RXD_MIN_ACCEPT) {
         mt_logf(dev, MT_LOG_DEBUG, "RX ring %u: short event (%u bytes) dropped", ring, len);
         return;

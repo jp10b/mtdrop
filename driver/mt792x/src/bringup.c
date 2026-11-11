@@ -637,6 +637,7 @@ int mt792x_init(struct mt792x *dev, struct mt_hal *hal)
     dev->last_step = -1;
     dev->failed_step = -1;
     dev->sniff_failed_step = -1;
+    mt_tx_init(dev);
     if (!hal->rr || !hal->wr || !hal->sleep_us || !hal->now_us || !hal->dma_virt) return MT792X_E_INVAL;
     dev->hal = hal;
     err = mt_layout_init(dev);
@@ -761,6 +762,8 @@ void mt792x_shutdown(struct mt792x *dev)
         }
     }
 
+    /* DMA is stopped and the Wi-Fi subsystem was reset: nothing can read a TX slot any more. */
+    mt_tx_abort_all(dev);
     for (i = 0; i < MT792X_RING_COUNT; i++) {
         dev->ring[i].head = dev->ring[i].tail = dev->ring[i].queued = dev->ring[i].rearm_pending = 0;
         dev->ring[i].in_frag = 0;
@@ -768,6 +771,7 @@ void mt792x_shutdown(struct mt792x *dev)
     dev->sem_held = 0;
     dev->sniff_started = 0;
     dev->rx_active = dev->sniffer_on = dev->bss_active = dev->dev_active = dev->radio_on = dev->mac_enabled = 0;
+    dev->pair_active = 0;
     dev->postboot_done = 0;
     dev->in_shutdown = 0;
     dev->state = MT_ST_SHUTDOWN;
@@ -839,6 +843,9 @@ const char *mt792x_strerror(int err)
     case MT792X_E_NO_MAC: return "no usable MAC address";
     case MT792X_E_FW_DEAD: return "firmware no longer ready";
     case MT792X_E_DMA_REINIT: return "WFDMA lost its configuration (NEED_REINIT cleared)";
+    case MT792X_E_TX_DENIED: return "TX not allowed (not enabled, or channel outside the allow-list)";
+    case MT792X_E_TX_BUSY: return "no free TX slot";
+    case MT792X_E_TX_FRAME: return "TX frame rejected";
     default: return "unknown error";
     }
 }

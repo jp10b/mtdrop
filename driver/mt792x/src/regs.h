@@ -266,7 +266,7 @@
 #define MT_WTBL_UPDATE_ADM_COUNT_CLEAR 0x00001000u /* BIT(12) */
 #define MT_WTBL_UPDATE_BUSY         0x80000000u   /* BIT(31) (mt792x_regs.h:162) */
 #define MT792X_WTBL_SIZE            20u           /* mt792x.h:18 */
-#define MT792X_WTBL_RESERVED        19u           /* mt792x.h:19 */
+#define MT792X_WTBL_RESERVED        19u           /* mt792x.h:19; vif idx i uses wcid 19 - i (mt7921/main.c:332) */
 /* per band 0 / 1 */
 #define MT_TMAC_CTCR0(b)            ((b) ? 0xa10f4u : 0x210f4u) /* 0x820e40f4 / 0x820f40f4, map #2 / #36 */
 #define MT_TMAC_CTCR0_INS_DDLMT_REFTIME 0x0000003fu /* GENMASK(5,0) */
@@ -342,5 +342,72 @@
 #define MT_TX_FREE_PAIR             0x80000000u   /* BIT(31) */
 #define MT_TXS_HDR_WORDS            2u            /* "rxd += 2" (mt7921/mac.c:606) */
 #define MT_TXS_RECORD_WORDS         8u
+
+/* ======================================================================================
+ * Raw TX (spec section 12), openwrt/mt76 @ 0936617.
+ * ====================================================================================== */
+/* TXD (mt76_connac2_mac.h:7-139), MT_TXD_SIZE 32 (mt76_connac.h:34) */
+#define MT_TXD_SIZE                 32u
+#define MT_HW_TXP_SIZE              32u           /* struct mt76_connac_hw_txp (mt76_connac.h:211-224) */
+#define MT_TXD0_TX_BYTES            0x0000ffffu   /* GENMASK(15,0) */
+#define MT_TXD0_PKT_FMT_SHIFT       23u           /* GENMASK(24,23); MT_TX_TYPE_CT = 0 */
+#define MT_TXD0_Q_IDX_SHIFT         25u           /* GENMASK(31,25) */
+#define MT_TX_TYPE_CT               0u
+#define MT_LMAC_ALTX0               0x10u         /* mt76_connac2_mac.h:29 */
+#define MT_TXD1_LONG_FORMAT         0x80000000u   /* BIT(31) */
+#define MT_TXD1_OWN_MAC_SHIFT       24u           /* GENMASK(29,24) */
+#define MT_TXD1_TID_SHIFT           20u           /* GENMASK(22,20) */
+#define MT_TXD1_HDR_FORMAT_SHIFT    16u           /* GENMASK(17,16) */
+#define MT_HDR_FORMAT_802_11        2u
+#define MT_TXD1_HDR_INFO_SHIFT      11u           /* GENMASK(15,11): header length / 2 */
+#define MT_TXD1_WLAN_IDX            0x000003ffu   /* GENMASK(9,0) */
+#define MT_TXD2_FIX_RATE            0x80000000u   /* BIT(31) */
+#define MT_TXD2_HTC_VLD             0x00002000u   /* BIT(13) */
+#define MT_TXD2_MULTICAST           0x00000400u   /* BIT(10) */
+#define MT_TXD2_FRAME_TYPE_SHIFT    4u            /* GENMASK(5,4) */
+#define MT_TXD3_SN_VALID            0x80000000u   /* BIT(31) */
+#define MT_TXD3_BA_DISABLE          0x10000000u   /* BIT(28) */
+#define MT_TXD3_SEQ_SHIFT           16u           /* GENMASK(27,16) */
+#define MT_TXD3_REM_TX_COUNT_SHIFT  11u           /* GENMASK(15,11) */
+#define MT_TXD3_NO_ACK              0x00000001u   /* BIT(0) */
+#define MT_TXD5_TX_STATUS_HOST      0x00000400u   /* BIT(10) */
+#define MT_TXD5_PID                 0x000000ffu   /* GENMASK(7,0) */
+#define MT_TXD6_TX_RATE_SHIFT       16u           /* GENMASK(29,16) */
+#define MT_TXD6_FIXED_BW            0x00000004u   /* BIT(2) */
+#define MT_TXD7_TYPE_SHIFT          20u           /* GENMASK(21,20) */
+#define MT_TXD7_SUB_TYPE_SHIFT      16u           /* GENMASK(19,16) */
+#define MT_TXD7_SPE_IDX_SHIFT       11u           /* GENMASK(15,11) */
+#define MT_TX_RATE_MODE_SHIFT       6u            /* GENMASK(9,6) */
+#define MT_PHY_TYPE_CCK             0u            /* mt76.h:335-336 */
+#define MT_PHY_TYPE_OFDM            1u
+#define MT_TX_REM_COUNT_DEFAULT     15u           /* FIELD_PREP(MT_TXD3_REM_TX_COUNT, 15) (mt76_connac_mac.c:568) */
+#define MT_PACKET_ID_FIRST          3u            /* mt76.h:494 */
+#define MT_PACKET_ID_MASK           0x7fu         /* mt76.h:490: idr_alloc(.., FIRST, MASK) gives 3..126 */
+/* TXP (mt76_connac.h:44-47,211-224) */
+#define MT_MSDU_ID_VALID            0x8000u       /* BIT(15) */
+#define MT_TXD_LEN_LAST             0x8000u       /* BIT(15), connac2 */
+#define MT_TXD_LEN_MASK             0x0fffu       /* GENMASK(11,0) */
+/* TX-free entries (mt76_connac2_mac.h:40-48) */
+#define MT_TX_FREE_WLAN_ID_SHIFT    14u           /* GENMASK(23,14) */
+#define MT_TX_FREE_MSDU_ID_SHIFT    16u           /* GENMASK(30,16) */
+#define MT_TX_FREE_MSDU_ID_MASK     0x7fffu
+#define MT_TX_FREE_STATUS_SHIFT     13u           /* GENMASK(14,13), 0 = success */
+#define MT_TX_FREE_COUNT            0x00001fffu   /* GENMASK(12,0) */
+/* TXS (mt76_connac2_mac.h:141-174) */
+#define MT_TXS0_TXS_FORMAT_SHIFT    23u           /* GENMASK(24,23); mt7921_mac_add_txs ignores > 1 */
+#define MT_TXS0_ACK_ERROR_MASK      0x00070000u   /* GENMASK(18,16) */
+#define MT_TXS0_TX_RATE             0x00003fffu   /* GENMASK(13,0) */
+#define MT_TXS2_WCID_SHIFT          16u           /* GENMASK(25,16) */
+#define MT_TXS3_PID_SHIFT           24u           /* GENMASK(31,24) */
+#define MCU_EVENT_TX_DONE           0x0fu         /* mt76_connac_mcu.h:1062; txs[] at payload offset 28 (mt7921/mcu.h:9-34) */
+#define MT_TX_DONE_EVENT_TXS_OFF    28u
+/* Per-rate TX power (mt76_connac_mcu.c:2104-2353, mt76_connac_mcu.h:1852-1872) */
+#define MCU_CE_SET_RATE_TX_POWER    0x5du         /* mt76_connac_mcu.h:1405 */
+#define MCU_CE_REG_READ             0xc0u         /* mt76_connac_mcu.h:1412, sent as MCU_CE_QUERY */
+#define MT_PSE_BASE                 0x820c8000u   /* mt792x_regs.h:28 */
+#define MT_SKU_POWER_LIMIT          161u
+#define MT_TX_POWER_TLV_LEN         44u           /* struct mt76_connac_tx_power_limit_tlv */
+#define MT_TX_POWER_BATCH           8u            /* batch_len for connac2 */
+#define MT_SKU_MAX_POWER            127           /* "no limit" filler for connac2 */
 
 #endif /* MT792X_SRC_REGS_H */

@@ -220,8 +220,11 @@ void mt_rx_account_packet(struct mt792x *dev, const uint8_t *p, uint32_t len, ui
         break;
     case MT_PKT_TYPE_TXS:
         /* for (rxd += 2; rxd + 8 <= end; rxd += 8) (mt7921/mac.c:605-609) */
-        if (len / 4u >= MT_TXS_HDR_WORDS)
-            dev->rxc.txs_records += (len / 4u - MT_TXS_HDR_WORDS) / MT_TXS_RECORD_WORDS;
+        if (len / 4u >= MT_TXS_HDR_WORDS) {
+            uint32_t n = (len / 4u - MT_TXS_HDR_WORDS) / MT_TXS_RECORD_WORDS, k;
+            dev->rxc.txs_records += n;
+            for (k = 0; k < n; k++) mt_tx_on_txs(dev, p + 4u * (MT_TXS_HDR_WORDS + k * MT_TXS_RECORD_WORDS), ring);
+        }
         mt_logf(dev, MT_LOG_DEBUG, "RX ring %u: TX status packet, %u bytes", ring, len);
         break;
     case MT_PKT_TYPE_TXRX_NOTIFY: {
@@ -239,6 +242,7 @@ void mt_rx_account_packet(struct mt792x *dev, const uint8_t *p, uint32_t len, ui
             else dev->rxc.tx_free_msdus++;
         }
         mt_logf(dev, MT_LOG_DEBUG, "RX ring %u: TX-free notification, %u bytes", ring, len);
+        mt_tx_on_free(dev, p, len, ring);
         break;
     }
     case MT_PKT_TYPE_NORMAL:

@@ -546,8 +546,11 @@ static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint
     const struct fake_cmd *c = &f->cmds[(f->n_cmds - 1u) % FAKE_MAX_CMDS];
 
     if (!f->fw_started) violation(f, "post-boot command fmt %u id 0x%02x/0x%02x before FW_START", fmt, id, ext);
-    if (fmt != FAKE_FMT_UNI && c->set_query != 1)
+    if (fmt == FAKE_FMT_CE && id == 0xc0) {
+        if (c->set_query != 0) violation(f, "REG_READ with set_query %u (want 0 = QUERY)", c->set_query);
+    } else if (fmt != FAKE_FMT_UNI && c->set_query != 1) {
         violation(f, "fmt %u id 0x%02x/0x%02x: set_query %u (want 1 = SET)", fmt, id, ext, c->set_query);
+    }
 
     if (fmt == FAKE_FMT_CE) {
         switch (id) {
@@ -610,6 +613,61 @@ static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint
                 violation(f, "SET_RX_FILTER mode %u", pl[4]);
             }
             return;
+        case 0x5d: { /* SET_RATE_TX_POWER (mt76_connac_mcu_rate_txpower_band) */
+            static const uint8_t l2[14] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+            static const uint8_t l5[48] = { 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64, 100, 102, 104,
+                                            106, 108, 110, 112, 114, 116, 118, 120, 122, 124, 126, 128, 132, 134, 136,
+                                            138, 140, 142, 144, 149, 151, 153, 155, 157, 159, 161, 165, 169, 173, 177 };
+            uint32_t n, j, k, nlist;
+            int b;
+            const uint8_t *list;
+            if (plen < 44) {
+                violation(f, "SET_RATE_TX_POWER payload %u", plen);
+                return;
+            }
+            n = pl[4];
+            b = pl[5] == 1 ? 0 : pl[5] == 2 ? 1 : -1;
+            if (b < 0 || n == 0 || n > 8 || plen != 44u + n * 162u || !all_zero(pl, 4) || pl[6] > 1 || pl[7] ||
+                pl[8] != '0' || pl[9] != '0' || pl[10] || pl[11] || !all_zero(pl + 12, 32)) {
+                violation(f, "SET_RATE_TX_POWER header (%u bytes, n %u, band %u)", plen, n, pl[5]);
+                return;
+            }
+            if (f->pwr_pending_read) violation(f, "SET_RATE_TX_POWER without a REG_READ after the previous one");
+            list = b ? l5 : l2;
+            nlist = b ? 48u : 14u;
+            for (j = 0; j < n; j++) {
+                const uint8_t *e = pl + 44 + j * 162u;
+                uint32_t pos = f->pwr_channels[b] + j;
+                int cap = b == 0 ? 40 : (e[0] >= 36 && e[0] <= 48) ? 46 : 28;
+                int8_t v = (int8_t)e[1 + 4];
+                if (pos >= nlist || e[0] != list[pos]) violation(f, "SET_RATE_TX_POWER channel %u at position %u", e[0], pos);
+                if (v <= 0 || v > cap) violation(f, "SET_RATE_TX_POWER channel %u: limit %d above the PL value %d", e[0], v, cap);
+                for (k = 0; k < 161u; k++) {
+                    int is_val = k < 4u ? b == 0 : k < 29u ? 1 : k < 77u ? ((k - 29u) % 12u) < 10u : 1;
+                    if ((int8_t)e[1 + k] != (is_val ? v : 127)) {
+                        violation(f, "SET_RATE_TX_POWER channel %u entry %u = %d", e[0], k, (int8_t)e[1 + k]);
+                        break;
+                    }
+                }
+                f->pwr_value[b][e[0]] = v;
+                if (j + 1 == n && pl[6] != (list[pos] == 177 ? 1 : 0)) violation(f, "SET_RATE_TX_POWER last_msg %u", pl[6]);
+            }
+            f->pwr_channels[b] += n;
+            f->pwr_msgs[b]++;
+            f->pwr_pending_read = 1;
+            return;
+        }
+        case 0xc0: { /* MCU_CE_QUERY(REG_READ) {le32 addr; le32 val} */
+            uint8_t rr[8];
+            if (plen != 8 || le32(pl) != 0x820c8000u || le32(pl + 4)) violation(f, "REG_READ payload");
+            if (!f->pwr_pending_read) violation(f, "REG_READ without a preceding SET_RATE_TX_POWER");
+            f->pwr_pending_read = 0;
+            f->reg_reads++;
+            put32(rr, 0x820c8000u);
+            put32(rr + 4, 0x00000001u);
+            pb_reply(f, key, seq, rr, sizeof(rr), 0);
+            return;
+        }
         case 0x17: /* SET_BSS_ABORT */
             if (plen != 4 || !all_zero(pl, 4)) violation(f, "SET_BSS_ABORT payload");
             f->bss_aborts++;
@@ -635,7 +693,7 @@ static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint
         case 0x46: /* MAC_INIT_CTRL */
             if (plen != 4 || pl[0] > 1 || pl[1] || pl[2] || pl[3]) violation(f, "MAC_INIT_CTRL payload");
             if (pl[0] && (!f->efuse_mode_set || !f->rts_set)) violation(f, "MAC enable before EFUSE mode / RTS");
-            if (!pl[0] && (f->sniffer_on || f->bss_active || f->dev_active))
+            if (!pl[0] && (f->sniffer_on || f->bss_active || f->dev_active || f->bss1_active || f->dev1_active))
                 violation(f, "MAC disable with the sniffer/BSS/DEV still active");
             f->mac_enabled = pl[0];
             pb_reply(f, key, seq, NULL, 0, 0);
@@ -664,35 +722,51 @@ static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint
         }
     } else if (fmt == FAKE_FMT_UNI) {
         switch (id) {
-        case 0x01: /* DEV_INFO_UPDATE */
-            if (plen != 16 || !all_zero(pl, 4) || pl[4] || pl[5] || pl[6] != 12 || pl[7] || pl[8] > 1 || pl[9]) {
+        case 0x01: { /* DEV_INFO_UPDATE; omac_idx 0 or 1 (pair) */
+            uint8_t idx = pl[0];
+            if (plen != 16 || idx > 1 || pl[1] || pl[2] || pl[3] || pl[4] || pl[5] || pl[6] != 12 || pl[7] || pl[8] > 1 ||
+                pl[9]) {
                 violation(f, "DEV_INFO_UPDATE payload");
                 return;
             }
             if (pl[8]) {
                 if (!f->mac_enabled) violation(f, "DEV_INFO active before MAC enable");
-                if ((pl[10] & 1u) || all_zero(pl + 10, 6)) violation(f, "DEV_INFO with an invalid MAC");
-                memcpy(f->dev_mac, pl + 10, 6);
-            } else if (f->bss_active) {
-                violation(f, "DEV_INFO inactive while the BSS is active");
+                /* 00:00:00:00:00:00 is what Linux gives the virtual monitor vif (OMAC 0 of the pair) */
+                if ((pl[10] & 1u) || (idx == 1 && all_zero(pl + 10, 6))) violation(f, "DEV_INFO with an invalid MAC");
+                if (idx == 1 && !f->dev_active) violation(f, "DEV_INFO 1 before DEV_INFO 0");
+                memcpy(idx ? f->dev1_mac : f->dev_mac, pl + 10, 6);
+            } else if (idx ? f->bss1_active : f->bss_active) {
+                violation(f, "DEV_INFO %u inactive while its BSS is active", idx);
+            } else if (idx == 0 && f->dev1_active) {
+                violation(f, "DEV_INFO 0 inactive while vif 1 is active");
             }
             if (f->uni_wrong_cid && !f->uni_wrong_cid_sent) {
                 f->uni_wrong_cid_sent = 1;
                 uni_status_reply(f, 0, 0x02, seq, 0); /* same seq, wrong cid: must be skipped */
             }
-            if (f->uni_status_dev == 0) f->dev_active = pl[8];
+            if (f->uni_status_dev == 0) {
+                if (idx) f->dev1_active = pl[8];
+                else f->dev_active = pl[8];
+            }
             uni_status_reply(f, key, 0x01, seq, f->uni_status_dev);
             return;
-        case 0x02: /* BSS_INFO_UPDATE */
-            if (plen != 36 || !all_zero(pl, 4) || pl[4] || pl[5] || pl[6] != 32 || pl[7] || pl[8] > 1 ||
-                !all_zero(pl + 9, 3) || le32(pl + 12) != 0x00010002u || pl[16] != 1 || !all_zero(pl + 17, 19)) {
+        }
+        case 0x02: { /* BSS_INFO_UPDATE; bss_idx = omac_idx = hw_bss_idx = wmm_idx = vif index */
+            uint8_t idx = pl[0];
+            if (plen != 36 || idx > 1 || !all_zero(pl + 1, 3) || pl[4] || pl[5] || pl[6] != 32 || pl[7] || pl[8] > 1 ||
+                pl[9] != idx || pl[10] != idx || pl[11] || le32(pl + 12) != 0x00010002u || pl[16] != 1 || pl[17] != idx ||
+                !all_zero(pl + 18, 18)) {
                 violation(f, "BSS_INFO_UPDATE payload");
                 return;
             }
-            if (pl[8] && !f->dev_active) violation(f, "BSS_INFO active before DEV_INFO");
-            if (f->uni_status_bss == 0) f->bss_active = pl[8];
+            if (pl[8] && !(idx ? f->dev1_active : f->dev_active)) violation(f, "BSS_INFO active before DEV_INFO");
+            if (f->uni_status_bss == 0) {
+                if (idx) f->bss1_active = pl[8];
+                else f->bss_active = pl[8];
+            }
             uni_status_reply(f, key, 0x02, seq, f->uni_status_bss);
             return;
+        }
         case 0x24: /* SNIFFER */
             if (plen == 12 && all_zero(pl, 4) && pl[4] == 0 && pl[5] == 0 && pl[6] == 8 && pl[7] == 0 && pl[8] <= 1 &&
                 all_zero(pl + 9, 3)) {
@@ -740,6 +814,216 @@ static void fw_chunk(struct fake_chip *f, const uint8_t *p, uint32_t len)
     d->chunks++;
 }
 
+/* ---- raw TX (TX ring 0), spec 12 ---- */
+
+static int tok_test(const struct fake_chip *f, uint16_t t) { return (f->tok_inflight[t >> 3] >> (t & 7u)) & 1u; }
+static void tok_set(struct fake_chip *f, uint16_t t, int on)
+{
+    if (on) f->tok_inflight[t >> 3] = (uint8_t)(f->tok_inflight[t >> 3] | (1u << (t & 7u)));
+    else f->tok_inflight[t >> 3] = (uint8_t)(f->tok_inflight[t >> 3] & ~(1u << (t & 7u)));
+}
+
+static void emit_txfree(struct fake_chip *f, uint16_t token, uint8_t wcid, uint32_t status, uint32_t count)
+{
+    uint8_t p[16];
+    /* {le16 rx_byte_cnt; le16 ctrl (MSDU_CNT 9:0, PKT_TYPE in the dword's 31:27); le32 txd} + a wcid pair
+     * entry (BIT(31), does not count) + one MSDU entry */
+    put32(p, 16u | (1u << 16) | (6u << 27));
+    put32(p + 4, 0);
+    put32(p + 8, 0x80000000u | ((uint32_t)wcid << 14));
+    put32(p + 12, ((uint32_t)token << 16) | ((status & 3u) << 13) | (count & 0x1fffu));
+    if (tok_test(f, token) && f->tx_inflight) f->tx_inflight--;
+    tok_set(f, token, 0);
+    if (emit_desc(f, f->txc_ring, p, sizeof(p), 1, 0)) f->txfree_sent++;
+}
+
+static void emit_txs(struct fake_chip *f, uint8_t pid, uint8_t wcid, int ack, uint16_t rate, int fix, uint16_t sn)
+{
+    uint32_t w[8];
+    uint8_t buf[160];
+    unsigned i;
+    memset(w, 0, sizeof(w));
+    w[0] = (rate & 0x3fffu) | (ack ? 0u : 0x10000u) | (fix ? 0x80000000u : 0u); /* format 0 (MPDU) */
+    w[1] = (uint32_t)sn << 20;
+    w[2] = (uint32_t)wcid << 16;
+    w[3] = (uint32_t)pid << 24;
+    memset(buf, 0, sizeof(buf));
+    if (f->txs_via_event) {
+        uint32_t total = 36u + 28u + 28u + 32u;
+        put32(buf, total | (7u << 27));
+        buf[0x18] = (uint8_t)total;
+        buf[0x1c] = 0x0f;                     /* MCU_EVENT_TX_DONE, seq 0 */
+        buf[36] = pid;
+        for (i = 0; i < 7; i++) put32(buf + 36 + 28 + 4 * i, w[i]);
+        if (emit_desc(f, f->txc_ring, buf, total, 1, 0)) f->txs_sent++;
+    } else {
+        put32(buf, 40u | (0u << 27));         /* PKT_TYPE_TXS, 2 header words + one 8-word record */
+        for (i = 0; i < 8; i++) put32(buf + 8 + 4 * i, w[i]);
+        if (emit_desc(f, f->txc_ring, buf, 40, 1, 0)) f->txs_sent++;
+    }
+}
+
+static void tx_complete(struct fake_chip *f, uint16_t token, uint8_t pid, uint8_t wcid, int ack, uint8_t rem,
+                        uint16_t rate, uint16_t sn)
+{
+    int txs = pid >= 3 && !f->txs_never;
+    if (txs && f->txs_first) emit_txs(f, pid, wcid, ack, rate, 1, sn);
+    emit_txfree(f, token, wcid, 0, ack ? 1u : rem);
+    if (txs && !f->txs_first) emit_txs(f, pid, wcid, ack, rate, 1, sn);
+}
+
+unsigned fake_tx_release(struct fake_chip *f)
+{
+    unsigned i, n = f->n_deferred;
+    for (i = 0; i < n; i++)
+        tx_complete(f, f->deferred[i].token, f->deferred[i].pid, f->deferred[i].wcid, f->deferred[i].ack,
+                    f->deferred[i].rem, f->deferred[i].rate, f->deferred[i].sn);
+    f->n_deferred = 0;
+    return n;
+}
+
+int fake_tx_free_token(struct fake_chip *f, uint16_t token, uint8_t wcid, uint32_t status, uint32_t count)
+{
+    unsigned before = f->txfree_sent;
+    emit_txfree(f, token, wcid, status, count);
+    return f->txfree_sent != before;
+}
+
+static int tx_chan_ok(uint8_t ch, uint8_t band)
+{
+    if (band == 0) return ch >= 1 && ch <= 13;
+    return ch == 36 || ch == 40 || ch == 44 || ch == 48;
+}
+
+/* One TX ring 0 descriptor's TXWI (TXD + hardware TXP), validated against mt76's encoding. */
+static void tx0_frame(struct fake_chip *f, const uint8_t *w, uint32_t len)
+{
+    uint32_t t[8], i, flen, hdrlen, buf0, rate = 0;
+    const uint8_t *txp = w + 32, *fr;
+    uint16_t fc, token, len0, sn;
+    uint8_t type, sub, group, omac, wcid, pid, fix, no_ack, q, rem;
+    const uint8_t *mac;
+    struct fake_air *a;
+
+    if (len != 64) {
+        violation(f, "TX ring 0 segment of %u bytes (want the 64-byte TXWI)", len);
+        return;
+    }
+    if (!f->fw_started || !f->mac_enabled || !f->sniffer_on) violation(f, "frame on TX ring 0 before firmware/MAC/sniffer");
+    for (i = 0; i < 8; i++) t[i] = le32(w + 4 * i);
+    if ((t[0] & 0xffffu) < 32u + 24u) {
+        violation(f, "TXD0 TX_BYTES %u", t[0] & 0xffffu);
+        return;
+    }
+    flen = (t[0] & 0xffffu) - 32u;
+    q = (uint8_t)(t[0] >> 25);
+    if ((t[0] >> 23) & 3u) violation(f, "TXD0 PKT_FMT %u (want 0 = CT)", (t[0] >> 23) & 3u);
+    if (q != 0x10u && q > 7u) violation(f, "TXD0 Q_IDX 0x%x", q);
+    if (t[0] & 0x007f0000u) violation(f, "TXD0 ETH_TYPE_OFFSET set");
+    if (!(t[1] & 0x80000000u) || (t[1] & 0x408c0400u) || ((t[1] >> 16) & 3u) != 2u)
+        violation(f, "TXD1 0x%08x: LONG_FORMAT / HDR_FORMAT 802.11 / reserved bits", t[1]);
+    omac = (uint8_t)((t[1] >> 24) & 0x3fu);
+    wcid = (uint8_t)(t[1] & 0x3ffu);
+    /* hardware TXP */
+    token = (uint16_t)(txp[0] | (txp[1] << 8));
+    if (!(token & 0x8000u)) violation(f, "TXP msdu_id[0] 0x%04x without MT_MSDU_ID_VALID", token);
+    token &= 0x7fffu;
+    len0 = (uint16_t)(txp[12] | (txp[13] << 8));
+    buf0 = le32(txp + 8);
+    if (!all_zero(txp + 2, 6) || !(len0 & 0x8000u) || (len0 & 0x7000u) || (uint32_t)(len0 & 0xfffu) != flen ||
+        !all_zero(txp + 14, 18))
+        violation(f, "TXP malformed: len0 0x%04x for %u bytes", len0, flen);
+    fr = dma_ptr(f, buf0, flen, 1, "TX frame (TXP buf0)");
+    if (!fr) return;
+    fc = (uint16_t)(fr[0] | (fr[1] << 8));
+    type = (uint8_t)((fc >> 2) & 3u);
+    sub = (uint8_t)((fc >> 4) & 0xfu);
+    group = (uint8_t)(fr[4] & 1u);
+    sn = (uint16_t)((fr[22] | (fr[23] << 8)) >> 4);
+    hdrlen = type == 2 ? 24u + ((fc & 0x0300u) == 0x0300u ? 6u : 0u) + ((sub & 8u) ? 2u : 0u) : 24u;
+    if (((t[1] >> 11) & 0x1fu) * 2u != hdrlen) violation(f, "TXD1 HDR_INFO %u for a %u-byte header", (t[1] >> 11) & 0x1fu, hdrlen);
+    if ((t[2] & 0x3fu) != (uint32_t)((type << 4) | sub) || ((t[7] >> 20) & 3u) != type || ((t[7] >> 16) & 0xfu) != sub)
+        violation(f, "TXD2/TXD7 type/subtype do not match frame control 0x%04x", fc);
+    if (((t[2] >> 10) & 1u) != group) violation(f, "TXD2 MULTICAST %u for address 1 group bit %u", (t[2] >> 10) & 1u, group);
+    if (t[2] & ~(0x80000000u | 0x2000u | 0x400u | 0x3fu)) violation(f, "TXD2 unexpected bits 0x%08x", t[2]);
+    fix = (uint8_t)(t[2] >> 31);
+    if (fix) {
+        uint32_t mode, idx;
+        rate = (t[6] >> 16) & 0x3fffu;
+        mode = rate >> 6;
+        idx = rate & 0x3fu;
+        if (!(t[2] & 0x2000u) || !(t[3] & 0x10000000u) || (t[6] & ~(0x3fff0000u | 0x4u)) != 0 || !(t[6] & 0x4u))
+            violation(f, "fixed-rate frame: HTC_VLD / BA_DISABLE / FIXED_BW / TXD6 0x%08x", t[6]);
+        if (!((mode == 0 && idx <= 3 && f->band == 0) || (mode == 1 && idx >= 8 && idx <= 15)))
+            violation(f, "TXD6 TX_RATE 0x%x not a legacy rate for band %u", rate, f->band);
+    } else {
+        if (t[6] || (t[2] & 0x2000u) || (t[3] & 0x10000000u) || (t[7] & 0xf800u))
+            violation(f, "rate-controlled frame with fixed-rate fields set");
+        if (type != 2 || group) violation(f, "management or group frame without FIX_RATE");
+    }
+    no_ack = (uint8_t)(t[3] & 1u);
+    rem = (uint8_t)((t[3] >> 11) & 0x1fu);
+    if (group && !no_ack) violation(f, "group-addressed frame without NO_ACK");
+    if (rem < 1 || rem > 15) violation(f, "TXD3 REM_TX_COUNT %u", rem);
+    if (!(t[3] & 0x80000000u) || ((t[3] >> 16) & 0xfffu) != sn) violation(f, "TXD3 SN_VALID/SEQ 0x%08x for SN %u", t[3], sn);
+    if (t[3] & ~(0x80000000u | 0x10000000u | 0x0fff0000u | 0xf800u | 1u)) violation(f, "TXD3 unexpected bits 0x%08x", t[3]);
+    if (t[4]) violation(f, "TXD4 0x%08x", t[4]);
+    pid = (uint8_t)(t[5] & 0xffu);
+    if (((t[5] >> 10) & 1u) != (pid >= 3 ? 1u : 0u) || (t[5] & ~0x4ffu) || (no_ack && pid))
+        violation(f, "TXD5 0x%08x (PID / TX_STATUS_HOST)", t[5]);
+    if (t[7] & ~(0x00300000u | 0x000f0000u | 0xf800u)) violation(f, "TXD7 unexpected bits 0x%08x", t[7]);
+    if (omac > 1 || !(omac ? f->dev1_active : f->dev_active)) violation(f, "TXD1 OWN_MAC %u has no active DEV_INFO", omac);
+    mac = omac ? f->dev1_mac : f->dev_mac;
+    if (memcmp(fr + 10, mac, 6) != 0) violation(f, "address 2 is not the OMAC %u address", omac);
+    if (wcid != 0 && wcid != 19u - omac) violation(f, "TXD1 WLAN_IDX %u", wcid);
+    if (!tx_chan_ok(f->channel, f->band)) violation(f, "frame transmitted on channel %u band %u (not allowed)", f->channel, f->band);
+    if (tok_test(f, token)) violation(f, "token %u reused while in flight", token);
+    tok_set(f, token, 1);
+    f->tx_inflight++;
+    if (f->n_air < FAKE_MAX_AIR) {
+        a = &f->air[f->n_air++];
+        memset(a, 0, sizeof(*a));
+        a->bytes = (uint8_t *)malloc(flen);
+        if (a->bytes) memcpy(a->bytes, fr, flen);
+        a->len = flen;
+        memcpy(a->txd, t, sizeof(t));
+        memcpy(a->txp, txp, 32);
+        a->token = token;
+        a->fix_rate = fix;
+        a->rate = (uint16_t)rate;
+        a->no_ack = no_ack;
+        a->q_idx = q;
+        a->wcid = wcid;
+        a->omac = omac;
+        a->pid = pid;
+        a->rem_tx = rem;
+        a->channel = f->channel;
+        a->band = f->band;
+        a->time_us = now(f);
+    }
+    switch (f->tx_mode) {
+    case FAKE_TX_SILENT:
+        break;
+    case FAKE_TX_DEFER:
+        if (f->n_deferred < FAKE_MAX_DEFER) {
+            f->deferred[f->n_deferred].token = token;
+            f->deferred[f->n_deferred].pid = pid;
+            f->deferred[f->n_deferred].wcid = wcid;
+            f->deferred[f->n_deferred].ack = 1;
+            f->deferred[f->n_deferred].rem = rem;
+            f->deferred[f->n_deferred].rate = (uint16_t)rate;
+            f->deferred[f->n_deferred].sn = sn;
+            f->n_deferred++;
+        } else {
+            violation(f, "fake: too many deferred TX completions");
+        }
+        break;
+    default:
+        tx_complete(f, token, pid, wcid, no_ack || f->tx_mode == FAKE_TX_ACK, rem, (uint16_t)rate, sn);
+        break;
+    }
+}
+
 /* ---- TX processing ---- */
 
 static void tx_kick(struct fake_chip *f, uint32_t n, uint32_t cpu)
@@ -757,7 +1041,7 @@ static void tx_kick(struct fake_chip *f, uint32_t n, uint32_t cpu)
         violation(f, "TX ring %u kicked before it was programmed", n);
         return;
     }
-    if ((int)n == f->tx_stall_ring) {
+    if ((int)n == f->tx_stall_ring || (n == 0 && f->tx_no_consume)) {
         mark_fault(f);
         return;
     }
@@ -778,7 +1062,7 @@ static void tx_kick(struct fake_chip *f, uint32_t n, uint32_t cpu)
         if (data) {
             if (n == 17) mcu_command(f, data, len);
             else if (n == 16) fw_chunk(f, data, len);
-            else violation(f, "data frame on TX ring %u during bring-up", n);
+            else tx0_frame(f, data, len);
         }
         if (glo(f) & GLO_TX_WB) put32(d + 4, ctrl | 0x80000000u);
         f->tx_dma[n] = (idx + 1u) % size;
@@ -1032,6 +1316,7 @@ void fake_init(struct fake_chip *f, struct mock *m)
     f->event_ring = 0;
     f->tx_stall_ring = -1;
     f->top_lpcr_fw_own = 1;
+    f->txc_ring = 4;
 
     mock_set_reg(m, R_REMAP, f->remap_initial);
     mock_set_reg(m, R_GLO, 0x1010b870u);
@@ -1051,6 +1336,11 @@ void fake_free(struct fake_chip *f)
         f->cmds[i].raw = NULL;
     }
     for (i = 0; i < f->n_dl && i < FAKE_MAX_DL; i++) free(f->dl[i].data);
+    for (i = 0; i < f->n_air && i < FAKE_MAX_AIR; i++) {
+        free(f->air[i].bytes);
+        f->air[i].bytes = NULL;
+    }
+    f->n_air = 0;
     f->n_dl = 0;
 }
 

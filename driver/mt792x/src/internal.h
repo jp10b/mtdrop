@@ -116,6 +116,21 @@ void mt_mcu_note_event(struct mt792x *dev, const uint8_t *e, uint32_t len, uint3
 /* Handles one packet taken from a data ring while no frame is wanted (command waits): counts it. */
 void mt_rx_account_packet(struct mt792x *dev, const uint8_t *p, uint32_t len, uint32_t ring, int in_cmd);
 
+/* ---- raw TX (tx.c) ---- */
+#define MT_TX_TIMEOUT_DEFAULT_US 2000000u /* [HOST] ASSUMPTION: mt76 has no TX-free timeout */
+#define MT_TXS_WAIT_US           500000u  /* [HOST] ASSUMPTION: TXS expected close to the TX-free */
+void mt_tx_init(struct mt792x *dev);
+/* TX-free notification (PKT_TYPE_TXRX_NOTIFY, whole packet incl. the 8-byte header). */
+void mt_tx_on_free(struct mt792x *dev, const uint8_t *p, uint32_t len, uint32_t ring);
+/* One 8-word TX status record (from PKT_TYPE_TXS or an MCU TX_DONE event). */
+void mt_tx_on_txs(struct mt792x *dev, const uint8_t *rec, uint32_t ring);
+/* Shutdown: every frame still in flight becomes an ABORTED record. */
+void mt_tx_abort_all(struct mt792x *dev);
+/* SET_RATE_TX_POWER per spec 12.5 (+ the REG_READ mt76 sends after each batch). */
+int mt_tx_power_setup(struct mt792x *dev);
+/* 2.4 GHz 1-13, 5 GHz 36/40/44/48. */
+int mt_tx_channel_allowed(uint8_t ch, uint8_t band);
+
 /* ---- step bookkeeping (bringup.c) ---- */
 int mt_step_fail(struct mt792x *dev, int step, int err, uint64_t t0);
 void mt_step_done(struct mt792x *dev, int step);

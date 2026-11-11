@@ -1256,3 +1256,147 @@ Frame start: base RXD + groups + `2 × HDR_OFFSET` (RXD2 15:14) bytes (`mt7921/m
 | H7 | Events on ring 0 or 4 after post-boot | both polled | — | `response ring N` in every INFO command line |
 | H8 | Firmware log volume | `FWLOG_2_HOST 1` | `skip_fw_log` | event counter 0x27 |
 | H9 | Antenna mask when `GET_NIC_CAPAB` has no PHY TLV | 0 (mt76) | `antenna_mask` override | `S24 PHY ...` line |
+
+---
+
+## 12. Raw TX and acknowledgement: verified details
+
+Added for M4 (library `driver/mt792x`, files `src/tx.c`, `src/postboot.c`, `src/rx.c`, `src/mcu.c`; tool `radiod txtest`). Sources, all read for this section:
+
+- **mt76** = the clone `third_party/openwrt_mt76` @ `0936617` (BSD-3-Clause-Clear), as in the rest of this document.
+- **v7.0** = the Linux kernel at tag `v7.0` (the kernel of F-001), files fetched read-only from `torvalds/linux`: `drivers/net/wireless/mediatek/mt76/{mt792x_core.c, mac80211.c, mt76_connac_mac.c, mt76_connac_mcu.c, mt7921/main.c, mt7921/mcu.c, mt7921/mac.c, mt7921/pci_mac.c, mt792x_mac.c}`, `net/mac80211/{iface.c, tx.c, wme.c, link.c}`, `include/linux/ieee80211.h`. mac80211 is GPL-2.0-only: it is cited for **facts** (which flags and queues it sets), no code is taken from it.
+- **commit 9de6584** = `openwrt/mt76` commit `9de658490af758f89c083605bd412310511fff17` (fetched with `gh api`).
+- **regdb** = `wireless-regdb` `db.txt` @ `40095bd` (git.kernel.org, wens/wireless-regdb).
+- **jb** = `third_party/jedbillyb_airdrop-mt7921` @ `51e705e`, `docs/FINDINGS.md` and `airdrop.sh`.
+
+Markers as before: FACT (read in the source), **ASSUMPTION**, **TODO-VERIFY**, **[HOST]** (our deliberate deviation). Section 9.6 is superseded where it differs (9.6 put every management frame on `ALTX0`; that is wrong for action frames, 12.2).
+
+### 12.1 Path of one injected frame in Linux (mt76 + mac80211)
+
+1. `ieee80211_monitor_start_xmit` sets `info->flags = IEEE80211_TX_CTL_REQ_TX_STATUS | IEEE80211_TX_CTL_INJECTED` (v7.0 `net/mac80211/tx.c:2323-2324`); a group-addressed address 1 adds `IEEE80211_TX_CTL_NO_ACK` (v7.0 `tx.c:1277-1281`); radiotap `F_TX_NOACK` also sets it (v7.0 `tx.c:2158-2159`).
+2. Queue mapping (v7.0 `net/mac80211/wme.c:117-142`): non-data → `skb->priority = 7`; non-QoS data → 0; QoS data → QoS control & 7; AC = `ieee802_1d_to_ac[priority]` = BE, BK, BK, BE, VI, VI, VO, VO for 0..7 (v7.0 `wme.c:23-30`; AC enum VO 0, VI 1, BE 2, BK 3).
+3. The vif handed to the driver (v7.0 `tx.c:1765-1781`): an **active** monitor uses its own vif; a plain monitor uses the virtual monitor vif (`local->monitor_sdata`, `WANT_MONITOR_VIF`).
+4. `mt792x_tx` (mt76 `mt792x_core.c:169-230`): no station and a vif → `wcid = &mvif->sta.deflink.wcid`, whose index is `MT792x_WTBL_RESERVED − idx` = 19 for vif 0, 18 for vif 1 (`mt7921/main.c:332-335`); without a vif the global wcid 0 ("Beacon and mgmt frames should occupy wcid 0", `mt792x_core.c:978-993`).
+5. Hardware queue (`tx.c:718-725`, `MT_DRV_HW_MGMT_TXQ` is set for mt7921e, `mt7921/pci.c:265`): `MT_TXQ_PSD` if the frame carries no data **and** (it is not a bufferable MMPDU, or it is a deauth); otherwise the skb's AC queue. Bufferable MMPDU (v7.0 `include/linux/ieee80211.h:2374-2406`): disassoc, deauth, and every action frame except Public (4) / Protected Dual (9) category FTM request/response (32/33); a too-short action frame counts as bufferable. Both wcids above have `MT_WCID_TX_INFO_SET` (`mt7921/main.c:336`, `mt792x_core.c:989`). **Consequence: AWDL action frames (category 127) go to the AC VO queue, probe requests/responses to `ALTX0`.**
+6. `mt76_dma_tx_queue_skb` (`dma.c:666-745`) maps the TXWI (`txwi_size` = `MT_TXD_SIZE` 32 + `sizeof(struct mt76_connac_hw_txp)` 32 = 64, `mt7921/pci.c:263-264`) as `buf[0]` and the frame as `buf[1]`, then calls `mt7921e_tx_prepare_skb` (`mt7921/pci_mac.c:8-54`): frames ≤ 14 bytes rejected; token from `mt76_token_consume` (`tx.c:973-1003`, idr range `token_start` 0 .. `token_size` `MT7921_TOKEN_SIZE` 8192, `mt7921/mt7921.h:29`, `mac80211.c:732`); PID from `mt76_tx_status_skb_add`; `mt76_connac2_mac_write_txwi`; zeroed TXP; `mt76_connac_write_hw_txp`.
+7. `mt76_connac_write_hw_txp` (`mt76_connac_mac.c:162-199`) sets `buf[0].len` = 64 and `nbuf` = 1, so the **ring descriptor carries only the TXWI**; the frame is reachable only through the TXP (cut-through, `MT_TX_TYPE_CT`). `mt76_dma_add_buf` (`dma.c:322-389`) with one segment: `buf0` = TXWI address, `ctrl` = `64 << 16 | LAST_SEC0`, `buf1` = 0, `info` = 0 (`tx_info.info` is never set on this path).
+
+### 12.2 TXD words (`mt76_connac2_mac_write_txwi`, `mt76_connac_mac.c:504-627`, helper `_80211` 409-502; masks `mt76_connac2_mac.h:7-139`)
+
+| word | field (bits) | value for an injected 802.11 frame on MT7921 PCIe |
+|---|---|---|
+| 0 | `TX_BYTES` 15:0 | frame length + 32 (`sz_txd` = `MT_TXD_SIZE` for MMIO) |
+| 0 | `PKT_FMT` 24:23 | `MT_TX_TYPE_CT` 0 (MMIO) |
+| 0 | `Q_IDX` 31:25 | PSD queue: `MT_LMAC_ALTX0` 0x10; else `wmm_idx · 4 + (3 − ac)` (`MT76_CONNAC_MAX_WMM_SETS` 4, `mt76_connac_lmac_mapping`, `mt76_connac.h:399-403`). `wmm_idx` = vif idx % 4 (`mt7921/main.c:321`) |
+| 1 | `LONG_FORMAT` b31; `WLAN_IDX` 9:0; `OWN_MAC` 29:24 | 1; wcid (12.1 step 4); vif `omac_idx`. `VTA` (b10) not for connac2; `TGID` (b30) only for band 1 |
+| 1 | `HDR_FORMAT` 17:16; `HDR_INFO` 15:11; `TID` 22:20 | `MT_HDR_FORMAT_802_11` 2; header length / 2; `skb->priority & 7` (12.1 step 2) |
+| 2 | `FRAME_TYPE` 5:4, `SUB_TYPE` 3:0, `MULTICAST` b10 | from frame control; address 1 group bit |
+| 2 | `FIX_RATE` b31 | set for every non-data frame and every group-addressed frame (`USE_MINRATE` is not set by injection) |
+| 2 | `HTC_VLD` b13 | set whenever `FIX_RATE` is set |
+| 2 | `FRAG` 15:14 | from More-Fragments / fragment number (not used: [HOST] fragments refused) |
+| 3 | `REM_TX_COUNT` 15:11 | 15 (beacons: whole field); the radiotap retry count is not used |
+| 3 | `NO_ACK` b0 | `IEEE80211_TX_CTL_NO_ACK` |
+| 3 | `SN_VALID` b31, `SEQ` 27:16 | `IEEE80211_TX_CTL_INJECTED`: the frame's own sequence number is kept |
+| 3 | `BA_DISABLE` b28 | with `FIX_RATE` |
+| 3 | `PROTECT_FRAME` b1, `SW_POWER_MGMT` b29 | key only / not for connac2 |
+| 4 | | 0 |
+| 5 | `PID` 7:0, `TX_STATUS_HOST` b10 | PID from `mt76_tx_status_skb_add` (`tx.c:122-170`): `NO_ACK` → 0; no `REQ_TX_STATUS` → 1 (`NO_SKB`); else idr in 3..126 (`MT_PACKET_ID_FIRST` 3, `MT_PACKET_ID_MASK` 127, `mt76.h:490-495`); `TX_STATUS_HOST` iff PID ≥ 3. Injected unicast frames therefore always ask for a TXS. `ADD_BA` b14 only for ADDBA requests |
+| 6 | `FIXED_BW` b2, `TX_RATE` 29:16 | with `FIX_RATE`: `FIXED_BW` and `TX_RATE` = `NSS` 12:10 \| `MODE` 9:6 \| `IDX` 5:0 (`mt76_connac2_mac.h:133-139`); `BW` 1:0 = 0 (20 MHz) |
+| 7 | `TYPE` 21:20, `SUB_TYPE` 19:16 | frame control (MMIO) |
+| 7 | `SPE_IDX` 15:11 | with `FIX_RATE`: `ant_to_spe[antenna_mask]` (`mt76_connac.h:418-427`), and if that is 0 with more than one chain, 24 + band (`mt76_connac_mac.c:612-623`). **v7.0 differs**: for MT7921 no `SPE_IDX` at all (v7.0 `mt76_connac_mac.c:602-608`, `if (!is_mt7921(dev))`). Antenna mask 3 → 24 (mt76) vs 0 (v7.0) |
+| 7 | `HW_AMSDU` b10 | cleared for injected and fixed-rate frames |
+
+**Rate actually used by mt76** (`mt76_connac2_mac_tx_rate_val`, `mt76_connac_mac.c:305-366`): for connac2 the lowest basic rate of the vif (`ffs(basic_rates) − 1`), +4 on 5 GHz, from `mt76_rates` (`mac80211.c:160-173`: CCK long preamble `hw_value` 0-3 for 1/2/5.5/11 Mb/s, OFDM 11, 15, 10, 14, 9, 13, 8, 12 for 6..54 Mb/s, `MT_PHY_TYPE_CCK` 0 / `OFDM` 1, `mt76.h:335-336,1182-1193`). The radiotap rate of an injected frame is **ignored** (consistent with RESEARCH §5, Foglio's MT7922 patch). **ASSUMPTION**: a monitor vif has `basic_rates` 0, so mt76 sends fixed-rate frames at CCK 1 Mb/s (2.4 GHz) / OFDM 6 Mb/s (5 GHz). Unicast data frames get no `FIX_RATE`: the firmware picks the rate from the WTBL entry of the wcid (contents unknown for wcid 18/19 without `STA_REC`, **TODO-VERIFY** from the TXS `TX_RATE`).
+
+**[HOST] library choices**: the caller's rate is used for every frame that mt76 sends with `FIX_RATE` (OWL wants 12 Mb/s, PROTOCOL 3.7); unicast data follows mt76 (no `FIX_RATE`) unless `opt.tx_data_fixed_rate`. Refused: control and extension frames, beacons, block-ack action frames, fragments, Protected and Order bits, management frames with ToDS/FromDS, address 2 ≠ our MAC, group address with ACK, CCK on 5 GHz.
+
+**Worked examples** (expected values in `test/test_tx.c`, vif 0, antenna mask 3):
+
+- AWDL action frame to broadcast, 64 bytes, SN 0x123, OFDM 12 Mb/s: AC VO → Q_IDX 3; `TXD0..7` = `06000060 80726013 8000240d 91237801 00000000 00000000 004a0004 000dc000`.
+- Unicast non-QoS data frame, 100 bytes, SN 0x45, ACK + TXS: AC BE → Q_IDX 1, TID 0, no `FIX_RATE`, PID 3: `02000084 80026013 00000020 80457800 00000000 00000403 00000000 00200000`.
+- Probe request: not bufferable → `ALTX0` (Q_IDX 0x10), TID 7.
+
+### 12.3 Station record / OMAC / BSS a frame needs
+
+FACT: mt76 sends nothing per frame. What exists when a monitor vif transmits: the vif's `DEV_INFO_UPDATE` (OMAC entry) and `BSS_INFO_UPDATE` (`CONNECTION_INFRA_AP`), `mt7921_mac_wtbl_update(19 − idx, ADM_COUNT_CLEAR)`, no `STA_REC_UPDATE` (`mt7921/main.c:301-360`, `mt76_connac_mcu.c:1194-1303`). TXD1 `WLAN_IDX` = 19 − idx, `OWN_MAC` = idx. Evidence that this suffices for transmission: F-001 (OWL transmitted action and data frames through exactly this path and the transfer completed). The library uses the same values (`opt.tx_wcid_mode` = global wcid 0 as alternative).
+
+### 12.4 Ring, TXP, slots and tokens
+
+`struct mt76_connac_hw_txp` (`mt76_connac.h:211-224`, 32 bytes): `le16 msdu_id[4]`; `ptr[2]` = `{le32 buf0; le16 len0; le16 len1; le32 buf1}`. `msdu_id[0]` = `token | MT_MSDU_ID_VALID` (b15), others 0; `ptr[0].buf0` = frame address, `len0` = `len & MT_TXD_LEN_MASK` (11:0) `| MT_TXD_LEN_LAST` (b15, connac2) (`mt76_connac.h:44-49`, `mt76_connac_mac.c:162-199`).
+
+Completion of the ring descriptor (`dma_idx` passing it, `mt76_dma_tx_cleanup`, `dma.c:422-461`) only means the TXWI was fetched; mt76 frees the frame when the token comes back (12.5).
+
+**[HOST] arrangement**: 16 slots of 4 KiB after the RX buffers (`layout.h`, total 0xF7000 = 988 KiB = 247 pages, still ≤ 1 MiB). Slot k holds TXD at +0, TXP at +32, the frame at +64; the descriptor's `buf0` points at +0, the TXP's `buf0` at +64. Both objects lie in one page, so the paged region (F-008) is respected without a second page; the hardware needs nothing more than two independent DMA addresses, which mt76 itself supplies from unrelated allocations. Maximum frame 4096 − 64 = 4032 bytes (< the 12-bit `len0` limit). TX ring 0 keeps 256 descriptors. Token = `generation · 16 + slot`, generation 0..511 (< 8192 = mt76's token range); a slot is reused only after its token comes back, and every reuse changes the generation, so a late report for an old frame cannot release a new one. Descriptors are reclaimed by index compare (`dma_idx`), as mt76.
+
+### 12.5 Completion reports
+
+**TX-free** (`PKT_TYPE_TXRX_NOTIFY` 6, `mt7921_mac_tx_free`, `mt7921/mac.c:476-551`; `struct mt76_connac_tx_free {le16 rx_byte_cnt; le16 ctrl; le32 txd;}`, `mt76_connac.h:233-237`; masks `mt76_connac2_mac.h:40-48`): `ctrl` 9:0 = MSDU count, then LE32 entries. Entry with b31 (`PAIR`): new wcid (`WLAN_ID` 23:14), does not count. Otherwise `MSDU_ID` 30:16 = token, `STATUS` 14:13 ("0: success, others: dropped"), `COUNT` 12:0 (mt76: `tx_retries += count − 1`, `tx_failed += !!stat`, so COUNT = transmissions). MT7921 has a single format (the versioned TX-free formats belong to other chips). mt76 first runs `mt76_queue_tx_cleanup` on the PSD and BE queues (descriptor reclaim), then releases each token.
+
+**TXS** (`mt7921_mac_add_txs`, `mt7921/mac.c:438-474`; `mt76_connac2_mac_add_txs_skb` 755-783; masks `mt76_connac2_mac.h:141-174`): 8-word records; `PKT_TYPE_TXS` 0 packets carry two header words then records (`mac.c:605-609`), or one record sits at offset 28 of an `MCU_EVENT_TX_DONE` (0x0f) event payload (`mt7921/mcu.c:277-286`, `mt7921/mcu.h:9-34`). Ignored if `TXS_FORMAT` (24:23) > 1, PID < 3 or `WCID` (word 2 25:16) ≥ 20. ACKed iff `txs[0] & MT_TXS0_ACK_ERROR_MASK` (18:16: ACK, RTS, queue timeout) is 0; `TX_RATE` 13:0 = final rate (same encoding as TXD6). No retry count in the MPDU format (it is in the TX-free `COUNT`).
+
+**Rings**: mt76 dispatches both by packet type on every RX ring (`mac.c:578-621`). MT7902's comment ("RX Ring0 is larger and shared for event/TX-done", `mt7921/pci.c:184-189`) implies RX ring 4 on MT7921 — **ASSUMPTION**; the library handles them on rings 0, 2 and 4, during `mt792x_rx_poll` **and** while a command waits (`check_event` → `mt_rx_account_packet`; MCU TX_DONE through `mt_mcu_note_event`).
+
+**What the host must do**: the source shows no firmware requirement to "consume" tokens; mt76 itself stops queueing when 8192 − 64 tokens are outstanding (`tx.c:997-998`). The RX ring carrying TX-free packets must be drained like any ring (a full ring cannot take events, **TODO-VERIFY** whether the firmware then stalls TX). No TXS is produced unless `TX_STATUS_HOST` is set (PID ≥ 3). **[HOST]**: no TX-free within `opt.tx_timeout_ms` (default 2 s, **ASSUMPTION**: mt76 has no timeout) → record `LOST`, slot quarantined until its token returns (`txfree_late`) or shutdown; a TXS is awaited 500 ms after the TX-free (**ASSUMPTION**), then `acked` = unknown. Shutdown stops DMA and resets WFSYS first, then reports every frame still in flight as `ABORTED`.
+
+### 12.6 What TX needs beyond RX-only operation
+
+| mt76 step | needed for TX? | library |
+|---|---|---|
+| `SET_RATE_TX_POWER` (`MCU_CE_CMD` 0x5d) from `__mt7921_start` → `mt7921_set_tx_sar_pwr` (`mt7921/main.c:244,1294-1308`), also on `IEEE80211_CONF_CHANGE_POWER` (`main.c:648-650`) and regulatory changes (`regd.c:129`) | not proven necessary; it is a **cap** table (unused entries carry 127 = "no limit") | sent at sniffer start when `cfg.allow_tx` (SN2a, right after `SET_RX_PATH` as in `__mt7921_start`); `opt.tx_power_mode` = none skips it |
+| CLC (`mt7921_load_clc`, `SET_CLC`) | **no**: mt76 has a `disable_clc` module parameter that skips it on PCIe (`mt7921/regd.c:9-29`; v7.0 `mt7921/mcu.c:14-16`), so the driver transmits without it | not sent (11.3) |
+| ACPI SAR (`mt792x_init_acpi_sar_power`, `main.c:1304`) | lowers limits if the BIOS has MediaTek SAR tables | **not available from user mode**: not applied; mitigated by `opt.tx_power_max_half_db` (12.11) |
+| `SET_RX_PATH`, `MAC_INIT_CTRL`, DEV/BSS, sniffer | already sent | unchanged |
+
+`SET_RATE_TX_POWER` format (`mt76_connac_mcu_rate_txpower_band`, `mt76_connac_mcu.c:2189-2325`; structs `mt76_connac_mcu.h:1852-1872`): per band, channels from mt76's lists (2.4 GHz 1-14; 5 GHz 36, 38, … 177, 48 entries), batches of 8 (connac2). Header 44 bytes: `ver` 0, `pad0`, `le16 len` (never set → 0), `n_chan`, `band` (1 = 2.4, 2 = 5, 3 = 6 GHz), `last_msg` (1 when the batch ends with the last channel of the highest band, 177 with 5 GHz), `pad1`, `alpha2[4]` = `dev->alpha2` (3 bytes), `pad2[32]`; then per channel `{u8 channel; s8 pwr_limit[161]}` (162 bytes for connac2). Not awaited. After every batch `mt76_connac_mcu_reg_rr(dev, MT_PSE_BASE)` — "read a CR to avoid PSE buffer underflow" (`mt76_connac_mcu.c:2319-2320`): `MCU_CE_QUERY(REG_READ)` (cid 0xc0, set_query 0), payload `{le32 0x820c8000; le32 0}`, awaited; response `{le32 reg; le32 val}` (`mt76_connac_mcu.c:2731-2743`, `mt7921/mcu.c:69-77`).
+
+Values (`mt76_connac_get_rate_power_limit`, `mt76_connac_mcu.c:3031-3046`; `mt76_connac_get_ch_power` 2147-2186; `mt76_get_rate_power_limits`, `eeprom.c:448-466`; `mt76_connac_mcu_build_sku` 2105-2145): `target = 2 · conf.power_level` (127 if 0), capped per channel at `2 · max_reg_power` of the regulatory database, then SAR; without a device tree (a laptop) every rate entry = target. Layout of the 161 bytes: CCK [0..3] (2.4 GHz only, else 127), OFDM [4..11], HT 2 × 8 [12..27], [28] = mcs[0][0], VHT 4 × (10 of 12) [29..76], HE 7 × 12 [77..160]; the gaps stay 127. For regulatory domain **PL** (regdb `db.txt:1691-1697`): 2400–2483.5 MHz 100 mW = 20 dBm → **40**; 5150–5250 MHz 200 mW = 23 dBm → **46**; 5725–5875 MHz 25 mW = 14 dBm → 28. `conf.power_level` follows the current channel's maximum, so on the channel in use mt76 programs exactly these values (**ASSUMPTION**: antenna gain 0 in cfg80211's `max_power`).
+
+**[HOST]**: the library programs 40 for all 2.4 GHz entries, 46 for 36–48 and 28 (the band's most restrictive PL value) for every other 5 GHz channel — never more than mt76 would, equal to mt76 on the channels we may transmit on — each capped by `opt.tx_power_max_half_db`; `alpha2` "00" like `SET_CHAN_DOMAIN` (11.5, **TODO-VERIFY** whether the firmware applies its own country table from `alpha2`; mt76 under `iw reg set PL` sends "PL").
+
+### 12.7 Does the firmware ACK unicast frames to our MAC in monitor mode?
+
+**FACTS**
+
+1. Commit 9de6584 (2026-07-22, author Devin Wittmayer, merged by Felix Fietkau), message: "mt76_phy_init() sets NL80211_FEATURE_ACTIVE_MONITOR for every mt76 device, but mt792x firmware does not honor it: entering active monitor mode stops RX. Gate the feature behind a new per-phy no_active_monitor flag and set it for mt792x." It adds `no_active_monitor` (`mt76.h:882`), the condition in `mt76_phy_init` (`mac80211.c:444-445`) and the line in `mt792x_init_wiphy` (`mt792x_core.c:824`). v7.0 still advertises the feature unconditionally (v7.0 `mac80211.c:442`) — consistent with F-001's "Device supports active monitor".
+2. Nothing in mt76 reacts to an active monitor: no occurrence of `MONITOR_FLAG_ACTIVE`/`MNTR_FLAG` in the tree; the RX filter bit `MT_WF_RFCR_DROP_OTHER_UC` (`mt792x_regs.h:231-241`) is never written; `mt7921_configure_filter` (`main.c:666-691`) is device-wide. "Active monitor" changes only what **mac80211** gives the driver:
+   - plain monitor (v7.0 `iface.c:1428-1446,1184-1237`): mac80211's *virtual* monitor vif goes to `drv_add_interface` (`WANT_MONITOR_VIF`, `mt792x_core.c:841`); its `sdata` is `kzalloc`'d and `vif.addr` is never set → **OMAC address 00:00:00:00:00:00** (`addr_valid` false, `iface.c:1410-1411`); `IEEE80211_CONF_MONITOR` is set → `mt7921_config` → `SNIFFER` enable (`main.c:602-618,634-660`).
+   - active monitor (`iface.c:1429-1433`): the interface's own vif goes to `drv_add_interface` with `vif.addr` = the netdev address (`iface.c:2274-2275`; for `iw … type monitor` the permanent address, i.e. the chip's MAC); `CONF_MONITOR` is **not** set by it; injected frames carry this vif (`tx.c:1765-1770`).
+   - In both cases `mt7921_add_interface` (`main.c:301-360`) sends `DEV_INFO_UPDATE` (OMAC idx = first free index, address = `bss_conf->addr`, `mt76_connac_mcu.c:1280`) and `BSS_INFO_UPDATE` (`CONNECTION_INFRA_AP`, `hw_bss_idx` = idx, `wmm_idx` = idx % 4), WTBL 19 − idx.
+3. The configuration that ACKed (F-001; jb `airdrop.sh:362-410`, jb FINDINGS §14-§15: 481 packets from the phone incl. TCP, "TCP cannot progress without ACKs"): plain `mon0` created and tuned first, then active `mon1` alongside, OWL on `mon1`. Firmware state therefore: **OMAC 0 = 00:00:00:00:00:00** (virtual monitor, sniffer enabled), **OMAC 1 = chip MAC** (BSS 1, wmm 1, wcid 18), our frames sent with `OWN_MAC` 1 / wcid 18 / Q_IDX 4..7.
+4. An active vif *alone* stayed on 5180 MHz in jb §13 (radiotap-verified). In v7.0 such a vif never gets `SNIFFER` enable (no `CONF_MONITOR`), and v7.0's `mt7921_change_chanctx` sends only the sniffer config TLV for monitor vifs (v7.0 `mt7921/main.c:1397-1398`), whereas the clone sends enable + config (`main.c:1428-1430`). **ASSUMPTION** (strongly suggested by the code): this — firmware never put into sniffer mode — is what "entering active monitor mode stops RX" means; the commit is about reception and tuning, not about ACK generation.
+5. The RX descriptor reports `ADDR_TYPE` = U2M ("unicast to me", `RXD3` 17:16, `mt76_connac2_mac.h:252`, `mt7921/mac.c:213`), so the receive MAC compares address 1 with own addresses (FACT that the classification exists; which table it uses is not in the source).
+
+**What our existing commands already program** (spec 11.5): `DEV_INFO_UPDATE` OMAC 0 = our MAC (active, link 0), `BSS_INFO_UPDATE` 0 `CONNECTION_INFRA_AP`, WTBL 19, sniffer on. That is the active vif's programming at index 0 instead of 1, without the zero-address virtual vif. (Correction to 11.5/11.9 note "for a monitor vif that is the hardware address": that holds only for an *active* monitor; mt76's own plain monitor gives the firmware 00:00:00:00:00:00.)
+
+**Answer**: **ASSUMPTION, moderate confidence**: the firmware ACKs frames whose address 1 equals an active OMAC address regardless of the sniffer, so the library's single-vif setup should already ACK. Not evidenced by source: no MediaTek document or code states how ACK generation is selected; the only proof is behavioural (F-001) and for a state that differs from ours in the OMAC index and the extra zero-address OMAC. **[HOST] option** `opt.vif_mode = MT792X_VIF_LINUX_PAIR` reproduces Linux exactly (vif 0 with zero address + sniffer + tuning, then vif 1 with our MAC, BSS 1, WTBL 18, `SET_RX_FILTER` again; frames on OMAC 1 / wcid 18; teardown vif 1 first). **TODO-VERIFY on hardware**, in this order: (a) RX frames to our MAC carry `MT792X_RXF_UNICAST_TO_ME` (cheap, no TX); (b) `radiod txtest` ACK verdict in single mode; (c) the same with `--pair`.
+
+### 12.8 `radiod txtest`
+
+A probe response is unicast to the prober; the AP retransmits it with the same sequence number and the Retry bit until it gets an ACK or exhausts its retry limit (802.11 MAC behaviour, not from mt76). The test sends at most 20 broadcast probe requests (wildcard SSID, supported rates, address 2 = our MAC from `GET_NIC_CAPAB`), one per second, listens 300 ms after each, and keeps only probe responses with good FCS on the tuned channel and address 1 = our MAC. Verdicts: `TX: PASS` if ≥ 1 such response (our frame was radiated and decoded); `ACK: LIKELY WORKING` if ≥ 5 responses, ≥ 80 % without Retry and no (transmitter, sequence number) seen twice; `ACK: NOT WORKING` if ≥ 80 % of the distinct sequence numbers had a Retry copy; else `INCONCLUSIVE` with the numbers. Only channels 1–13, 36, 40, 44, 48; default rate OFDM 6 Mb/s; default power cap 14 dBm (`--max-dbm`, `--mt76-power`).
+
+### 12.9 What OWL needs from this API (PROTOCOL 3.4/3.5)
+
+- Action frames: 24-byte header, address 1 broadcast, address 3 `00:25:00:ff:94:73`, 12 Mb/s OFDM → `want_ack = 0`, `rate = MT792X_RATE_OFDM_12M`; mt76 puts them on AC VO with `FIX_RATE`, `NO_ACK`.
+- Unicast data (fc 0x0008, LLC/SNAP + AWDL header + IPv6) → `want_ack = 1`, ACK wait and up to 15 transmissions by the firmware (`REM_TX_COUNT`), optionally `want_status` for an honest ACK result; rate per mt76 (firmware) unless `opt.tx_data_fixed_rate`.
+- Sequence numbers come from the caller (OWL/mac80211 injection keeps them, `SN_VALID`).
+
+### 12.10 To be decided on hardware
+
+| # | question | default | alternative (option) | log line / observable |
+|---|---|---|---|---|
+| H10 | Does the firmware ACK frames to our MAC with one vif (OMAC 0)? | single vif | `opt.vif_mode` = `MT792X_VIF_LINUX_PAIR` (`radiod txtest --pair`) | `sniffer vifs: …`; `ACK:` verdict; `RXF_UNICAST_TO_ME` on frames to us |
+| H11 | `SPE_IDX` of fixed-rate frames | mt76 clone (24 for two chains) | `opt.tx_spe_mode` = `MT792X_SPE_LINUX_7_0` (`--spe-v70`) | TX done / probe responses at both settings |
+| H12 | WLAN index for transmitted frames | vif wcid 19 (18 in pair mode) | `opt.tx_wcid_mode` = global 0 (`--wcid-global`) | `TX cookie … wcid N omac M` |
+| H13 | Is `SET_RATE_TX_POWER` needed / honoured | sent, mt76 PL values | `opt.tx_power_mode` none (`--no-power-limits`); `opt.tx_power_max_half_db` (`--max-dbm`) | `TX power: mt76 limits for PL …` or `SET_RATE_TX_POWER NOT sent`; probe-response RSSI at the AP side unchanged/changed |
+| H14 | Rate of unicast data without `FIX_RATE` | firmware (mt76) | `opt.tx_data_fixed_rate` | TXS `TX_RATE` in the record |
+| H15 | RX ring of TX-free / TXS | all rings handled | — | DEBUG `RX ring N: TX-free notification` |
+| H16 | TX-free timeout | 2 s | `opt.tx_timeout_ms` | `TX cookie … LOST (no TX-free, slot quarantined)` |
+| H17 | `alpha2` in the TX power table | "00" | — (code change) | — |
+
+### 12.11 Risks and how the code bounds them
+
+- **Regulatory channel set**: TX only on 2.4 GHz 1–13 and 5 GHz 36/40/44/48 (no DFS; all allowed in PL indoors, regdb `db.txt:1691-1693`), checked at sniffer start, on every channel switch while TX is enabled and on every frame; `radiod txtest` refuses others before touching anything. The simulated chip flags any frame on another channel.
+- **Power**: the library never programs a limit above mt76's PL value (the fake rejects any table entry above it); ACPI SAR back-off is not applied and the antenna gain is unknown, so `radiod txtest` caps at 14 dBm by default. Whether the firmware honours lower caps is **TODO-VERIFY**; with `--no-power-limits` the firmware defaults apply (unknown absolute power — do not use without reason).
+- **Air time**: `txtest` ≤ 20 probe requests (~40 bytes, ≤ 1 per second); no-ACK frames are sent once.
+- **DMA**: frames and TXWIs only inside the slot pages (`mt792x_dma_bus`); a slot whose token never returns is never reused; shutdown stops DMA before anything is reported aborted.
+- **No spoofing**: address 2 must equal the address given to the firmware.

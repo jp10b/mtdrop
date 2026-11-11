@@ -54,6 +54,28 @@ struct fake_cmd {
     uint32_t pl_first;  /* first payload byte, for quick checks */
 };
 
+/* One frame the chip would have radiated (TX ring 0), as decoded from the TXD/TXP it fetched. */
+#define FAKE_MAX_AIR 1024u
+struct fake_air {
+    uint8_t *bytes;     /* frame as fetched through the TXP pointer (malloc'd) */
+    uint32_t len;
+    uint32_t txd[8];    /* raw TXD words */
+    uint8_t txp[32];    /* raw hardware TXP */
+    uint16_t token;
+    uint8_t fix_rate;   /* TXD2 FIX_RATE */
+    uint16_t rate;      /* TXD6 TX_RATE (valid if fix_rate) */
+    uint8_t no_ack, q_idx, wcid, omac, pid, rem_tx;
+    uint8_t channel, band;
+    uint64_t time_us;
+};
+
+/* how the simulated chip completes a TX ring 0 frame */
+#define FAKE_TX_ACK    0u   /* TX-free (status 0, count 1); TXS "acked" if a PID asked for it */
+#define FAKE_TX_NOACK  1u   /* TX-free (status 0, count = REM_TX_COUNT); TXS with ACK_TIMEOUT */
+#define FAKE_TX_SILENT 2u   /* never reported */
+#define FAKE_TX_DEFER  3u   /* reported only by fake_tx_release() */
+#define FAKE_MAX_DEFER 64u
+
 struct fake_chip {
     struct mock *m;
 
@@ -95,6 +117,13 @@ struct fake_chip {
                                    1: only SET_RX_PATH/CHANNEL_SWITCH; 2: only sniffer config */
     uint32_t tune_delay_us;     /* virtual time spent before answering a retuning command */
     int wtbl_busy_never;        /* WTBL_UPDATE BUSY never clears */
+    /* raw TX knobs */
+    unsigned txc_ring;          /* RX ring for TX-free / TXS packets (default 4) */
+    unsigned tx_mode;           /* FAKE_TX_* */
+    int txs_first;              /* TXS before the TX-free notification */
+    int txs_never;              /* no TXS even when a PID asks for it */
+    int txs_via_event;          /* TXS inside an MCU TX_DONE event (eid 0x0f) instead of PKT_TYPE_TXS */
+    int tx_no_consume;          /* TX ring 0 kicks are never consumed (descriptors stay with the host) */
 
     /* ---- state ---- */
     uint32_t accesses;
@@ -148,6 +177,22 @@ struct fake_chip {
     unsigned wtbl_updates;
     unsigned rx_injected[8], rx_inject_dropped[8];
     unsigned uni_wrong_cid_sent;
+    /* pair vif (OMAC 1) */
+    int dev1_active, bss1_active;
+    uint8_t dev1_mac[6];
+    /* raw TX state */
+    struct fake_air air[FAKE_MAX_AIR];
+    unsigned n_air;
+    uint8_t tok_inflight[4096];  /* bitmap of 32768 tokens */
+    unsigned tx_inflight;
+    struct { uint16_t token; uint8_t pid, wcid, ack, rem; uint16_t rate, sn; } deferred[FAKE_MAX_DEFER];
+    unsigned n_deferred;
+    unsigned txfree_sent, txs_sent;
+    unsigned pwr_msgs[2];       /* SET_RATE_TX_POWER messages per band (0 = 2.4, 1 = 5 GHz) */
+    unsigned pwr_channels[2];   /* channel entries per band */
+    int8_t pwr_value[2][256];   /* limit programmed per channel (0 = never) */
+    unsigned reg_reads;
+    int pwr_pending_read;       /* a SET_RATE_TX_POWER waits for its REG_READ */
 
     /* ---- violations ---- */
     unsigned violations;
@@ -174,6 +219,11 @@ int fake_inject_frag(struct fake_chip *f, unsigned ring, const uint8_t *pkt, uin
 int fake_inject_badlen(struct fake_chip *f, unsigned ring, uint32_t claim_len);
 /* Index of the n-th (0-based) TX17 command with this key at or after 'from', or -1. */
 int fake_find_cmd(const struct fake_chip *f, uint32_t key, unsigned from, unsigned nth);
+
+/* Emits the completions held back by FAKE_TX_DEFER (in submission order). Returns how many. */
+unsigned fake_tx_release(struct fake_chip *f);
+/* Emits a TX-free notification for one token (as a late or spurious report would arrive). */
+int fake_tx_free_token(struct fake_chip *f, uint16_t token, uint8_t wcid, uint32_t status, uint32_t count);
 
 /* GLO_CFG as the chip holds it. */
 uint32_t fake_glo_cfg(const struct fake_chip *f);

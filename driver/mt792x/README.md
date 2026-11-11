@@ -16,7 +16,8 @@ from Linux mt76), plus an orderly shutdown and the "stop all DMA" list a proxy
 replays when the client dies; then the post-boot initialisation, a monitor
 ("sniffer") interface on one channel with channel switching, and the RX data path
 delivering raw 802.11 frames with per-frame channel, RSSI, FCS status and rate
-(spec section 11). Nothing transmits yet.
+(spec section 11), and raw 802.11 transmission on TX ring 0 with completion
+reports (spec section 12).
 
 ## Staged bring-up
 
@@ -71,10 +72,34 @@ specific `MT792X_E_*` code (`mt792x_strerror`). DEBUG adds every MCU command and
 response header. Steps S11-S23 are not retried (mt76 retries 10 times after a
 full reset; here a human reads the log first).
 
+## Raw TX (spec section 12)
+
+```c
+cfg.allow_tx = 1;                                  /* only 2.4 GHz 1-13 and 5 GHz 36/40/44/48 */
+err = mt792x_sniffer_start(&dev, &cfg);            /* + SET_RATE_TX_POWER with mt76's PL limits */
+struct mt792x_tx_req q = { .frame = f, .len = n, .rate = MT792X_RATE_OFDM_12M,
+                           .want_ack = 1, .want_status = 1 };
+err = mt792x_tx_frame(&dev, &q, &cookie);          /* never waits for the chip */
+...
+mt792x_rx_poll(&dev, &fr);                         /* also consumes TX-free / TX status packets */
+while (mt792x_tx_done_get(&dev, &done) == 1) ...   /* one record per cookie: done / lost / aborted */
+```
+
+TXD and hardware TXP are written exactly as `mt76_connac2_mac_write_txwi` /
+`mt76_connac_write_hw_txp` would for an injected frame on the monitor vif (queue,
+TID, `FIX_RATE`, `NO_ACK`, `SN_VALID`, PID / `TX_STATUS_HOST`, `SPE_IDX`); the
+frame sits in the same 4 KiB slot right after its 64-byte TXWI, so nothing crosses a
+page. A slot is reused only when the chip returns its token in a TX-free
+notification; a frame without one is reported `LOST` after `opt.tx_timeout_ms` and
+its slot stays quarantined until the token comes back. Address 2 must be our own
+MAC. Options for the points only hardware can decide: `vif_mode`,
+`tx_power_mode`, `tx_power_max_half_db`, `tx_spe_mode`, `tx_wcid_mode`,
+`tx_data_fixed_rate` (spec 12.10).
+
 ## Safety rules built into the code
 
 - All DMA memory is the single HAL region. `src/layout.c` places every ring and
-  buffer (table in `include/mt792x/layout.h`, 924 KiB of the 2 MiB block), and
+  buffer (table in `include/mt792x/layout.h`, 988 KiB = 247 pages), and
   `mt792x_dma_bus()` is the **only** function that produces a bus address for the
   chip. It refuses (logs, returns `MT792X_E_DMA_ADDR`, nothing is written) any range
   outside the region, any misalignment, and any region ending above 4 GiB.
@@ -107,6 +132,7 @@ src/fw.c                  patch / RAM file parsing
 src/bringup.c             steps S0-S23, shutdown, stop list, status
 src/postboot.c            S24-S31, NIC capability parsing, sniffer start/stop, channel switch
 src/rx.c                  RX classification, RXD parser, rx_poll, counters, liveness check
+src/tx.c                  raw TX: TXD/TXP, slots and tokens, TX-free / TXS completion, TX power limits
 src/util.c                freestanding helpers and a tiny log formatter
 test/test.h               minimal single-header test framework
 test/hal_mock.[ch]        mock HAL: sparse register space, hooks, trace,
@@ -177,6 +203,16 @@ tails (any read past the length shows up as a difference), ring wrap and ring
 full, frames during command waits, channel-switch latency, shutdown ordering,
 and fault paths (lost responses, error status, wrong cid, bus dead mid-sniff,
 firmware no longer ready, WFDMA re-init).
+
+For raw TX the fake consumes TX ring 0 descriptors, decodes the TXWI and validates
+every TXD/TXP field against the frame it fetches through the TXP pointer (page
+bounds, lengths, queue, header format/length, type/subtype, multicast/NO_ACK,
+fixed-rate fields, sequence number, PID, OMAC address = address 2, allowed
+channel, token reuse while in flight), keeps an air log of everything it would
+have radiated, and completes frames with TX-free notifications and TX status
+reports in the real formats (acked, not acked, never, deferred, TXS before
+TX-free, TXS inside an MCU TX_DONE event, on any RX ring). It also checks every
+`SET_RATE_TX_POWER` table against mt76's layout and the PL limits.
 
 ### Windows (MSVC + Ninja, out-of-tree)
 

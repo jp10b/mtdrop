@@ -354,7 +354,7 @@ TEST(rx_poll_classifies_everything_on_the_rings)
     static struct mt792x_rx_frame frames[16];
     static uint8_t copies[16][256];
     struct rig r;
-    uint8_t frame[256], pkt[600], ev[64];
+    uint8_t frame[256], pkt[600], ev[80]; /* 72-byte TXS packet below */
     uint32_t flen, len;
     unsigned n;
     const struct mt792x_rx_counters *c;

@@ -89,7 +89,7 @@ try {
     if ($Commands) { $commandList += @($Commands -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
     if ($commandList.Count -eq 0) { throw 'nothing to run: give -Stages or -Commands' }
     if (($commandList -join ' ') -match '@alt') { foreach ($need in $altPatch, $altRam) { if (-not (Test-Path $need)) { throw "missing alternative firmware file: $need" } } }
-    foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
+    foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff|txtest) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
     foreach ($need in $patch, $ram) { if (-not (Test-Path $need)) { throw "missing firmware file: $need" } }
     $inf2cat = Get-ChildItem (Join-Path $ToolsRoot 'packages') -Recurse -Filter Inf2Cat.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     $builtInf = Join-Path $built 'mtdrop_proxy.inf'                                   # stamped by the build

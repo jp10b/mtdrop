@@ -8,6 +8,10 @@
  *   radiod sniff <channel> <seconds> <patch> <ram> [options]
  *                                              full bring-up, post-boot, sniffer on one channel, receive for
  *                                              <seconds> (max 120), print a summary, shut down (spec 11)
+ *   radiod txtest <channel> <patch> <ram> [options]
+ *                                              sniffer with TX allowed; at most 20 broadcast probe requests,
+ *                                              one per second; counts the probe responses addressed to us and
+ *                                              whether the access points had to retransmit them (spec 12.8)
  *
  * Privacy: MAC addresses are printed as OUI:xx:xx:xx only; SSIDs only with --show-ssid.
  */
@@ -235,6 +239,7 @@ struct sniff_stats {
     unsigned n_ta;
     int ta_overflow;
     uint32_t awdl_bssid, awdl_action;
+    uint32_t awdl_ok_on_channel;      /* AWDL BSSID frames with good FCS whose per-frame channel = tuned */
     uint8_t ssid[MAX_SSID][33];
     uint8_t ssid_len[MAX_SSID];
     unsigned n_ssid;
@@ -311,7 +316,10 @@ static void account(struct sniff_stats *st, const struct mt792x_rx_frame *fr, ui
     st->by_type[type][sub]++;
     /* address 2 (transmitter) exists except in CTS (12) and ACK (13) control frames */
     if (len >= 16 && !(type == 1 && (sub == 12 || sub == 13))) note_ta(st, d + 10);
-    if (len >= 22 && type != 1 && memcmp(d + 16, awdl_bssid, 6) == 0) st->awdl_bssid++;
+    if (len >= 22 && type != 1 && memcmp(d + 16, awdl_bssid, 6) == 0) {
+        st->awdl_bssid++;
+        if (fr->fcs_ok && fr->channel == tuned) st->awdl_ok_on_channel++;
+    }
     if (type == 0 && sub == 13 && len >= 28 && d[24] == 127 && d[25] == 0x00 && d[26] == 0x17 && d[27] == 0xf2)
         st->awdl_action++;
     if (type == 0 && sub == 8) { /* beacon: 24-byte header, 12 fixed bytes, then elements */
@@ -539,15 +547,354 @@ static int sniff(int argc, char **argv) {
         if (poll_err) {
             printf("RESULT: FAIL - receive loop stopped: %s (%d); FCS errors %u, malformed %u\n", mt792x_strerror(poll_err),
                    poll_err, st.fcs_err, mt792x_rx_counters(&g_dev)->malformed);
-        } else if (st.beacons_ok_on_channel) {
-            printf("RESULT: PASS - %u beacon(s) with good FCS whose per-frame channel equals the tuned channel\n",
-                   st.beacons_ok_on_channel);
+        } else if (st.beacons_ok_on_channel || st.awdl_ok_on_channel) {
+            /* PASS if either kind of frame proves reception on the tuned channel (F-009: on channels 6 and 44
+             * there was no access point, only the phone's AWDL frames) */
+            printf("RESULT: PASS - %u beacon(s) and %u AWDL frame(s) with good FCS whose per-frame channel equals the tuned channel (%s)\n",
+                   st.beacons_ok_on_channel, st.awdl_ok_on_channel,
+                   st.beacons_ok_on_channel && st.awdl_ok_on_channel ? "beacons and AWDL"
+                   : st.beacons_ok_on_channel                       ? "beacons"
+                                                                    : "AWDL frames");
             rc = 0;
         } else {
-            printf("RESULT: FAIL - no beacon with good FCS on the tuned channel (frames %llu, FCS errors %u, malformed %u, events %u)\n",
+            printf("RESULT: FAIL - neither a beacon nor an AWDL frame with good FCS on the tuned channel (frames %llu, FCS errors %u, malformed %u, events %u)\n",
                    (unsigned long long)st.frames, st.fcs_err, mt792x_rx_counters(&g_dev)->malformed,
                    mt792x_rx_counters(&g_dev)->events);
         }
+    }
+
+out:
+    session_close(&s);
+    return rc;
+}
+
+/* ------------------------------------------------------------------------------------------------ */
+/* txtest (spec 12.8)                                                                               */
+/*
+ * Why probe responses tell us about ACKs: a probe response is a unicast management frame addressed to
+ * the station that sent the probe request (address 1 = our MAC). The access point waits for an 802.11
+ * ACK from the addressee; without one it retransmits the same frame - same sequence number, Retry bit
+ * (frame control bit 11) set - up to its retry limit. So:
+ *   - any probe response addressed to our MAC proves that one of our frames was radiated and decoded
+ *     by an AP (TX works);
+ *   - responses that arrive once, without the Retry bit, mean the AP got its ACK - and since nobody
+ *     else owns our MAC, the ACK came from our chip (ACK works);
+ *   - responses whose sequence number comes again with the Retry bit mean no ACK arrived.
+ * Caveats: an AP may also retransmit because our ACK was lost on the air (a few are normal), and our
+ * own receiver may miss copies; hence the thresholds (>= 5 responses, >= 80 %) and INCONCLUSIVE.
+ */
+
+#define TXT_MAX_PROBES 20
+#define TXT_MAX_RESP 512
+#define TXT_MAX_TA 64
+
+struct txt_resp {
+    uint8_t ta[6];
+    uint16_t sn;
+    uint8_t retry;
+    int8_t rssi;
+    uint8_t probe;
+    uint8_t ssid_len;
+    uint8_t ssid[32];
+};
+
+struct txt_state {
+    struct txt_resp r[TXT_MAX_RESP];
+    unsigned n;
+    unsigned overflow;
+    uint32_t cookie[TXT_MAX_PROBES];
+    int done_seen[TXT_MAX_PROBES];
+    struct mt792x_tx_done done[TXT_MAX_PROBES];
+};
+
+static const struct { const char *name; uint8_t rate; } txt_rates[] = {
+    {"1", MT792X_RATE_CCK_1M},    {"2", MT792X_RATE_CCK_2M},    {"5.5", MT792X_RATE_CCK_5_5M}, {"11", MT792X_RATE_CCK_11M},
+    {"6", MT792X_RATE_OFDM_6M},   {"9", MT792X_RATE_OFDM_9M},   {"12", MT792X_RATE_OFDM_12M},  {"18", MT792X_RATE_OFDM_18M},
+    {"24", MT792X_RATE_OFDM_24M}, {"36", MT792X_RATE_OFDM_36M}, {"48", MT792X_RATE_OFDM_48M},  {"54", MT792X_RATE_OFDM_54M},
+};
+
+static int tx_channel_ok(uint8_t ch) {
+    return (ch >= 1 && ch <= 13) || ch == 36 || ch == 40 || ch == 44 || ch == 48;
+}
+
+/* Broadcast probe request (802.11 probe request: wildcard SSID + supported rates). Rates per band, in
+ * 500 kb/s units with the basic bit: 2.4 GHz 1, 2, 5.5, 11 (basic), 6, 9, 12, 18 + extended 24, 36, 48,
+ * 54; 5 GHz 6, 12, 24 (basic), 9, 18, 36, 48, 54. */
+static uint32_t build_probe_req(uint8_t *f, const uint8_t *own, uint16_t sn, uint8_t band) {
+    static const uint8_t rates_2g[8] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
+    static const uint8_t ext_2g[4] = {0x30, 0x48, 0x60, 0x6c};
+    static const uint8_t rates_5g[8] = {0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c};
+    uint32_t n = 0;
+    memset(f, 0, 24);
+    f[0] = 0x40; /* management, subtype 4 */
+    memset(f + 4, 0xff, 6);
+    memcpy(f + 10, own, 6);
+    memset(f + 16, 0xff, 6);
+    f[22] = (uint8_t)(sn << 4);
+    f[23] = (uint8_t)(sn >> 4);
+    n = 24;
+    f[n++] = 0; /* SSID element, length 0 = wildcard */
+    f[n++] = 0;
+    f[n++] = 1; /* supported rates */
+    f[n++] = 8;
+    memcpy(f + n, band == MT792X_BAND_2GHZ ? rates_2g : rates_5g, 8);
+    n += 8;
+    if (band == MT792X_BAND_2GHZ) {
+        f[n++] = 50; /* extended supported rates */
+        f[n++] = 4;
+        memcpy(f + n, ext_2g, 4);
+        n += 4;
+    }
+    return n;
+}
+
+static void txt_collect_done(struct txt_state *t, unsigned sent) {
+    struct mt792x_tx_done d;
+    while (mt792x_tx_done_get(&g_dev, &d) == 1)
+        for (unsigned i = 0; i < sent; i++)
+            if (t->cookie[i] == d.cookie && !t->done_seen[i]) {
+                t->done[i] = d;
+                t->done_seen[i] = 1;
+            }
+}
+
+/* Polls RX until 'until_us'; records probe responses addressed to 'own'. Returns < 0 on a poll error. */
+static int txt_listen(struct mt_hal *hal, struct txt_state *t, const uint8_t *own, uint8_t probe, uint8_t ch,
+                      uint64_t until_us, unsigned sent) {
+    while (hal->now_us(hal->ctx) < until_us) {
+        struct mt792x_rx_frame fr;
+        int r = mt792x_rx_poll(&g_dev, &fr);
+        if (r < 0) return r;
+        txt_collect_done(t, sent);
+        if (r == 0) {
+            hal->sleep_us(hal->ctx, 500);
+            continue;
+        }
+        if ((fr.flags & MT792X_RXF_HDR_TRANS) || !fr.fcs_ok || fr.len < 24 || fr.channel != ch) continue;
+        if (fr.data[0] != 0x50 || memcmp(fr.data + 4, own, 6) != 0) continue; /* probe response to us */
+        if (t->n >= TXT_MAX_RESP) {
+            t->overflow++;
+            continue;
+        }
+        struct txt_resp *x = &t->r[t->n++];
+        memset(x, 0, sizeof(*x));
+        memcpy(x->ta, fr.data + 10, 6);
+        x->sn = (uint16_t)((fr.data[22] | (fr.data[23] << 8)) >> 4);
+        x->retry = (fr.data[1] & 0x08) ? 1 : 0;
+        x->rssi = fr.rssi_dbm;
+        x->probe = probe;
+        /* SSID: 24-byte header + 12 fixed bytes, first element */
+        if (fr.len >= 38 && fr.data[36] == 0 && fr.data[37] <= 32 && 38u + fr.data[37] <= fr.len) {
+            x->ssid_len = fr.data[37];
+            memcpy(x->ssid, fr.data + 38, x->ssid_len);
+        }
+    }
+    return 0;
+}
+
+static const char *txr_name(uint8_t r) {
+    return r == MT792X_TXR_DONE ? "done" : r == MT792X_TXR_LOST ? "LOST" : r == MT792X_TXR_ABORTED ? "aborted" : "?";
+}
+
+static int txtest(int argc, char **argv) {
+    static struct txt_state t; /* large: keep it off the stack */
+    struct session s;
+    unsigned count = 5, show_ssid = 0, ssid_len_only = 0, debug = 0, sent = 0;
+    uint8_t rate = MT792X_RATE_OFDM_6M, ch, band;
+    struct mt792x_options extra;
+    int rc = 1, err, poll_err = 0;
+    long chl = strtol(argv[2], NULL, 10);
+
+    memset(&extra, 0, sizeof(extra));
+    memset(&t, 0, sizeof(t));
+    /* [HOST] default cap 14 dBm (28 half-dB): below mt76's regulatory limits for PL (20 / 23 dBm), leaving
+     * margin for the unknown antenna gain and the ACPI SAR tables mt76 would apply (spec 12.6) */
+    extra.tx_power_max_half_db = 28;
+    for (int i = 5; i < argc; i++) {
+        if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) count = (unsigned)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--rate") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            rate = 0;
+            for (size_t k = 0; k < sizeof(txt_rates) / sizeof(txt_rates[0]); k++)
+                if (strcmp(v, txt_rates[k].name) == 0) rate = txt_rates[k].rate;
+            if (!rate) {
+                printf("RESULT: FAIL - --rate must be one of 1 2 5.5 11 6 9 12 18 24 36 48 54\n");
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--ssid-len-only") == 0) ssid_len_only = 1;
+        else if (strcmp(argv[i], "--show-ssid") == 0) show_ssid = 1;
+        else if (strcmp(argv[i], "--debug") == 0) debug = 1;
+        else if (strcmp(argv[i], "--pair") == 0) extra.vif_mode = MT792X_VIF_LINUX_PAIR;
+        else if (strcmp(argv[i], "--spe-v70") == 0) extra.tx_spe_mode = MT792X_SPE_LINUX_7_0;
+        else if (strcmp(argv[i], "--wcid-global") == 0) extra.tx_wcid_mode = MT792X_WCID_GLOBAL;
+        else if (strcmp(argv[i], "--no-power-limits") == 0) extra.tx_power_mode = MT792X_TXPWR_NONE;
+        else if (strcmp(argv[i], "--mt76-power") == 0) extra.tx_power_max_half_db = 0;
+        else if (strcmp(argv[i], "--max-dbm") == 0 && i + 1 < argc) {
+            int dbm = atoi(argv[++i]);
+            if (dbm < 1 || dbm > 23) {
+                printf("RESULT: FAIL - --max-dbm must be 1..23 (it can only lower mt76's limits)\n");
+                return 2;
+            }
+            extra.tx_power_max_half_db = (uint8_t)(2 * dbm);
+        } else {
+            printf("RESULT: FAIL - unknown option %s\n", argv[i]);
+            return 2;
+        }
+    }
+    if (chl < 1 || chl > 255 || !tx_channel_ok((uint8_t)chl)) {
+        printf("RESULT: FAIL - transmitting is only allowed on 2.4 GHz channels 1-13 and 5 GHz channels 36, 40, 44, 48\n");
+        return 2;
+    }
+    if (count < 1 || count > TXT_MAX_PROBES) {
+        printf("RESULT: FAIL - --count must be 1..%d\n", TXT_MAX_PROBES);
+        return 2;
+    }
+    ch = (uint8_t)chl;
+    band = band_of(ch);
+    if (band == MT792X_BAND_5GHZ && rate <= MT792X_RATE_CCK_11M) {
+        printf("RESULT: FAIL - CCK rates are not allowed on 5 GHz\n");
+        return 2;
+    }
+
+    if (session_open(&s, argv[3], argv[4]) != 0) goto out;
+    halwin_set_log_level(s.h, debug ? MT_LOG_DEBUG : MT_LOG_INFO);
+    g_dev.opt.vif_mode = extra.vif_mode;
+    g_dev.opt.tx_spe_mode = extra.tx_spe_mode;
+    g_dev.opt.tx_wcid_mode = extra.tx_wcid_mode;
+    g_dev.opt.tx_power_mode = extra.tx_power_mode;
+    g_dev.opt.tx_power_max_half_db = extra.tx_power_max_half_db;
+    err = mt792x_bringup(&g_dev, &s.fw, MT792X_STAGE_POSTBOOT);
+    if (err) {
+        printf("RESULT: FAIL - bring-up: %s (%d) at S%d\n", mt792x_strerror(err), err, mt792x_failed_step(&g_dev));
+        goto out;
+    }
+    {
+        struct mt792x_sniffer_cfg cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.channel = ch;
+        cfg.band = band;
+        cfg.flags = MT792X_SNIFF_CONTROL | MT792X_SNIFF_OTHER_BSS;
+        cfg.allow_tx = 1;
+        err = mt792x_sniffer_start(&g_dev, &cfg);
+        if (err) {
+            printf("RESULT: FAIL - sniffer start: %s (%d) at SN%d\n", mt792x_strerror(err), err, g_dev.sniff_failed_step);
+            goto out;
+        }
+    }
+    {
+        struct mt_hal *hal = halwin_hal(s.h);
+        const uint8_t *own = mt792x_own_mac(&g_dev);
+        uint8_t frame[64];
+        printf("txtest: channel %u, %u probe request(s), rate code %u, own MAC ", ch, count, rate);
+        print_masked_addr(own);
+        printf(", vifs %s, TX power %s\n", extra.vif_mode ? "Linux pair" : "single",
+               extra.tx_power_mode == MT792X_TXPWR_NONE ? "limits NOT sent (firmware defaults)"
+               : extra.tx_power_max_half_db              ? "mt76 PL limits, capped by --max-dbm"
+                                                         : "mt76 PL limits");
+        for (unsigned i = 0; i < count && !poll_err; i++) {
+            struct mt792x_tx_req q;
+            uint64_t t0 = hal->now_us(hal->ctx);
+            uint32_t len = build_probe_req(frame, own, (uint16_t)(0x100 + i), band);
+            memset(&q, 0, sizeof(q));
+            q.frame = frame;
+            q.len = len;
+            q.rate = rate;
+            q.want_ack = 0; /* broadcast */
+            err = mt792x_tx_frame(&g_dev, &q, &t.cookie[i]);
+            if (err) {
+                printf("probe %u: TX refused: %s (%d)\n", i + 1, mt792x_strerror(err), err);
+                poll_err = err;
+                break;
+            }
+            sent = i + 1;
+            unsigned before = t.n;
+            poll_err = txt_listen(hal, &t, own, (uint8_t)i, ch, t0 + 300000u, sent);
+            unsigned n = t.n - before, retries = 0;
+            int lo = 0, hi = -128;
+            for (unsigned k = before; k < t.n; k++) {
+                retries += t.r[k].retry;
+                if (k == before || t.r[k].rssi < lo) lo = t.r[k].rssi;
+                if (t.r[k].rssi > hi) hi = t.r[k].rssi;
+            }
+            printf("probe %u: TX %s", i + 1, t.done_seen[i] ? txr_name(t.done[i].result) : "pending");
+            if (t.done_seen[i])
+                printf(" (TX-free status %u, transmissions %u, %u us)", t.done[i].free_status, t.done[i].tx_count,
+                       t.done[i].elapsed_us);
+            printf("; %u probe response(s) to us, %u with Retry bit", n, retries);
+            if (n) printf(", RSSI %d..%d dBm, from", lo, hi);
+            for (unsigned k = before; k < t.n; k++) {
+                int dup = 0;
+                for (unsigned m = before; m < k; m++)
+                    if (memcmp(t.r[m].ta, t.r[k].ta, 3) == 0) dup = 1;
+                if (!dup) printf(" %02x:%02x:%02x:xx:xx:xx", t.r[k].ta[0], t.r[k].ta[1], t.r[k].ta[2]);
+            }
+            printf("\n");
+            if (!poll_err && i + 1 < count) poll_err = txt_listen(hal, &t, own, (uint8_t)i, ch, t0 + 1000000u, sent);
+        }
+        if (!poll_err) poll_err = txt_listen(hal, &t, own, (uint8_t)(sent ? sent - 1 : 0), ch, hal->now_us(hal->ctx) + 300000u, sent);
+        if (poll_err) printf("receive/transmit loop stopped: %s (%d)\n", mt792x_strerror(poll_err), poll_err);
+
+        /* ---- analysis ---- */
+        unsigned total = t.n, no_retry = 0, uniq = 0, uniq_retried = 0, uniq_repeated = 0, aps = 0;
+        for (unsigned k = 0; k < total; k++) {
+            int first = 1, retried = t.r[k].retry, repeats = 0;
+            no_retry += !t.r[k].retry;
+            for (unsigned m = 0; m < total; m++) {
+                if (m == k || memcmp(t.r[m].ta, t.r[k].ta, 6) != 0 || t.r[m].sn != t.r[k].sn) continue;
+                if (m < k) first = 0;
+                repeats++;
+                retried |= t.r[m].retry;
+            }
+            if (!first) continue;
+            uniq++;
+            if (retried) uniq_retried++;
+            if (repeats) uniq_repeated++;
+            int new_ap = 1;
+            for (unsigned m = 0; m < k; m++)
+                if (memcmp(t.r[m].ta, t.r[k].ta, 6) == 0) new_ap = 0;
+            aps += new_ap;
+        }
+        const struct mt792x_tx_counters *tc = mt792x_tx_counters(&g_dev);
+        printf("\n==== txtest summary ====\n");
+        printf("probe requests sent %u; TX records: done %u, lost %u; TX-free entries %u, unknown tokens %u, quarantined %u\n",
+               sent, tc->done, tc->lost, tc->txfree_entries, tc->txfree_unknown, tc->quarantined);
+        printf("probe responses to our MAC: %u (%u without Retry bit) from %u transmitter(s); %u distinct sequence numbers, %u of them with a Retry copy, %u seen more than once%s\n",
+               total, no_retry, aps, uniq, uniq_retried, uniq_repeated, t.overflow ? " (table full)" : "");
+        if (ssid_len_only || show_ssid) {
+            for (unsigned k = 0; k < total; k++) {
+                int dup = 0;
+                for (unsigned m = 0; m < k; m++)
+                    if (memcmp(t.r[m].ta, t.r[k].ta, 6) == 0) dup = 1;
+                if (dup) continue;
+                printf("  responder %02x:%02x:%02x:xx:xx:xx SSID length %u", t.r[k].ta[0], t.r[k].ta[1], t.r[k].ta[2],
+                       t.r[k].ssid_len);
+                if (show_ssid) {
+                    printf(" \"");
+                    for (unsigned c = 0; c < t.r[k].ssid_len; c++) {
+                        uint8_t b = t.r[k].ssid[c];
+                        if (b >= 0x20 && b < 0x7f && b != '"' && b != '\\') putchar(b);
+                        else printf("\\x%02x", b);
+                    }
+                    printf("\"");
+                }
+                printf("\n");
+            }
+        }
+        if (total >= 1) {
+            printf("TX: PASS - %u probe response(s) addressed to our MAC: our probe requests were radiated and decoded\n", total);
+            rc = 0;
+        } else {
+            printf("TX: FAIL - no probe response addressed to our MAC (is an access point on channel %u?)\n", ch);
+        }
+        if (total >= 5 && no_retry * 100u >= 80u * total && uniq_repeated == 0)
+            printf("ACK: LIKELY WORKING - %u of %u responses without Retry bit, no sequence number retransmitted\n", no_retry,
+                   total);
+        else if (uniq && uniq_retried * 100u >= 80u * uniq)
+            printf("ACK: NOT WORKING - %u of %u response sequence numbers were retransmitted with the Retry bit\n",
+                   uniq_retried, uniq);
+        else
+            printf("ACK: INCONCLUSIVE - responses %u, without Retry %u, sequence numbers %u, retransmitted %u, seen twice %u\n",
+                   total, no_retry, uniq, uniq_retried, uniq_repeated);
     }
 
 out:
@@ -560,6 +907,7 @@ int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "dma-probe") == 0) return dma_probe();
     if (argc == 5 && strcmp(argv[1], "bringup") == 0) return bringup(atoi(argv[2]), argv[3], argv[4]);
     if (argc >= 6 && strcmp(argv[1], "sniff") == 0) return sniff(argc, argv);
+    if (argc >= 5 && strcmp(argv[1], "txtest") == 0) return txtest(argc, argv);
     printf("usage: radiod dma-probe\n"
            "       radiod bringup <stage 1-6> <patch file> <ram file>\n"
            "         stages: 1 ownership, 2 reset, 3 rings, 4 MCU, 5 firmware, 6 post-boot\n"
@@ -571,6 +919,18 @@ int main(int argc, char **argv) {
            "         --no-hdr-trans         leave RX header translation off\n"
            "         --no-fwlog             do not ask the firmware for log events\n"
            "         --drop-fcs-errors      do not request FCS-error frames\n"
+           "         --debug                print DEBUG library messages\n"
+           "       radiod txtest <channel 1-13|36|40|44|48> <patch file> <ram file> [options]\n"
+           "         --count N              probe requests, one per second (default 5, max 20)\n"
+           "         --rate R               1 2 5.5 11 (2.4 GHz only) 6 9 12 18 24 36 48 54 (default 6)\n"
+           "         --ssid-len-only        list responders with their SSID length\n"
+           "         --show-ssid            ... and the SSID\n"
+           "         --pair                 Linux plain+active vif pair (OMAC 1 = our MAC)\n"
+           "         --spe-v70              TXD7 SPE_IDX as Linux 7.0 (0)\n"
+           "         --wcid-global          transmit with wcid 0 instead of the vif's\n"
+           "         --max-dbm D            cap every TX power limit at D dBm (1..23, default 14)\n"
+           "         --mt76-power           no extra cap: exactly mt76's limits for PL (20 / 23 dBm)\n"
+           "         --no-power-limits      do not send SET_RATE_TX_POWER (firmware defaults)\n"
            "         --debug                print DEBUG library messages\n");
     return 2;
 }

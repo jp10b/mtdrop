@@ -25,7 +25,9 @@
  *   0x047000  RX0  buffers         32 x 2048 B
  *   0x057000  RX4  buffers         32 x 2048 B
  *   0x067000  RX2  buffers        256 x 2048 B
- *   0x0e7000  end (946176 bytes = 924 KiB; the 2 MiB block leaves 1.1 MiB unused)
+ *   0x0e7000  TX0  slots           16 x 4096 B (raw 802.11 TX, spec 12.4: TXD 32 B + TXP 32 B + frame,
+ *                                             one slot per in-flight frame / token)
+ *   0x0f7000  end (1011712 bytes = 988 KiB = 247 pages; fits in 1 MiB = 256 pages)
  */
 #ifndef MT792X_LAYOUT_H
 #define MT792X_LAYOUT_H
@@ -40,6 +42,8 @@ extern "C" {
 #define MT792X_RX0_NDESC        32u
 #define MT792X_RX4_NDESC        32u
 #define MT792X_RX2_NDESC        256u
+#define MT792X_TX0_SLOTS        16u     /* frames in flight (tokens) at most; [HOST] mt76 has 8192 */
+#define MT792X_TX0_SLOT_SIZE    4096u
 
 #define MT792X_RX_BUF_SIZE      2048u   /* MT_RX_BUF_SIZE (mt76.h) */
 #define MT792X_TX_BUF_SIZE      4096u   /* one firmware chunk (max_len 4096) or one MCU command */
@@ -59,7 +63,16 @@ extern "C" {
 #define MT792X_OFF_RX0_BUF      (MT792X_OFF_TX17_BUF + MT792X_TX17_NDESC * MT792X_TX_BUF_SIZE)
 #define MT792X_OFF_RX4_BUF      (MT792X_OFF_RX0_BUF + MT792X_RX0_NDESC * MT792X_RX_BUF_SIZE)
 #define MT792X_OFF_RX2_BUF      (MT792X_OFF_RX4_BUF + MT792X_RX4_NDESC * MT792X_RX_BUF_SIZE)
-#define MT792X_LAYOUT_TOTAL     (MT792X_OFF_RX2_BUF + MT792X_RX2_NDESC * MT792X_RX_BUF_SIZE)
+#define MT792X_OFF_TX0_SLOT     (MT792X_OFF_RX2_BUF + MT792X_RX2_NDESC * MT792X_RX_BUF_SIZE)
+#define MT792X_LAYOUT_TOTAL     (MT792X_OFF_TX0_SLOT + MT792X_TX0_SLOTS * MT792X_TX0_SLOT_SIZE)
+
+/* Raw TX (spec 12.4). One 4 KiB slot holds, for one frame: the 64-byte "TXWI" that TX ring 0's
+ * descriptor points at (32-byte TXD, MT_TXD_SIZE, + 32-byte struct mt76_connac_hw_txp,
+ * mt7921/pci.c:263-264) and, right after it, the frame the TXP points at (cut-through). Both
+ * objects stay inside one page. The frame length is also limited by the 12-bit TXP length field
+ * (MT_TXD_LEN_MASK GENMASK(11,0), mt76_connac.h:47), which is larger. */
+#define MT792X_TXWI_SIZE        64u
+#define MT792X_TX_MAX_FRAME     (MT792X_TX0_SLOT_SIZE - MT792X_TXWI_SIZE)   /* 4032 bytes, no FCS */
 
 #ifdef __cplusplus
 }

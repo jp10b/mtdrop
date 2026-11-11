@@ -228,38 +228,45 @@ static int rx_filter(struct mt792x *dev, const char *name, uint32_t fif, uint8_t
 /* mt76_connac_mcu_uni_add_dev for the monitor vif: idx = omac_idx = 0, band 0, wmm 0, link 0.
  * The wcid passed by mt7921_add_interface still has idx 0 at this point (it is set to
  * MT792x_WTBL_RESERVED - idx only afterwards, mt7921/main.c:323-335). */
-static int dev_info(struct mt792x *dev, int active, uint32_t timeout_us, int *status)
+static const uint8_t zero_mac[6] = { 0, 0, 0, 0, 0, 0 };
+
+/* idx = vif index = omac_idx = bss_idx (mt7921_add_interface). mac: bss_conf->addr, which is
+ * 00:00:00:00:00:00 for the mac80211 virtual monitor vif (kzalloc'd sdata, iface.c:1201-1223 in v7.0)
+ * and the netdev address for an active monitor vif (iface.c:2274-2275). */
+static int dev_info(struct mt792x *dev, uint8_t idx, const uint8_t *mac, int active, uint32_t timeout_us, int *status)
 {
     uint8_t req[16];
     mt_memset(req, 0, sizeof(req));
-    req[0] = 0;                                    /* omac_idx */
+    req[0] = idx;                                  /* omac_idx */
     req[1] = 0;                                    /* band_idx */
     mt_put_le16(req + 4, DEV_INFO_ACTIVE);
     mt_put_le16(req + 6, 12);                      /* sizeof(struct req_tlv) */
     req[8] = active ? 1u : 0u;
     req[9] = 0;                                    /* link_idx */
-    mt_memcpy(req + 10, dev->own_mac, 6);
-    return mt_mcu_send(dev, active ? "DEV_INFO_UPDATE active" : "DEV_INFO_UPDATE inactive",
+    mt_memcpy(req + 10, mac, 6);
+    return mt_mcu_send(dev, active ? (idx ? "DEV_INFO_UPDATE 1 active" : "DEV_INFO_UPDATE active")
+                                   : (idx ? "DEV_INFO_UPDATE 1 inactive" : "DEV_INFO_UPDATE inactive"),
                        MT_MCU_UNI(MCU_UNI_DEV_INFO_UPDATE), req, sizeof(req), 1, timeout_us, status);
 }
 
-static int bss_info(struct mt792x *dev, int active, uint32_t timeout_us, int *status)
+static int bss_info(struct mt792x *dev, uint8_t idx, int active, uint32_t timeout_us, int *status)
 {
     uint8_t req[36];
     mt_memset(req, 0, sizeof(req));
-    req[0] = 0;                                    /* bss_idx */
+    req[0] = idx;                                  /* bss_idx */
     mt_put_le16(req + 4, UNI_BSS_INFO_BASIC);      /* struct mt76_connac_bss_basic_tlv (32 bytes) */
     mt_put_le16(req + 6, 32);
     req[8] = active ? 1u : 0u;                     /* active */
-    req[9] = 0;                                    /* omac_idx */
-    req[10] = HW_BSSID_0;                          /* hw_bss_idx: omac_idx (0) <= EXT_BSSID_START */
+    req[9] = idx;                                  /* omac_idx */
+    req[10] = idx > EXT_BSSID_START ? HW_BSSID_0 : idx; /* hw_bss_idx */
     req[11] = 0;                                   /* band_idx */
     mt_put_le32(req + 12, CONNECTION_INFRA_AP);    /* conn_type for NL80211_IFTYPE_MONITOR */
     req[16] = 1;                                   /* conn_state */
-    req[17] = 0;                                   /* wmm_idx */
+    req[17] = (uint8_t)(idx % 4u);                 /* wmm_idx = idx % MT76_CONNAC_MAX_WMM_SETS */
     mt_put_le16(req + 24, 0);                      /* bmc_tx_wlan_idx = wcid->idx (0, see dev_info) */
     mt_put_le16(req + 30, 0);                      /* sta_idx */
-    return mt_mcu_send(dev, active ? "BSS_INFO_UPDATE active" : "BSS_INFO_UPDATE inactive",
+    return mt_mcu_send(dev, active ? (idx ? "BSS_INFO_UPDATE 1 active" : "BSS_INFO_UPDATE active")
+                                   : (idx ? "BSS_INFO_UPDATE 1 inactive" : "BSS_INFO_UPDATE inactive"),
                        MT_MCU_UNI(MCU_UNI_BSS_INFO_UPDATE), req, sizeof(req), 1, timeout_us, status);
 }
 
@@ -496,6 +503,12 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
         mt_logf(dev, MT_LOG_ERROR, "sniffer: channel %u band %u bw %u not supported", cfg->channel, cfg->band, cfg->bw);
         return MT792X_E_INVAL;
     }
+    if (cfg->allow_tx && !mt_tx_channel_allowed(cfg->channel, cfg->band)) {
+        mt_logf(dev, MT_LOG_ERROR, "sniffer: TX requested on channel %u band %u, outside the TX allow-list "
+                "(2.4 GHz 1-13, 5 GHz 36/40/44/48)", cfg->channel, cfg->band);
+        return MT792X_E_TX_DENIED;
+    }
+    if (dev->opt.vif_mode > MT792X_VIF_LINUX_PAIR || dev->opt.tx_power_mode > MT792X_TXPWR_NONE) return MT792X_E_INVAL;
     if (cfg->mac) {
         mt_memcpy(dev->own_mac, cfg->mac, 6);
     } else if (dev->nic.has_mac && mac_valid(dev->nic.mac)) {
@@ -506,6 +519,11 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
     }
     if (!ant_mask(dev)) mt_logf(dev, MT_LOG_WARN, "sniffer: antenna mask 0 (no PHY capability): streams fields will be 0");
     dev->sniff_flags = cfg->flags;
+    dev->tx_allowed = 0;
+    /* mt792x_tx (mt792x_core.c:169-230): a vif without station -> mvif->sta.deflink.wcid = 19 - idx
+     * (mt7921/main.c:332), OWN_MAC = omac_idx. Frames go out on the vif carrying our address. */
+    dev->tx_omac = dev->opt.vif_mode == MT792X_VIF_LINUX_PAIR ? 1u : 0u;
+    dev->tx_wcid = dev->opt.tx_wcid_mode == MT792X_WCID_GLOBAL ? 0u : (uint8_t)(MT792X_WTBL_RESERVED - dev->tx_omac);
     dev->sniff_failed_step = -1;
     if (dev->opt.tune_mode != MT792X_TUNE_AUTO) {
         dev->tune_used = dev->opt.tune_mode;
@@ -516,6 +534,10 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
             cfg->channel, cfg->band == MT792X_BAND_5GHZ ? "5 GHz" : "2.4 GHz", cfg->flags, dev->own_mac[0], dev->own_mac[1],
             dev->own_mac[2], dev->ram.fw_features, dev->ram.fw_features_status, tune_name(dev->tune_used),
             dev->opt.tune_mode ? " (forced)" : "");
+    mt_logf(dev, MT_LOG_INFO, "sniffer vifs: %s; TX %s",
+            dev->opt.vif_mode == MT792X_VIF_LINUX_PAIR ? "Linux pair (OMAC 0 = 00:00:00:00:00:00, OMAC 1 = our MAC)"
+                                                        : "single (OMAC 0 = our MAC)",
+            cfg->allow_tx ? "allowed" : "not allowed");
 
     /* SN1: mt76_connac_mcu_set_channel_domain. [HOST] flags 0 and alpha2 "00" (see spec 11.5). */
     if (!dev->opt.skip_chan_domain) {
@@ -541,7 +563,13 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
     /* SN2 */
     err = chan_info(dev, MT_MCU_EXT(MCU_EXT_SET_RX_PATH), "SET_RX_PATH", cfg->channel, cfg->band);
     if (err) return sn_fail(dev, 2, err);
-    /* SN3 (TX power, mt76_connac_mcu_set_rate_txpower, is not sent: spec 11.5) */
+    /* SN2a: TX power limits, where __mt7921_start sends them (mt7921/main.c:244); only when TX is
+     * wanted, so RX-only operation is unchanged (spec 11.3, 12.5) */
+    if (cfg->allow_tx) {
+        err = mt_tx_power_setup(dev);
+        if (err) return sn_fail(dev, 2, err);
+    }
+    /* SN3 */
     if (!dev->opt.skip_radio_ctrl) {
         dev->radio_on = 1;
         err = radio_ctrl(dev, EXT_CMD_RADIO_LED_CTRL_ENABLE, "ID_RADIO_ON_OFF_CTRL led enable");
@@ -558,14 +586,15 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
     /* SN5-SN7: monitor interface */
     if (!dev->opt.skip_add_dev) {
         dev->dev_active = 1;     /* flags are set before sending, see mt_postboot S31 */
-        err = dev_info(dev, 1, MT_MCU_TIMEOUT_US, &status);
+        err = dev_info(dev, 0, dev->opt.vif_mode == MT792X_VIF_LINUX_PAIR ? zero_mac : dev->own_mac, 1, MT_MCU_TIMEOUT_US,
+                       &status);
         if (!err && status) {
             mt_logf(dev, MT_LOG_ERROR, "DEV_INFO_UPDATE active: status 0x%08x", (uint32_t)status);
             err = MT792X_E_MCU_STATUS;
         }
         if (err) return sn_fail(dev, 5, err);
         dev->bss_active = 1;
-        err = bss_info(dev, 1, MT_MCU_TIMEOUT_US, &status);
+        err = bss_info(dev, 0, 1, MT_MCU_TIMEOUT_US, &status);
         if (!err && status) {
             mt_logf(dev, MT_LOG_ERROR, "BSS_INFO_UPDATE active: status 0x%08x%s", (uint32_t)status,
                     (uint32_t)status == MT76_CONNAC_MCU_STATUS_WLAN_FAILURE ? " (wlan_failure)" : "");
@@ -598,6 +627,21 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
         err = tune(dev, cfg->channel, cfg->band, &t_resp);
     }
     if (err) return sn_fail(dev, 13, err);
+    /* SN14-SN15: MT792X_VIF_LINUX_PAIR - the active monitor vif that Linux adds next to the plain one
+     * (mt7921_add_interface with idx 1: DEV_INFO + BSS_INFO, WTBL 18), then mac80211 reconfigures the
+     * filter for the new interface (same flags). */
+    if (dev->opt.vif_mode == MT792X_VIF_LINUX_PAIR) {
+        dev->pair_active = 1;
+        err = dev_info(dev, 1, dev->own_mac, 1, MT_MCU_TIMEOUT_US, &status);
+        if (!err && status) err = MT792X_E_MCU_STATUS;
+        if (err) return sn_fail(dev, 14, err);
+        err = bss_info(dev, 1, 1, MT_MCU_TIMEOUT_US, &status);
+        if (!err && status) err = MT792X_E_MCU_STATUS;
+        if (err) return sn_fail(dev, 14, err);
+        err = wtbl_update(dev, MT792X_WTBL_RESERVED - 1u);
+        if (!err) err = rx_filter(dev, "SET_RX_FILTER", fif, 0, 0);
+        if (err) return sn_fail(dev, 15, err);
+    }
     {
         uint32_t misc = mt_rr(dev, MT_CONN_ON_MISC);
         if (dev->bus_dead) return sn_fail(dev, 13, MT792X_E_BUS_DEAD);
@@ -605,6 +649,7 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
                 tune_name(dev->tune_used), misc);
     }
     dev->sniff_started = 1;
+    dev->tx_allowed = cfg->allow_tx ? 1 : 0;
     return 0;
 }
 
@@ -619,6 +664,11 @@ int mt792x_sniffer_set_channel(struct mt792x *dev, uint8_t channel, uint8_t band
     if (dev->state != MT_ST_TOUCHED || !dev->sniff_started) return MT792X_E_STATE;
     if (dev->bus_dead) return MT792X_E_BUS_DEAD;
     if (!chan_valid(channel, band)) return MT792X_E_INVAL;
+    if (dev->tx_allowed && !mt_tx_channel_allowed(channel, band)) {
+        mt_logf(dev, MT_LOG_ERROR, "channel switch to %u refused: TX is enabled and the channel is outside the allow-list",
+                channel);
+        return MT792X_E_TX_DENIED;
+    }
     t0 = t_resp = mt_now(dev);
     err = tune(dev, channel, band, &t_resp);
     el = (uint32_t)(t_resp - t0);
@@ -638,20 +688,28 @@ static int sniffer_down(struct mt792x *dev, uint32_t timeout_us)
 {
     int err = 0, status = 0;
     dev->sniff_started = 0;
+    dev->tx_allowed = 0;
+    if (dev->pair_active) {      /* mt7921_remove_interface of the active vif: BSS first, then DEV */
+        err = bss_info(dev, 1, 0, timeout_us, &status);
+        if (!err) err = dev_info(dev, 1, dev->own_mac, 0, timeout_us, &status);
+        if (err) return err;
+        dev->pair_active = 0;
+    }
     if (dev->sniffer_on) {
         err = sniffer_enable(dev, 0, timeout_us);
         if (err) return err;
         dev->sniffer_on = 0;
     }
     if (dev->bss_active) {
-        err = bss_info(dev, 0, timeout_us, &status);
+        err = bss_info(dev, 0, 0, timeout_us, &status);
         if (err) return err;
         if (status && (uint32_t)status != MT76_CONNAC_MCU_STATUS_WLAN_FAILURE)
             mt_logf(dev, MT_LOG_WARN, "BSS_INFO_UPDATE inactive: status 0x%08x", (uint32_t)status);
         dev->bss_active = 0;
     }
     if (dev->dev_active) {
-        err = dev_info(dev, 0, timeout_us, &status);
+        err = dev_info(dev, 0, dev->opt.vif_mode == MT792X_VIF_LINUX_PAIR ? zero_mac : dev->own_mac, 0, timeout_us,
+                       &status);
         if (err) return err;
         if (status) mt_logf(dev, MT_LOG_WARN, "DEV_INFO_UPDATE inactive: status 0x%08x", (uint32_t)status);
         dev->dev_active = 0;
@@ -672,7 +730,8 @@ int mt792x_sniffer_stop(struct mt792x *dev)
 void mt_sniffer_shutdown(struct mt792x *dev)
 {
     int err = 0;
-    if (dev->bus_dead || !(dev->sniffer_on || dev->bss_active || dev->dev_active || dev->radio_on || dev->mac_enabled))
+    if (dev->bus_dead ||
+        !(dev->sniffer_on || dev->bss_active || dev->dev_active || dev->radio_on || dev->mac_enabled || dev->pair_active))
         return;
     mt_logf(dev, MT_LOG_INFO, "shutdown: stopping sniffer and MAC (best effort, %u ms per command)",
             MT_MCU_SHUTDOWN_TIMEOUT_US / 1000u);
@@ -688,6 +747,11 @@ void mt_sniffer_shutdown(struct mt792x *dev)
     if (err) mt_logf(dev, MT_LOG_WARN, "shutdown: MCU part stopped early (%s); continuing with the register part",
                      mt792x_strerror(err));
     dev->rx_active = 0;
+}
+
+const uint8_t *mt792x_own_mac(const struct mt792x *dev)
+{
+    return dev ? dev->own_mac : NULL;
 }
 
 const struct mt792x_nic_caps *mt792x_nic_caps(const struct mt792x *dev)
