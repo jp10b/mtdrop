@@ -122,6 +122,7 @@ struct fake_chip {
     unsigned tx_mode;           /* FAKE_TX_* */
     int txs_first;              /* TXS before the TX-free notification */
     int txs_never;              /* no TXS even when a PID asks for it */
+    int allow_foreign_sa;       /* do not flag a frame whose address 2 is not the OMAC's (ACK control experiment) */
     int txs_via_event;          /* TXS inside an MCU TX_DONE event (eid 0x0f) instead of PKT_TYPE_TXS */
     int tx_no_consume;          /* TX ring 0 kicks are never consumed (descriptors stay with the host) */
 

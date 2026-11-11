@@ -974,7 +974,7 @@ static void tx0_frame(struct fake_chip *f, const uint8_t *w, uint32_t len)
     if (t[7] & ~(0x00300000u | 0x000f0000u | 0xf800u)) violation(f, "TXD7 unexpected bits 0x%08x", t[7]);
     if (omac > 1 || !(omac ? f->dev1_active : f->dev_active)) violation(f, "TXD1 OWN_MAC %u has no active DEV_INFO", omac);
     mac = omac ? f->dev1_mac : f->dev_mac;
-    if (memcmp(fr + 10, mac, 6) != 0) violation(f, "address 2 is not the OMAC %u address", omac);
+    if (!f->allow_foreign_sa && memcmp(fr + 10, mac, 6) != 0) violation(f, "address 2 is not the OMAC %u address", omac);
     if (wcid != 0 && wcid != 19u - omac) violation(f, "TXD1 WLAN_IDX %u", wcid);
     if (!tx_chan_ok(f->channel, f->band)) violation(f, "frame transmitted on channel %u band %u (not allowed)", f->channel, f->band);
     if (tok_test(f, token)) violation(f, "token %u reused while in flight", token);

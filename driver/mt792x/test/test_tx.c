@@ -438,6 +438,72 @@ TEST(tx_refusals)
     rig_free(&r);
 }
 
+/* Probe request (or another frame type via fc) with a chosen address 2: header + wildcard SSID element. */
+static uint32_t frame_from(uint8_t *f, uint16_t fc, const uint8_t *a1, const uint8_t *sa, uint16_t sn)
+{
+    uint32_t n = hdr(f, fc, a1, sa, bcast, sn);
+    f[n++] = 0;
+    f[n++] = 0;
+    return n;
+}
+
+TEST(tx_foreign_sa_only_for_control_probe_requests)
+{
+    struct rig r;
+    uint8_t f[128];
+    static const uint8_t la_unicast[6] = { 0x06, 0xaa, 0xbb, 0xcc, 0xdd, 0x01 };  /* bit 1 set, bit 0 clear */
+    static const uint8_t global_unicast[6] = { 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0x02 };
+    static const uint8_t la_multicast[6] = { 0x07, 0xaa, 0xbb, 0xcc, 0xdd, 0x03 };
+    static const uint8_t global_multicast[6] = { 0x01, 0xaa, 0xbb, 0xcc, 0xdd, 0x04 };
+    uint32_t len, cookie = 0, refused;
+    CHECK(tx_rig(&r, 6, 0, 1) == 0);
+    r.m.log_errors = 0;
+
+    /* default (option 0): any address 2 but ours is refused, nothing reaches the air */
+    CHECK_EQ_U32(r.dev->opt.tx_allow_foreign_sa, 0);
+    len = frame_from(f, 0x0040, bcast, la_unicast, 1);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    CHECK_EQ_U32(cookie, 0);
+    CHECK_EQ_U32(r.f->n_air, 0);
+    len = frame_from(f, 0x0040, bcast, chip_mac, 2);                            /* our own MAC still works */
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == 0);
+    CHECK_EQ_U32(r.f->n_air, 1);
+
+    /* option 1: a locally administered unicast probe request goes out unchanged */
+    r.dev->opt.tx_allow_foreign_sa = 1;
+    r.f->allow_foreign_sa = 1;                                                  /* the fake otherwise flags a foreign SA */
+    len = frame_from(f, 0x0040, bcast, la_unicast, 3);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == 0);
+    CHECK(cookie != 0);
+    CHECK_EQ_U32(r.f->n_air, 2);
+    CHECK_EQ_U32(r.f->air[1].len, len);
+    CHECK_MEM_EQ(r.f->air[1].bytes, f, len);
+    CHECK_MEM_EQ(r.f->air[1].bytes + 10, la_unicast, 6);
+    CHECK_EQ_U32(r.f->air[1].txd[2] & 0xfu, 4);                                 /* TXD2 subtype 4 */
+
+    /* still refused with the option: globally administered, multicast, and every other frame type */
+    refused = r.dev->txc.refused;
+    len = frame_from(f, 0x0040, bcast, global_unicast, 4);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    len = frame_from(f, 0x0040, bcast, la_multicast, 5);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    len = frame_from(f, 0x0040, bcast, global_multicast, 6);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    len = frame_from(f, 0x0050, peer, la_unicast, 7);                           /* probe response */
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    len = frame_from(f, 0x00b0, peer, la_unicast, 8);                           /* authentication */
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    len = frame_from(f, 0x00d0, bcast, la_unicast, 9);                          /* action */
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    len = awdl_data(f, 10, 20);                                                 /* data frame ... */
+    memcpy(f + 10, la_unicast, 6);                                              /* ... from a foreign address */
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 0, 0, &cookie) == MT792X_E_TX_FRAME);
+    CHECK_EQ_U32(r.dev->txc.refused - refused, 7);
+    CHECK_EQ_U32(r.f->n_air, 2);                                                /* nothing else was radiated */
+    CHECK(rig_check_no_violations(&r) == 0);
+    rig_free(&r);
+}
+
 TEST(tx_shutdown_with_frames_in_flight)
 {
     struct rig r;

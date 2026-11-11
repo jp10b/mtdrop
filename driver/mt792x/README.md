@@ -94,7 +94,10 @@ notification; a frame without one is reported `LOST` after `opt.tx_timeout_ms` a
 its slot stays quarantined until the token comes back. Address 2 must be our own
 MAC. Options for the points only hardware can decide: `vif_mode`,
 `tx_power_mode`, `tx_power_max_half_db`, `tx_spe_mode`, `tx_wcid_mode`,
-`tx_data_fixed_rate` (spec 12.10).
+`tx_data_fixed_rate` (spec 12.10). `tx_allow_foreign_sa` exists for the ACK control
+experiment only: it additionally lets a probe request through whose address 2 is a
+locally administered unicast address (anything else with a foreign address 2 is
+still refused).
 
 ## Safety rules built into the code
 

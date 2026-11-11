@@ -135,6 +135,11 @@ struct mt792x_options {
     uint8_t tx_spe_mode;          /* enum mt792x_tx_spe_mode */
     uint8_t tx_data_fixed_rate;   /* 1 = FIX_RATE on unicast data frames too (mt76: only non-data and group frames) */
     uint8_t tx_wcid_mode;         /* enum mt792x_tx_wcid_mode */
+    uint8_t tx_allow_foreign_sa;  /* FOR THE ACK CONTROL EXPERIMENT ONLY. 0 = every frame must carry our own MAC as
+                                     address 2 (default). 1 = additionally accept a probe request (management subtype 4)
+                                     whose address 2 is a locally administered unicast address (first octet bit 1 set,
+                                     bit 0 clear); every other foreign address 2 and every other frame type is still
+                                     refused. Such a frame is sent from an address the chip does not acknowledge. */
     uint16_t tx_timeout_ms;       /* no TX-free notification within this time -> LOST, slot quarantined; 0 = 2000 */
 };
 

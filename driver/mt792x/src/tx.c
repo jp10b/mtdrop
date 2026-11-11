@@ -112,7 +112,12 @@ static int classify(struct mt792x *dev, const struct mt792x_tx_req *req, struct 
     if (sc & 0xfu) return tx_reject(dev, "fragment number not 0");
     if (flags & 0x40u) return tx_reject(dev, "Protected Frame set (no keys)");
     if (flags & 0x80u) return tx_reject(dev, "Order (+HTC) set");
-    if (!same_mac(f + 10, dev->own_mac)) return tx_reject(dev, "address 2 is not our MAC");
+    if (!same_mac(f + 10, dev->own_mac)) {
+        /* ACK control experiment (opt.tx_allow_foreign_sa): a probe request from a locally administered unicast
+         * address the chip does not acknowledge; nothing else may carry a foreign address 2. */
+        int control_probe = dev->opt.tx_allow_foreign_sa && c->type == 0 && c->subtype == 4 && (f[10] & 3u) == 2u;
+        if (!control_probe) return tx_reject(dev, "address 2 is not our MAC");
+    }
     if (c->group && req->want_ack) return tx_reject(dev, "ACK requested for a group-addressed frame");
     if (req->want_status && !req->want_ack) return tx_reject(dev, "TX status requested without ACK");
     if (req->tx_count > MT_TX_REM_COUNT_DEFAULT) return tx_reject(dev, "tx_count above 15");

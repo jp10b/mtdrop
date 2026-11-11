@@ -9,12 +9,16 @@
  *                                              full bring-up, post-boot, sniffer on one channel, receive for
  *                                              <seconds> (max 120), print a summary, shut down (spec 11)
  *   radiod txtest <channel> <patch> <ram> [options]
- *                                              sniffer with TX allowed; at most 20 broadcast probe requests,
+ *                                              sniffer with TX allowed; at most 20 broadcast probe requests
+ *                                              (per arm with --control),
  *                                              one per second; counts the probe responses addressed to us and
- *                                              whether the access points had to retransmit them (spec 12.8)
+ *                                              whether the access points had to retransmit them (spec 12.8);
+ *                                              --control adds a control arm (probes from a random address
+ *                                              that nobody acknowledges) to judge the ACK behaviour
  *
  * Privacy: MAC addresses are printed as OUI:xx:xx:xx only; SSIDs only with --show-ssid.
  */
+#define _CRT_RAND_S /* rand_s (txtest --control): must come before <stdlib.h> */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -582,11 +586,20 @@ out:
  *   - responses whose sequence number comes again with the Retry bit mean no ACK arrived.
  * Caveats: an AP may also retransmit because our ACK was lost on the air (a few are normal), and our
  * own receiver may miss copies; hence the thresholds (>= 5 responses, >= 80 %) and INCONCLUSIVE.
+ *
+ * On a busy channel those absolute thresholds proved too weak (about half of the sequence numbers had
+ * a retransmitted copy; collisions cause retries even when the ACK works). --control therefore adds a
+ * control arm in the same run: probe requests from a random locally administered address that no
+ * station owns, so nobody can ever acknowledge the responses. An access point that receives no ACK
+ * retransmits a unicast probe response up to its retry limit, so the control arm shows how often the
+ * same access points retransmit without any ACK; if our chip ACKs frames to its own MAC, the responses
+ * to our MAC are retransmitted clearly less often than the responses to the control address. Only
+ * access points that answered in both arms are compared (same distance, same retry policy).
  */
 
-#define TXT_MAX_PROBES 20
-#define TXT_MAX_RESP 512
-#define TXT_MAX_TA 64
+#define TXT_MAX_PROBES 20                    /* probes per arm */
+#define TXT_MAX_FRAMES (2 * TXT_MAX_PROBES)  /* both arms */
+#define TXT_MAX_RESP 1024
 
 struct txt_resp {
     uint8_t ta[6];
@@ -594,6 +607,8 @@ struct txt_resp {
     uint8_t retry;
     int8_t rssi;
     uint8_t probe;
+    uint8_t arm;    /* 0 = addressed to our MAC, 1 = addressed to the control MAC */
+    uint8_t common; /* the transmitter answered in both arms (set by txt_mark_common) */
     uint8_t ssid_len;
     uint8_t ssid[32];
 };
@@ -602,9 +617,18 @@ struct txt_state {
     struct txt_resp r[TXT_MAX_RESP];
     unsigned n;
     unsigned overflow;
-    uint32_t cookie[TXT_MAX_PROBES];
-    int done_seen[TXT_MAX_PROBES];
-    struct mt792x_tx_done done[TXT_MAX_PROBES];
+    uint32_t cookie[TXT_MAX_FRAMES];
+    int done_seen[TXT_MAX_FRAMES];
+    struct mt792x_tx_done done[TXT_MAX_FRAMES];
+};
+
+/* Statistics of one arm (optionally only the transmitters present in both arms). */
+struct txt_arm {
+    unsigned responses;
+    unsigned pairs;     /* distinct (transmitter, sequence number) */
+    unsigned hist[5];   /* pairs with 1, 2, 3, 4, 5+ copies */
+    unsigned retried;   /* responses with the Retry bit */
+    double mean;        /* copies per pair = responses / pairs */
 };
 
 static const struct { const char *name; uint8_t rate; } txt_rates[] = {
@@ -658,9 +682,10 @@ static void txt_collect_done(struct txt_state *t, unsigned sent) {
             }
 }
 
-/* Polls RX until 'until_us'; records probe responses addressed to 'own'. Returns < 0 on a poll error. */
-static int txt_listen(struct mt_hal *hal, struct txt_state *t, const uint8_t *own, uint8_t probe, uint8_t ch,
-                      uint64_t until_us, unsigned sent) {
+/* Polls RX until 'until_us'; records probe responses addressed to 'own' (arm 0) or, if 'ctl' is not NULL,
+ * to 'ctl' (arm 1). Returns < 0 on a poll error. */
+static int txt_listen(struct mt_hal *hal, struct txt_state *t, const uint8_t *own, const uint8_t *ctl, uint8_t probe,
+                      uint8_t ch, uint64_t until_us, unsigned sent) {
     while (hal->now_us(hal->ctx) < until_us) {
         struct mt792x_rx_frame fr;
         int r = mt792x_rx_poll(&g_dev, &fr);
@@ -671,13 +696,18 @@ static int txt_listen(struct mt_hal *hal, struct txt_state *t, const uint8_t *ow
             continue;
         }
         if ((fr.flags & MT792X_RXF_HDR_TRANS) || !fr.fcs_ok || fr.len < 24 || fr.channel != ch) continue;
-        if (fr.data[0] != 0x50 || memcmp(fr.data + 4, own, 6) != 0) continue; /* probe response to us */
+        if (fr.data[0] != 0x50) continue; /* not a probe response */
+        uint8_t arm;
+        if (memcmp(fr.data + 4, own, 6) == 0) arm = 0;
+        else if (ctl && memcmp(fr.data + 4, ctl, 6) == 0) arm = 1;
+        else continue;
         if (t->n >= TXT_MAX_RESP) {
             t->overflow++;
             continue;
         }
         struct txt_resp *x = &t->r[t->n++];
         memset(x, 0, sizeof(*x));
+        x->arm = arm;
         memcpy(x->ta, fr.data + 10, 6);
         x->sn = (uint16_t)((fr.data[22] | (fr.data[23] << 8)) >> 4);
         x->retry = (fr.data[1] & 0x08) ? 1 : 0;
@@ -696,10 +726,69 @@ static const char *txr_name(uint8_t r) {
     return r == MT792X_TXR_DONE ? "done" : r == MT792X_TXR_LOST ? "LOST" : r == MT792X_TXR_ABORTED ? "aborted" : "?";
 }
 
+/* One random control address per run: locally administered (bit 1 of the first octet set), unicast (bit 0
+ * clear), different from our MAC. Returns 0, or -1 if the system random source fails. */
+static int random_control_mac(uint8_t *mac, const uint8_t *own) {
+    for (int attempt = 0; attempt < 16; attempt++) {
+        unsigned int v[2];
+        if (rand_s(&v[0]) != 0 || rand_s(&v[1]) != 0) return -1;
+        for (int k = 0; k < 6; k++) mac[k] = (uint8_t)(v[k / 3] >> (8 * (k % 3)));
+        mac[0] = (uint8_t)((mac[0] | 0x02u) & 0xfeu);
+        if (memcmp(mac, own, 6) != 0) return 0;
+    }
+    return -1;
+}
+
+/* Marks every response whose transmitter answered in both arms. */
+static unsigned txt_mark_common(struct txt_state *t) {
+    unsigned n_common = 0;
+    for (unsigned k = 0; k < t->n; k++) {
+        int in_arm[2] = {0, 0}, first = 1;
+        for (unsigned m = 0; m < t->n; m++) {
+            if (memcmp(t->r[m].ta, t->r[k].ta, 6) != 0) continue;
+            in_arm[t->r[m].arm & 1u] = 1;
+            if (m < k) first = 0;
+        }
+        t->r[k].common = (uint8_t)(in_arm[0] && in_arm[1]);
+        if (t->r[k].common && first) n_common++;
+    }
+    return n_common;
+}
+
+/* Responses of one arm grouped by (transmitter, sequence number): an access point retransmits a response
+ * without an ACK with the same sequence number, so "copies per pair" is the retransmission measure. */
+static void txt_arm_stats(const struct txt_state *t, unsigned arm, int common_only, struct txt_arm *a) {
+    memset(a, 0, sizeof(*a));
+    for (unsigned k = 0; k < t->n; k++) {
+        const struct txt_resp *x = &t->r[k];
+        unsigned copies = 1;
+        int first = 1;
+        if (x->arm != arm || (common_only && !x->common)) continue;
+        a->responses++;
+        a->retried += x->retry;
+        for (unsigned m = 0; m < t->n; m++) {
+            const struct txt_resp *y = &t->r[m];
+            if (m == k || y->arm != x->arm || y->sn != x->sn || memcmp(y->ta, x->ta, 6) != 0) continue;
+            copies++;
+            if (m < k) first = 0;
+        }
+        if (!first) continue;
+        a->pairs++;
+        a->hist[(copies > 5u ? 5u : copies) - 1u]++;
+    }
+    a->mean = a->pairs ? (double)a->responses / (double)a->pairs : 0.0;
+}
+
+static void txt_print_arm(const char *label, unsigned sent, const struct txt_arm *a) {
+    printf("  %-11s probes %u, responses %u, (transmitter, SN) pairs %u, copies per pair 1:%u 2:%u 3:%u 4:%u 5+:%u, mean %.2f, Retry bit %u of %u (%.0f%%)\n",
+           label, sent, a->responses, a->pairs, a->hist[0], a->hist[1], a->hist[2], a->hist[3], a->hist[4], a->mean,
+           a->retried, a->responses, a->responses ? 100.0 * (double)a->retried / (double)a->responses : 0.0);
+}
+
 static int txtest(int argc, char **argv) {
     static struct txt_state t; /* large: keep it off the stack */
     struct session s;
-    unsigned count = 5, show_ssid = 0, ssid_len_only = 0, debug = 0, sent = 0;
+    unsigned count = 5, show_ssid = 0, ssid_len_only = 0, debug = 0, sent = 0, control = 0;
     uint8_t rate = MT792X_RATE_OFDM_6M, ch, band;
     struct mt792x_options extra;
     int rc = 1, err, poll_err = 0;
@@ -724,6 +813,7 @@ static int txtest(int argc, char **argv) {
         } else if (strcmp(argv[i], "--ssid-len-only") == 0) ssid_len_only = 1;
         else if (strcmp(argv[i], "--show-ssid") == 0) show_ssid = 1;
         else if (strcmp(argv[i], "--debug") == 0) debug = 1;
+        else if (strcmp(argv[i], "--control") == 0) control = 1;
         else if (strcmp(argv[i], "--pair") == 0) extra.vif_mode = MT792X_VIF_LINUX_PAIR;
         else if (strcmp(argv[i], "--spe-v70") == 0) extra.tx_spe_mode = MT792X_SPE_LINUX_7_0;
         else if (strcmp(argv[i], "--wcid-global") == 0) extra.tx_wcid_mode = MT792X_WCID_GLOBAL;
@@ -746,7 +836,7 @@ static int txtest(int argc, char **argv) {
         return 2;
     }
     if (count < 1 || count > TXT_MAX_PROBES) {
-        printf("RESULT: FAIL - --count must be 1..%d\n", TXT_MAX_PROBES);
+        printf("RESULT: FAIL - --count must be 1..%d%s\n", TXT_MAX_PROBES, control ? " (per arm)" : "");
         return 2;
     }
     ch = (uint8_t)chl;
@@ -763,6 +853,7 @@ static int txtest(int argc, char **argv) {
     g_dev.opt.tx_wcid_mode = extra.tx_wcid_mode;
     g_dev.opt.tx_power_mode = extra.tx_power_mode;
     g_dev.opt.tx_power_max_half_db = extra.tx_power_max_half_db;
+    g_dev.opt.tx_allow_foreign_sa = (uint8_t)control;
     err = mt792x_bringup(&g_dev, &s.fw, MT792X_STAGE_POSTBOOT);
     if (err) {
         printf("RESULT: FAIL - bring-up: %s (%d) at S%d\n", mt792x_strerror(err), err, mt792x_failed_step(&g_dev));
@@ -784,17 +875,33 @@ static int txtest(int argc, char **argv) {
     {
         struct mt_hal *hal = halwin_hal(s.h);
         const uint8_t *own = mt792x_own_mac(&g_dev);
-        uint8_t frame[64];
-        printf("txtest: channel %u, %u probe request(s), rate code %u, own MAC ", ch, count, rate);
+        uint8_t frame[64], ctl_mac[6] = {0, 0, 0, 0, 0, 0};
+        const uint8_t *ctl = NULL;
+        unsigned frames = control ? 2u * count : count; /* in control mode: own, control, own, control, ... */
+        if (control) {
+            if (random_control_mac(ctl_mac, own) != 0) {
+                printf("RESULT: FAIL - no random control address available (rand_s failed)\n");
+                goto out;
+            }
+            ctl = ctl_mac;
+        }
+        printf("txtest: channel %u, %u probe request(s)", ch, frames);
+        if (control) printf(" (%u per arm: own MAC / control MAC)", count);
+        printf(", rate code %u, own MAC ", rate);
         print_masked_addr(own);
+        if (control) {
+            printf(", control MAC ");
+            print_masked_addr(ctl);
+        }
         printf(", vifs %s, TX power %s\n", extra.vif_mode ? "Linux pair" : "single",
                extra.tx_power_mode == MT792X_TXPWR_NONE ? "limits NOT sent (firmware defaults)"
                : extra.tx_power_max_half_db              ? "mt76 PL limits, capped by --max-dbm"
                                                          : "mt76 PL limits");
-        for (unsigned i = 0; i < count && !poll_err; i++) {
+        for (unsigned i = 0; i < frames && !poll_err; i++) {
             struct mt792x_tx_req q;
             uint64_t t0 = hal->now_us(hal->ctx);
-            uint32_t len = build_probe_req(frame, own, (uint16_t)(0x100 + i), band);
+            unsigned arm = control ? (i & 1u) : 0u;
+            uint32_t len = build_probe_req(frame, arm ? ctl : own, (uint16_t)(0x100 + i), band);
             memset(&q, 0, sizeof(q));
             q.frame = frame;
             q.len = len;
@@ -808,34 +915,42 @@ static int txtest(int argc, char **argv) {
             }
             sent = i + 1;
             unsigned before = t.n;
-            poll_err = txt_listen(hal, &t, own, (uint8_t)i, ch, t0 + 300000u, sent);
-            unsigned n = t.n - before, retries = 0;
+            poll_err = txt_listen(hal, &t, own, ctl, (uint8_t)i, ch, t0 + 300000u, sent);
+            unsigned n = 0, retries = 0;
             int lo = 0, hi = -128;
             for (unsigned k = before; k < t.n; k++) {
+                if (t.r[k].arm != arm) continue; /* a late response of the other arm: counted in the summary only */
                 retries += t.r[k].retry;
-                if (k == before || t.r[k].rssi < lo) lo = t.r[k].rssi;
+                if (n == 0 || t.r[k].rssi < lo) lo = t.r[k].rssi;
                 if (t.r[k].rssi > hi) hi = t.r[k].rssi;
+                n++;
             }
-            printf("probe %u: TX %s", i + 1, t.done_seen[i] ? txr_name(t.done[i].result) : "pending");
+            if (control) printf("probe %u [%s]: TX %s", i + 1, arm ? "control MAC" : "own MAC", t.done_seen[i] ? txr_name(t.done[i].result) : "pending");
+            else printf("probe %u: TX %s", i + 1, t.done_seen[i] ? txr_name(t.done[i].result) : "pending");
             if (t.done_seen[i])
                 printf(" (TX-free status %u, transmissions %u, %u us)", t.done[i].free_status, t.done[i].tx_count,
                        t.done[i].elapsed_us);
-            printf("; %u probe response(s) to us, %u with Retry bit", n, retries);
+            printf("; %u probe response(s) to %s, %u with Retry bit", n, arm ? "the control MAC" : "us", retries);
             if (n) printf(", RSSI %d..%d dBm, from", lo, hi);
             for (unsigned k = before; k < t.n; k++) {
                 int dup = 0;
+                if (t.r[k].arm != arm) continue;
                 for (unsigned m = before; m < k; m++)
-                    if (memcmp(t.r[m].ta, t.r[k].ta, 3) == 0) dup = 1;
+                    if (t.r[m].arm == arm && memcmp(t.r[m].ta, t.r[k].ta, 3) == 0) dup = 1;
                 if (!dup) printf(" %02x:%02x:%02x:xx:xx:xx", t.r[k].ta[0], t.r[k].ta[1], t.r[k].ta[2]);
             }
             printf("\n");
-            if (!poll_err && i + 1 < count) poll_err = txt_listen(hal, &t, own, (uint8_t)i, ch, t0 + 1000000u, sent);
+            if (!poll_err && i + 1 < frames) poll_err = txt_listen(hal, &t, own, ctl, (uint8_t)i, ch, t0 + 1000000u, sent);
         }
-        if (!poll_err) poll_err = txt_listen(hal, &t, own, (uint8_t)(sent ? sent - 1 : 0), ch, hal->now_us(hal->ctx) + 300000u, sent);
+        if (!poll_err)
+            poll_err = txt_listen(hal, &t, own, ctl, (uint8_t)(sent ? sent - 1 : 0), ch, hal->now_us(hal->ctx) + 300000u, sent);
         if (poll_err) printf("receive/transmit loop stopped: %s (%d)\n", mt792x_strerror(poll_err), poll_err);
 
         /* ---- analysis ---- */
-        unsigned total = t.n, no_retry = 0, uniq = 0, uniq_retried = 0, uniq_repeated = 0, aps = 0;
+        /* 'total' feeds the single-arm analysis below and stays 0 in control mode (see txt_arm_stats) */
+        unsigned total = control ? 0u : t.n, no_retry = 0, uniq = 0, uniq_retried = 0, uniq_repeated = 0, aps = 0;
+        unsigned own_total = 0;
+        for (unsigned k = 0; k < t.n; k++) own_total += t.r[k].arm == 0;
         for (unsigned k = 0; k < total; k++) {
             int first = 1, retried = t.r[k].retry, repeats = 0;
             no_retry += !t.r[k].retry;
@@ -858,10 +973,11 @@ static int txtest(int argc, char **argv) {
         printf("\n==== txtest summary ====\n");
         printf("probe requests sent %u; TX records: done %u, lost %u; TX-free entries %u, unknown tokens %u, quarantined %u\n",
                sent, tc->done, tc->lost, tc->txfree_entries, tc->txfree_unknown, tc->quarantined);
-        printf("probe responses to our MAC: %u (%u without Retry bit) from %u transmitter(s); %u distinct sequence numbers, %u of them with a Retry copy, %u seen more than once%s\n",
-               total, no_retry, aps, uniq, uniq_retried, uniq_repeated, t.overflow ? " (table full)" : "");
+        if (!control)
+            printf("probe responses to our MAC: %u (%u without Retry bit) from %u transmitter(s); %u distinct sequence numbers, %u of them with a Retry copy, %u seen more than once%s\n",
+                   total, no_retry, aps, uniq, uniq_retried, uniq_repeated, t.overflow ? " (table full)" : "");
         if (ssid_len_only || show_ssid) {
-            for (unsigned k = 0; k < total; k++) {
+            for (unsigned k = 0; k < t.n; k++) {
                 int dup = 0;
                 for (unsigned m = 0; m < k; m++)
                     if (memcmp(t.r[m].ta, t.r[k].ta, 6) == 0) dup = 1;
@@ -880,13 +996,51 @@ static int txtest(int argc, char **argv) {
                 printf("\n");
             }
         }
-        if (total >= 1) {
-            printf("TX: PASS - %u probe response(s) addressed to our MAC: our probe requests were radiated and decoded\n", total);
+        if (own_total >= 1) {
+            printf("TX: PASS - %u probe response(s) addressed to our MAC: our probe requests were radiated and decoded\n", own_total);
             rc = 0;
         } else {
             printf("TX: FAIL - no probe response addressed to our MAC (is an access point on channel %u?)\n", ch);
         }
-        if (total >= 5 && no_retry * 100u >= 80u * total && uniq_repeated == 0)
+        if (control) {
+            /* Control arm comparison (see the comment above): only transmitters that answered in both arms,
+             * so that distance, load and retry policy are the same for both. The verdict needs >= 5
+             * (transmitter, SN) pairs in each arm from those transmitters. An access point that gets no ACK
+             * retransmits up to its retry limit, so the control arm's mean copies per pair is the "no ACK"
+             * baseline; it only means something if it is clearly above 1 (>= 2.0). Own-MAC responses at
+             * <= 60 % of that baseline: our chip acknowledges; >= 90 %: it does not. In between, or with
+             * too little data: INCONCLUSIVE. */
+            struct txt_arm own_all, ctl_all, own_com, ctl_com;
+            unsigned n_common = txt_mark_common(&t), sent_own = (sent + 1u) / 2u, sent_ctl = sent / 2u;
+            txt_arm_stats(&t, 0, 0, &own_all);
+            txt_arm_stats(&t, 1, 0, &ctl_all);
+            txt_arm_stats(&t, 0, 1, &own_com);
+            txt_arm_stats(&t, 1, 1, &ctl_com);
+            printf("control arm: probes from a random locally administered address that nobody acknowledges%s\n",
+                   t.overflow ? " (response table full, some responses dropped)" : "");
+            printf("all transmitters:\n");
+            txt_print_arm("own MAC", sent_own, &own_all);
+            txt_print_arm("control MAC", sent_ctl, &ctl_all);
+            printf("transmitters that answered in both arms: %u\n", n_common);
+            txt_print_arm("own MAC", sent_own, &own_com);
+            txt_print_arm("control MAC", sent_ctl, &ctl_com);
+            if (own_com.pairs >= 5 && ctl_com.pairs >= 5) {
+                double mo = own_com.mean, mc = ctl_com.mean;
+                if (mc >= 2.0 && mo <= 0.6 * mc)
+                    printf("ACK: WORKING - mean copies per pair %.2f (own MAC) vs %.2f (control MAC) = %.0f%%; %u / %u pairs, %u common transmitter(s)\n",
+                           mo, mc, 100.0 * mo / mc, own_com.pairs, ctl_com.pairs, n_common);
+                else if (mc >= 2.0 && mo >= 0.9 * mc)
+                    printf("ACK: NOT WORKING - mean copies per pair %.2f (own MAC) vs %.2f (control MAC) = %.0f%%; %u / %u pairs, %u common transmitter(s)\n",
+                           mo, mc, 100.0 * mo / mc, own_com.pairs, ctl_com.pairs, n_common);
+                else
+                    printf("ACK: INCONCLUSIVE - mean copies per pair %.2f (own MAC) vs %.2f (control MAC)%s; %u / %u pairs, %u common transmitter(s)\n",
+                           mo, mc, mc >= 2.0 ? "" : " (control baseline below 2.0: the access points did not retransmit enough)",
+                           own_com.pairs, ctl_com.pairs, n_common);
+            } else {
+                printf("ACK: INCONCLUSIVE - too little data: %u pair(s) own MAC, %u pair(s) control MAC from %u common transmitter(s) (need >= 5 each); mean copies per pair %.2f vs %.2f\n",
+                       own_com.pairs, ctl_com.pairs, n_common, own_com.mean, ctl_com.mean);
+            }
+        } else if (total >= 5 && no_retry * 100u >= 80u * total && uniq_repeated == 0)
             printf("ACK: LIKELY WORKING - %u of %u responses without Retry bit, no sequence number retransmitted\n", no_retry,
                    total);
         else if (uniq && uniq_retried * 100u >= 80u * uniq)
@@ -921,7 +1075,10 @@ int main(int argc, char **argv) {
            "         --drop-fcs-errors      do not request FCS-error frames\n"
            "         --debug                print DEBUG library messages\n"
            "       radiod txtest <channel 1-13|36|40|44|48> <patch file> <ram file> [options]\n"
-           "         --count N              probe requests, one per second (default 5, max 20)\n"
+           "         --count N              probe requests, one per second (default 5, max 20; with --control per arm)\n"
+           "         --control              ACK control arm: alternate probes from our MAC and from a random\n"
+           "                                locally administered address nobody acknowledges (max 2 x 20 frames),\n"
+           "                                compare how often the access points retransmit their responses\n"
            "         --rate R               1 2 5.5 11 (2.4 GHz only) 6 9 12 18 24 36 48 54 (default 6)\n"
            "         --ssid-len-only        list responders with their SSID length\n"
            "         --show-ssid            ... and the SSID\n"
