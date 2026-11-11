@@ -27,6 +27,9 @@ param(
     # patch and RAM firmware paths, e.g.  -Commands 'bringup 6 @fw;sniff 1 10 @fw'  or, without spaces,
     # -Commands bringup:6:@fw;sniff:1:10:@fw
     [string]$Commands = '',
+    # Second firmware set for comparisons, addressed by the token @alt (same two file names).
+    [string]$AltFirmwareDir = '',
+    [switch]$KeepGoing,
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
     [string]$ToolsRoot = 'D:\mtdrop-tools',
     [int]$WatchdogSeconds = 240
@@ -70,6 +73,9 @@ try {
     $fwDir = Get-ChildItem (Join-Path $PrivateRoot 'vendor-driver-backup') -Directory | Sort-Object Name | Select-Object -Last 1
     $patch = Join-Path $fwDir.FullName 'WIFI_MT7961_patch_mcu_1_2_hdr.bin'
     $ram = Join-Path $fwDir.FullName 'WIFI_RAM_CODE_MT7961_1.bin'
+    if (-not $AltFirmwareDir) { $AltFirmwareDir = Join-Path $repo 'third_party\openwrt_mt76irmware' }
+    $altPatch = Join-Path $AltFirmwareDir 'WIFI_MT7961_patch_mcu_1_2_hdr.bin'
+    $altRam = Join-Path $AltFirmwareDir 'WIFI_RAM_CODE_MT7961_1.bin'
     $commandList = @()
     if ($Stages) {
         foreach ($n in ($Stages -split ',')) {
@@ -82,6 +88,7 @@ try {
     $Commands = $Commands -replace ':', ' '
     if ($Commands) { $commandList += @($Commands -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
     if ($commandList.Count -eq 0) { throw 'nothing to run: give -Stages or -Commands' }
+    if (($commandList -join ' ') -match '@alt') { foreach ($need in $altPatch, $altRam) { if (-not (Test-Path $need)) { throw "missing alternative firmware file: $need" } } }
     foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
     foreach ($need in $patch, $ram) { if (-not (Test-Path $need)) { throw "missing firmware file: $need" } }
     $inf2cat = Get-ChildItem (Join-Path $ToolsRoot 'packages') -Recurse -Filter Inf2Cat.exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -166,12 +173,12 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
     $exit = 0
     foreach ($c in $commandList) {
         Say "--- radiod $c"
-        $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } else { $_ } })
+        $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } elseif ($_ -eq '@alt') { $altPatch; $altRam } else { $_ } })
         $result = & $regtool @argv 2>&1
         $code = $LASTEXITCODE
         $result | ForEach-Object { Say "  radiod: $_" }
         Say "radiod $c -> exit code: $code"
-        if ($code -ne 0) { $exit = 1; Say "stopping: '$c' failed"; break }
+        if ($code -ne 0) { $exit = 1; if ($KeepGoing) { Say "'$c' failed; continuing (-KeepGoing)" } else { Say "stopping: '$c' failed"; break } }
         Start-Sleep -Seconds 1
     }
 }
