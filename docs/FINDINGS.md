@@ -904,3 +904,35 @@ What would falsify it: no TXS at all (then ACK outcome can only be read from the
 ### Changes
 
 - `radiod acktest`: `TX: PASS` now also when the access point ACKed and the ghost never was (reasoning in point 4).
+
+---
+
+## F-015 – M5.1: the radio server (`radiod serve`) and its pipe on hardware
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Milestone:** M5.1 (ADR-0003)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). Channel 44, 14 dBm cap. iPhone 15 Pro, iOS 26.5.2, share sheet open (AirDrop, "Everyone for 10 Minutes").
+
+### Why
+
+ADR-0003 splits the radio (`radiod serve`, MSVC, owns the chip) from AWDL (`awdld`, MinGW, OWL). Before OWL sits on top, the pipe must carry real AWDL traffic with the right per-frame channel and return honest TX statuses.
+
+### Offline evidence already in hand (FACT)
+
+- `radio_link_test` passes with MSVC (`/W4 /WX`) and GCC 16.2 (`-std=c11 -Wall -Wextra -Werror -pedantic`): header and struct round trips, radiotap layout byte by byte (alignment of TSFT / CHANNEL, BADFCS, MCS), OWL's own TX radiotap header (RATE only, length 9) parsed, malformed inputs rejected.
+- `radiod serve --loopback` (synthetic radio, no hardware) with `radioctl`: HELLO, 81 of 161 synthetic frames forwarded (the 80 foreign beacons filtered by BSSID), 6/6 TX statuses as expected (broadcast: done, no ACK requested; ghost: NOT ACKed, 15 transmissions), channel switch answered, time limit ends the session with BYE, a silent client is dropped after the 5 s lease, an unelevated client is refused by the pipe ACL (error 5) outside loopback.
+
+### Method
+
+`s3-bringup.ps1 -Commands serve:44:@alt:--max-seconds:60 -Client --seconds:40:--tx-test`: `radioctl` starts first and waits for the pipe; `radiod serve` brings the radio up on 44 with the chip's own MAC, accepts the client, serves until `radioctl` disconnects after 40 s. During those 40 s the maintainer keeps the iPhone's AirDrop share sheet open next to the laptop.
+
+### Predictions (written before running)
+
+| quantity | prediction |
+|---|---|
+| `radioctl` RX | PASS: AWDL action frames (PSF and MIF) from the iPhone through the pipe, every per-frame channel 44 (F-008 saw 149 in 15 s on 44 with the share sheet open) |
+| `radioctl` TX | PASS 6/6: broadcast probes done with no ACK requested; ghost probes NOT ACKed after 15 transmissions (as F-014) |
+| server | `RESULT: PASS`, pipe full 0, no TX lost, interrupt guard as F-013/F-014 |
+| system | no hang; vendor driver back afterwards |
+
+What would falsify it: AWDL frames seen by `radiod sniff` but not through the pipe (filter or radiotap bug); per-frame channel other than 44; TX statuses missing or different from F-014 when sent through the pipe; pipe full on a quiet channel (server loop too slow).

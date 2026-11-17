@@ -21,6 +21,9 @@
  *                                              ghost address nobody owns, one per second (at most 2 x 20);
  *                                              reports the TX status (ACKed / not) and transmissions per frame
  *
+ *   radiod serve <channel> <patch> <ram> [options]
+ *                                              radio server on a named pipe for awdld / radioctl (serve.c)
+ *
  *   radiod --live-log <file> <command> ...      also append every line (except DEBUG messages) to <file>,
  *                                              written through to disk line by line, so the last line
  *                                              survives a system hang (docs/FINDINGS.md F-011)
@@ -36,6 +39,8 @@
 #include "hal_win.h"
 #include "mt792x/mt792x.h"
 #include "out.h"
+#include "radio_link.h"
+#include "radiod.h"
 
 /* Every line radiod prints also goes to the live log (out.h). */
 #define printf out_printf
@@ -92,19 +97,10 @@ static uint8_t *read_file(const char *path, size_t *len) {
     return b;
 }
 
-static struct mt792x g_dev; /* ~16 KiB: keep it off the stack */
+struct mt792x g_dev; /* ~16 KiB: keep it off the stack */
 
-/* Everything a run needs before the first chip access: validated firmware, DMA block, proxy with the
- * stop list armed, library initialised. */
-struct session {
-    struct mt792x_fw fw;
-    uint8_t *patch, *ram;
-    struct mt792x_patch_info *pinfo;
-    struct mt792x_ram_info *rinfo;
-    struct halwin *h;
-};
-
-static int session_open(struct session *s, const char *patch_path, const char *ram_path) {
+/* struct session: radiod.h */
+int session_open(struct session *s, const char *patch_path, const char *ram_path) {
     char error[256];
     int err;
 
@@ -187,7 +183,7 @@ static void print_irq_guard(void) {
            c->host_int_sta_seen, c->mcu_cmd_seen, c->status_changes);
 }
 
-static void session_close(struct session *s) {
+void session_close(struct session *s) {
     print_irq_guard();
     mt792x_shutdown(&g_dev);
     if (g_dev.shutdown_error) printf("shutdown reported: %s\n", mt792x_strerror(g_dev.shutdown_error));
@@ -270,11 +266,11 @@ struct sniff_stats {
     unsigned n_lat;
 };
 
-static uint8_t band_of(uint8_t ch) {
+uint8_t band_of(uint8_t ch) {
     return ch > 14 ? MT792X_BAND_5GHZ : MT792X_BAND_2GHZ;
 }
 
-static void print_masked_addr(const uint8_t *a) {
+void print_masked_addr(const uint8_t *a) {
     printf("%02x:%02x:%02x:xx:xx:xx", a[0], a[1], a[2]);
 }
 
@@ -653,18 +649,12 @@ static const struct { const char *name; uint8_t rate; } txt_rates[] = {
     {"24", MT792X_RATE_OFDM_24M}, {"36", MT792X_RATE_OFDM_36M}, {"48", MT792X_RATE_OFDM_48M},  {"54", MT792X_RATE_OFDM_54M},
 };
 
-static int tx_channel_ok(uint8_t ch) {
+int tx_channel_ok(uint8_t ch) {
     return (ch >= 1 && ch <= 13) || ch == 36 || ch == 40 || ch == 44 || ch == 48;
 }
 
-/* Options every transmitting command shares. */
-struct tx_cli {
-    struct mt792x_options extra; /* only the TX / vif fields are used */
-    uint8_t rate;
-    int debug;
-};
-
-static void tx_cli_init(struct tx_cli *c) {
+/* struct tx_cli: radiod.h */
+void tx_cli_init(struct tx_cli *c) {
     memset(c, 0, sizeof(*c));
     c->rate = MT792X_RATE_OFDM_6M;
     /* [HOST] default cap 14 dBm (28 half-dB): below mt76's regulatory limits for PL (20 / 23 dBm), leaving
@@ -674,7 +664,7 @@ static void tx_cli_init(struct tx_cli *c) {
 
 /* Consumes argv[*i] (and its value) if it is a shared TX option: 1 = consumed, 0 = not ours, -1 = invalid
  * (already printed). */
-static int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
+int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
     const char *a = argv[*i];
     if (strcmp(a, "--rate") == 0 && *i + 1 < argc) {
         const char *v = argv[++*i];
@@ -705,8 +695,8 @@ static int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
 /* Checks channel and rate, then: session, bring-up to post-boot, sniffer on 'ch' with TX allowed. Returns 0,
  * 1 if the arguments were refused before anything was touched (exit code 2), or -1 after a failure (printed;
  * the caller still closes the session). */
-static int tx_start(struct session *s, const char *patch_path, const char *ram_path, long chl,
-                    const struct tx_cli *c, uint8_t foreign_sa) {
+int tx_start(struct session *s, const char *patch_path, const char *ram_path, long chl, const struct tx_cli *c,
+             uint8_t foreign_sa, const uint8_t *mac) {
     uint8_t ch, band;
     int err;
     if (chl < 1 || chl > 255 || !tx_channel_ok((uint8_t)chl)) {
@@ -739,6 +729,7 @@ static int tx_start(struct session *s, const char *patch_path, const char *ram_p
         cfg.band = band;
         cfg.flags = MT792X_SNIFF_CONTROL | MT792X_SNIFF_OTHER_BSS;
         cfg.allow_tx = 1;
+        cfg.mac = mac; /* NULL: the chip's own address */
         err = mt792x_sniffer_start(&g_dev, &cfg);
         if (err) {
             printf("RESULT: FAIL - sniffer start: %s (%d) at SN%d\n", mt792x_strerror(err), err, g_dev.sniff_failed_step);
@@ -748,7 +739,7 @@ static int tx_start(struct session *s, const char *patch_path, const char *ram_p
     return 0;
 }
 
-static const char *tx_power_desc(const struct tx_cli *c) {
+const char *tx_power_desc(const struct tx_cli *c) {
     return c->extra.tx_power_mode == MT792X_TXPWR_NONE ? "limits NOT sent (firmware defaults)"
            : c->extra.tx_power_max_half_db            ? "mt76 PL limits, capped by --max-dbm"
                                                        : "mt76 PL limits";
@@ -843,7 +834,7 @@ static const char *txr_name(uint8_t r) {
 
 /* One random control address per run: locally administered (bit 1 of the first octet set), unicast (bit 0
  * clear), different from our MAC. Returns 0, or -1 if the system random source fails. */
-static int random_control_mac(uint8_t *mac, const uint8_t *own) {
+int random_control_mac(uint8_t *mac, const uint8_t *own) {
     for (int attempt = 0; attempt < 16; attempt++) {
         unsigned int v[2];
         if (rand_s(&v[0]) != 0 || rand_s(&v[1]) != 0) return -1;
@@ -929,7 +920,7 @@ static int txtest(int argc, char **argv) {
         return 2;
     }
     rate = cli.rate;
-    st = tx_start(&s, argv[3], argv[4], chl, &cli, (uint8_t)control);
+    st = tx_start(&s, argv[3], argv[4], chl, &cli, (uint8_t)control, NULL);
     if (st > 0) return 2;
     if (st < 0) goto out;
     ch = (uint8_t)chl;
@@ -1279,7 +1270,7 @@ static int acktest(int argc, char **argv) {
         printf("RESULT: FAIL - --scan-ms must be 500..10000\n");
         return 2;
     }
-    st = tx_start(&s, argv[3], argv[4], chl, &cli, 0);
+    st = tx_start(&s, argv[3], argv[4], chl, &cli, 0, NULL);
     if (st > 0) return 2;
     if (st < 0) goto out;
     ch = (uint8_t)chl;
@@ -1468,6 +1459,7 @@ int main(int argc, char **argv) {
     if (argc >= 6 && strcmp(argv[1], "sniff") == 0) return sniff(argc, argv);
     if (argc >= 5 && strcmp(argv[1], "txtest") == 0) return txtest(argc, argv);
     if (argc >= 5 && strcmp(argv[1], "acktest") == 0) return acktest(argc, argv);
+    if (argc >= 5 && strcmp(argv[1], "serve") == 0) return serve(argc, argv);
     printf("usage: radiod [--live-log <file>] <command> ...\n"
            "         --live-log <file>      also append each line (not DEBUG) to <file>, written through to disk\n"
            "       radiod dma-probe\n"
@@ -1506,6 +1498,16 @@ int main(int argc, char **argv) {
            "                                (default: the beaconing BSSID with the best mean RSSI)\n"
            "         --scan-ms N            how long to listen for beacons first (500..10000, default 2000)\n"
            "         --rate, --pair, --spe-v70, --wcid-global, --max-dbm, --mt76-power, --no-power-limits,\n"
-           "         --debug                as for txtest\n");
+           "         --debug                as for txtest\n"
+           "       radiod serve <channel 1-13|36|40|44|48> <patch file> <ram file> [options]\n"
+           "         radio server for awdld / radioctl on " RL_PIPE_NAME " (ADR-0003); one client,\n"
+           "         ends when it disconnects or is silent for 5 s\n"
+           "         --max-seconds N        session limit (5..900, default 120)\n"
+           "         --wait-client S        how long to wait for the client (1..300, default 60)\n"
+           "         --mac chip|random      address to ACK and transmit from (default chip)\n"
+           "         --no-filter            forward every frame, not only AWDL (BSSID 00:25:00:ff:94:73)\n"
+           "         --loopback             synthetic radio, NO hardware access (patch/ram arguments ignored):\n"
+           "                                for testing clients offline\n"
+           "         --pair, --max-dbm, --mt76-power, --no-power-limits, --debug   as for txtest\n");
     return 2;
 }

@@ -11,7 +11,15 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_subdirectory(../mt792x mt792x)
 
-add_executable(radiod main.c hal_win.c out.c)
+add_executable(radiod main.c serve.c radio_link.c hal_win.c out.c)
 target_link_libraries(radiod PRIVATE mt792x cfgmgr32 advapi32)
 target_compile_definitions(radiod PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(radiod PRIVATE /W4 /WX /utf-8)
+
+# Test client of `radiod serve` (ADR-0003 step M5.1).
+add_executable(radioctl radioctl.c radio_link.c)
+target_compile_definitions(radioctl PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(radioctl PRIVATE /W4 /WX /utf-8)
+
+add_executable(radio_link_test radio_link_test.c radio_link.c)
+target_compile_options(radio_link_test PRIVATE /W4 /WX /utf-8)

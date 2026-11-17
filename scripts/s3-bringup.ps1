@@ -32,6 +32,9 @@ param(
     [string]$Commands = '',
     # Second firmware set for comparisons, addressed by the token @alt (same two file names).
     [string]$AltFirmwareDir = '',
+    # radioctl arguments (ADR-0003 M5.1): radioctl is started in the background before the radiod commands
+    # and connects to `radiod serve` when it is up. ':' may stand for a space, e.g. --seconds:40:--tx-test
+    [string]$Client = '',
     [switch]$KeepGoing,
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
     [string]$ToolsRoot = 'D:\mtdrop-tools',
@@ -94,7 +97,13 @@ try {
     if ($Commands) { $commandList += @($Commands -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
     if ($commandList.Count -eq 0) { throw 'nothing to run: give -Stages or -Commands' }
     if (($commandList -join ' ') -match '@alt') { foreach ($need in $altPatch, $altRam) { if (-not (Test-Path $need)) { throw "missing alternative firmware file: $need" } } }
-    foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff|txtest|acktest) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
+    foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff|txtest|acktest|serve) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
+    $Client = ($Client -replace ':', ' ').Trim()
+    $clientTool = Join-Path $ToolsRoot 'build\radiod\radioctl.exe'
+    if ($Client) {
+        if ($Client -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing radioctl arguments '$Client'" }
+        if (-not (Test-Path $clientTool)) { throw "missing $clientTool" }
+    }
     foreach ($need in $patch, $ram) { if (-not (Test-Path $need)) { throw "missing firmware file: $need" } }
     $inf2cat = Get-ChildItem (Join-Path $ToolsRoot 'packages') -Recurse -Filter Inf2Cat.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     $builtInf = Join-Path $built 'mtdrop_proxy.inf'                                   # stamped by the build
@@ -180,6 +189,15 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
     # ---- the actual experiment -----------------------------------------------------------------
     Start-Sleep -Seconds 2
     $exit = 0
+    $clientProc = $null
+    $clientLog = Join-Path $PrivateRoot 'radioctl.log'
+    if ($Client) {
+        Remove-Item $clientLog, "$clientLog.err" -ErrorAction SilentlyContinue
+        $clientProc = Start-Process -FilePath $clientTool -ArgumentList ($Client -split ' ' | Where-Object { $_ }) `
+            -RedirectStandardOutput $clientLog -RedirectStandardError "$clientLog.err" -NoNewWindow -PassThru
+        $null = $clientProc.Handle   # keeps the process handle, without which ExitCode stays empty
+        Say "radioctl $Client started (pid $($clientProc.Id)); it connects once radiod serve is up"
+    }
     foreach ($c in $commandList) {
         Say "--- radiod $c"
         $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } elseif ($_ -eq '@alt') { $altPatch; $altRam } else { $_ } })
@@ -190,6 +208,13 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
         Say "radiod $c -> exit code: $code"
         if ($code -ne 0) { $exit = 1; if ($KeepGoing) { Say "'$c' failed; continuing (-KeepGoing)" } else { Say "stopping: '$c' failed"; break } }
         Start-Sleep -Seconds 1
+    }
+    if ($clientProc) {
+        if (-not $clientProc.WaitForExit(30000)) { Stop-Process -Id $clientProc.Id -Force -ErrorAction SilentlyContinue; Say 'radioctl did not finish within 30 s after radiod; stopped' }
+        foreach ($f in $clientLog, "$clientLog.err") { if (Test-Path $f) { Get-Content $f | ForEach-Object { Say "  radioctl: $_" } } }
+        $clientProc.Refresh()
+        Say "radioctl -> exit code: $($clientProc.ExitCode)"
+        if ($clientProc.ExitCode -ne 0) { $exit = 1 }
     }
 }
 catch {
