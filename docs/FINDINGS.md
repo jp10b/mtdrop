@@ -1198,3 +1198,23 @@ What would falsify the fix: still 0 ACKed unicast frames with TXS rate `0x04b`/O
 1. **The M5 acceptance criterion (CLAUDE.md §7) is met:** AWDL sync with the iPhone, peer discovered and valid, and `ping` over `awdl0` link-local to the iPhone works – and iOS does answer ICMPv6 over AWDL (TODO-VERIFY closed).
 2. The F-019/F-020 fix was the missing piece: with unicast data on ALTX0 at a fixed OFDM rate, the iPhone ACKs our frames and talks back. `radiod serve` now uses both by default (`--data-fw-rate-ac` restores mt76's behaviour for experiments).
 3. Open, for throughput later: RTTs grow in runs of 5–10 pings (78 → 415 ms, then back to ~160 ms), i.e. the echo waits for one of our two 44-slots per 16-slot period; occasional RX dating spikes up to 131 ms (the event loop was busy – ASSUMPTION – which can skew OWL's sync readings); OFDM 12 Mb/s fixed rate. None of these blocks M6.
+
+---
+
+## F-022 – M6a: first AirDrop receive over our own stack (auto-accept)
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Milestone:** M6 (first half: the transfer itself; the tray app's toast comes next)
+- **Setup:** as F-021 (`radiod serve 44 … --mac random`, ALTX + fixed-rate data by default; `awdld -c 44 -S intersect -v`) plus `airdropd` (M2 console host, published to `D:\mtdrop-tools\build\airdropd`) started by the session script with `--interface awdl0 --wait-interface 90 --yes --dir <PrivateRoot>\received`: it waits for `awdl0`, then announces `_airdrop._tcp` by mDNS on it (4 records + NSEC, every 2 s and on queries, `flags=0x88`) and serves `/Discover`, `/Ask`, `/Upload` over TLS on port 8771. Two temporary inbound firewall rules for airdropd (TCP 8771, UDP 5353), removed at the end of the session. Shown name: the Windows computer name. Session 240 s. iPhone: Photos → one photo → Share → AirDrop, then tap the PC.
+
+### Predictions
+
+| step | prediction |
+|---|---|
+| airdropd | finds `awdl0` within seconds of awdld creating it, starts announcing |
+| share sheet | **the PC appears in the iPhone's AirDrop sheet** within ~10–20 s (mDNS rides AWDL multicast in our two 44-slots per period) |
+| `/Discover`, `/Ask` | logged; the ask is auto-accepted |
+| `/Upload` | **the photo arrives** in `received\`, intact (opens), at tens of kB/s (2 of 16 slots, OFDM 12 Mb/s; jedbillyb measured ~45 kB/s on Linux) |
+| system | no hang; firewall rules and `awdl0` gone afterwards; Wi-Fi back |
+
+What would falsify: the PC never appears (mDNS not reaching the phone, or the phone needs more than the 4 records over AWDL); it appears but `/Discover` never arrives (TCP over AWDL not working); the upload stalls (throughput or loss).

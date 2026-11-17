@@ -40,6 +40,11 @@ param(
     # reachable is pinged over awdl0. ':' may stand for a space and '+' for '-' (a value starting with '-' would be
     # taken for a PowerShell parameter), e.g. +c:44:+S:intersect:+v
     [string]$Awdl = '',
+    # M6: run the AirDrop receiver (airdropd console host) on awdl0 next to awdld, auto-accepting, saving into
+    # <PrivateRoot>\received. Extra airdropd arguments as for -Awdl ('+' for '-', ':' for ' '), may be empty: use
+    # -Airdrop on. Needs -Awdl. Adds a temporary inbound firewall rule for airdropd (TCP 8771, UDP 5353), removed in
+    # the finally block whatever happens.
+    [string]$Airdrop = '',
     [switch]$KeepGoing,
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
     [string]$ToolsRoot = 'D:\mtdrop-tools',
@@ -110,6 +115,14 @@ try {
     if ($Awdl) {
         if ($Awdl -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing awdld arguments '$Awdl'" }
         foreach ($need in $awdlTool, (Join-Path (Split-Path $awdlTool) 'wintun.dll')) { if (-not (Test-Path $need)) { throw "missing $need" } }
+    }
+    $airdropTool = Join-Path $ToolsRoot 'build\airdropd\Mtdrop.Airdropd.exe'
+    $airdropOn = [bool]$Airdrop
+    $Airdrop = if ($Airdrop -eq 'on') { '' } else { ($Airdrop -replace ':', ' ' -replace '\+', '-').Trim() }
+    if ($airdropOn) {
+        if (-not $Awdl) { throw '-Airdrop needs -Awdl (awdl0 exists only while awdld runs)' }
+        if ($Airdrop -and $Airdrop -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing airdropd arguments '$Airdrop'" }
+        if (-not (Test-Path $airdropTool)) { throw "missing $airdropTool" }
     }
     if ($Client) {
         if ($Client -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing radioctl arguments '$Client'" }
@@ -234,6 +247,26 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
             }
         }
     }
+    $airdropProc = $null
+    $airdropLog = Join-Path $PrivateRoot 'airdropd.log'
+    $received = Join-Path $PrivateRoot 'received'
+    if ($airdropOn) {
+        New-Item -ItemType Directory -Force -Path $received | Out-Null
+        $before = @(Get-ChildItem $received -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
+        # Temporary: awdl0 is a new, unidentified (public) network, where inbound connections are blocked by default.
+        Remove-NetFirewallRule -Name 'mtdrop-airdropd-test-*' -ErrorAction SilentlyContinue   # leftovers of a killed session
+        New-NetFirewallRule -Name 'mtdrop-airdropd-test-tcp' -DisplayName 'mtdrop airdropd (test session, TCP 8771)' -Direction Inbound `
+            -Program $airdropTool -Protocol TCP -LocalPort 8771 -Action Allow -Profile Any | Out-Null
+        New-NetFirewallRule -Name 'mtdrop-airdropd-test-mdns' -DisplayName 'mtdrop airdropd (test session, mDNS)' -Direction Inbound `
+            -Program $airdropTool -Protocol UDP -LocalPort 5353 -Action Allow -Profile Any | Out-Null
+        Say 'temporary firewall rules mtdrop-airdropd-test-* added (removed at the end)'
+        Remove-Item $airdropLog, "$airdropLog.err" -ErrorAction SilentlyContinue
+        $airdropArgs = @('--interface', 'awdl0', '--wait-interface', '90', '--yes', '--dir', $received) + @($Airdrop -split ' ' | Where-Object { $_ })
+        $airdropProc = Start-Process -FilePath $airdropTool -ArgumentList $airdropArgs -WorkingDirectory (Split-Path $airdropTool) `
+            -RedirectStandardOutput $airdropLog -RedirectStandardError "$airdropLog.err" -NoNewWindow -PassThru
+        $null = $airdropProc.Handle
+        Say "airdropd started (pid $($airdropProc.Id)), auto-accept, saving to $received; it waits for awdl0"
+    }
     foreach ($c in $commandList) {
         Say "--- radiod $c"
         $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } elseif ($_ -eq '@alt') { $altPatch; $altRam } else { $_ } })
@@ -257,6 +290,13 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
             if (Test-Path $pingLog) { Get-Content $pingLog | ForEach-Object { Say "  ping: $_" } } else { Say '  ping: no peer was reported reachable' }
         }
     }
+    if ($airdropProc) {
+        if (-not $airdropProc.HasExited) { Stop-Process -Id $airdropProc.Id -Force -ErrorAction SilentlyContinue }
+        foreach ($f in $airdropLog, "$airdropLog.err") { if (Test-Path $f) { Get-Content $f | ForEach-Object { Say "  airdropd: $_" } } }
+        $new = @(Get-ChildItem $received -File -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.FullName })
+        Say "received files: $($new.Count)"
+        foreach ($f in $new) { Say ("  received: {0} ({1:N0} bytes)" -f $f.Name, $f.Length) }
+    }
     if ($clientProc) {
         if (-not $clientProc.WaitForExit(30000)) { Stop-Process -Id $clientProc.Id -Force -ErrorAction SilentlyContinue; Say 'radioctl did not finish within 30 s after radiod; stopped' }
         foreach ($f in $clientLog, "$clientLog.err") { if (Test-Path $f) { Get-Content $f | ForEach-Object { Say "  radioctl: $_" } } }
@@ -269,6 +309,10 @@ catch {
     Say "FAILED: $($_.Exception.Message)"
 }
 finally {
+    if (Get-NetFirewallRule -Name 'mtdrop-airdropd-test-*' -ErrorAction SilentlyContinue) {
+        Remove-NetFirewallRule -Name 'mtdrop-airdropd-test-*' -ErrorAction SilentlyContinue
+        Say 'temporary firewall rules removed'
+    }
     if ($taken) {
         try { & $giveback -PrivateRoot $PrivateRoot | Out-Null; Say "give-back finished (exit $LASTEXITCODE)" }
         catch { Say "give-back threw: $($_.Exception.Message)" }

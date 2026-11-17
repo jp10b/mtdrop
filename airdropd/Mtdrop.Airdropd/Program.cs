@@ -1,6 +1,7 @@
 ﻿// Development host for the AirDrop-compatible receiver: console prompts instead of a toast.
 // Usage:
-//   Mtdrop.Airdropd --interface <name-or-index> [--dir <folder>] [--name <shown name>] [--port 8771] [--yes]
+//   Mtdrop.Airdropd --interface <name-or-index> [--wait-interface <s>] [--dir <folder>] [--name <shown name>] [--port 8771]
+//                   [--yes] [--run-seconds <s>]
 //   Mtdrop.Airdropd --list-interfaces
 // The tray app (app/) replaces this for normal use.
 
@@ -24,6 +25,17 @@ if (wanted is null)
 {
     Console.Error.WriteLine("Missing --interface <name-or-index>. Use --list-interfaces to see candidates.");
     return 2;
+}
+
+// --wait-interface <seconds>: the AWDL adapter (awdl0) only exists while awdld runs, so wait for it to appear with an
+// IPv6 link-local address instead of failing at once (M6 hardware sessions start airdropd together with awdld).
+if (int.TryParse(Arg("--wait-interface"), out int waitSeconds) && waitSeconds > 0)
+{
+    DateTime until = DateTime.UtcNow.AddSeconds(waitSeconds);
+    while (ReceiveSession.FindInterface(wanted) is not { LinkLocal: not null } && DateTime.UtcNow < until)
+        Thread.Sleep(500);
+    // Windows assigns the link-local address a moment after the adapter appears; give it time to settle.
+    if (ReceiveSession.FindInterface(wanted) is { LinkLocal: not null }) Thread.Sleep(1000);
 }
 
 string destination = Arg("--dir") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
