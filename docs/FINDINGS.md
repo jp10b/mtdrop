@@ -1288,3 +1288,17 @@ Offline (FACT, 2026-11-17): with an existing adapter the app listens on 8771 wit
 | prompt | the Accept/Decline window appears bottom-right with the iPhone's (neutral) name and the photo's name/size |
 | Accept | photo saved in Downloads, toast with **Open folder**; the photo opens |
 | Decline (second try) | the iPhone shows the transfer as declined; nothing saved |
+
+### Raw result (FACT, 2026-11-17 21:29, home, channel 44, 240 s; no recording yet – maintainer's choice; names omitted)
+
+- Tray app started by the maintainer, **Start receiving** clicked; the session script found it running (`tray app running`), added the firewall rules for `mtdrop.exe`.
+- iPhone peer added 20 s after awdld started (the maintainer opened the share sheet then), iPhone sync master 2 s later.
+- **The PC appeared in the share sheet, the Accept/Decline window appeared on Windows, the maintainer clicked Accept, and the photo (2,642,945 bytes, `FFD8`…`FFD9`) was saved to Downloads at 21:30.**
+- Toast with **Open folder**: not noticed by the maintainer (TODO-VERIFY next time). Decline: not tried.
+- Ping 16 of 20 (RTT 8–630 ms). 2139 data frames from the iPhone (1245 joined); unicast 484 ACKed, 17 NOT ACKed; 55 TX refused, 0 lost; 494 frames filtered.
+- After the transfer the maintainer closed the share sheet: from 21:30:25 the radio took **no frame at all** for the rest of the session and OWL removed the peer 30 s later. Consistent with airdrop-mt7921's finding that the iPhone's AWDL goes quiet without the share sheet (an RX stall of ours would look the same – F-023 kept receiving after its transfers while the sheet stayed open, so a stall is unlikely; TODO-VERIFY by reopening the sheet in a later session).
+
+### Conclusion
+
+1. The user story works with the real consent window: the share sheet shows the PC, Windows asks, Accept saves the photo to Downloads. Still open for the M6 acceptance: the toast (look for it), Decline, the recording.
+2. The session still needs an elevated script started by hand; the tray's "Receive" cannot start the radio itself yet. That is M7's service.
