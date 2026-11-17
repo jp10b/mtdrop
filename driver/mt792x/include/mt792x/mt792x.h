@@ -134,6 +134,10 @@ struct mt792x_options {
     uint8_t tx_power_max_half_db; /* 0 = no extra cap; else every TX power limit is min(mt76 value, this), 0.5 dB units */
     uint8_t tx_spe_mode;          /* enum mt792x_tx_spe_mode */
     uint8_t tx_data_fixed_rate;   /* 1 = FIX_RATE on unicast data frames too (mt76: only non-data and group frames) */
+    uint8_t tx_data_altx;         /* 1 = data frames on the management queue ALTX0 instead of their AC queue. [HOST]
+                                   * F-019: on the AC queues the firmware held unicast data 115-560 ms before the
+                                   * first transmission (no STA_REC, no AC scheduling for the vif's wcid?), against
+                                   * 6-14 ms on ALTX0 - fatal for AWDL's 16 TU windows. mt76 never does this. */
     uint8_t tx_wcid_mode;         /* enum mt792x_tx_wcid_mode */
     uint8_t tx_allow_foreign_sa;  /* FOR THE ACK CONTROL EXPERIMENT ONLY. 0 = every frame must carry our own MAC as
                                      address 2 (default). 1 = additionally accept a probe request (management subtype 4)

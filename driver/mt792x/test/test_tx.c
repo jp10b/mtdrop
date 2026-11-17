@@ -291,6 +291,36 @@ static void directed_probe_case(int pair, uint8_t tries)
     rig_free(&r);
 }
 
+/* opt.tx_data_altx (F-019): unicast data goes to ALTX0 like management, keeps its TID, ACK and TX status; with
+ * tx_data_fixed_rate it carries the requested rate. Group data and management frames are unaffected. */
+TEST(tx_data_on_altx_queue)
+{
+    struct rig r;
+    uint8_t f[256];
+    uint32_t len, cookie = 0;
+    struct mt792x_tx_done d;
+    CHECK(rig_init(&r, 0) == 0);
+    r.dev->opt.tx_data_altx = 1;
+    r.dev->opt.tx_data_fixed_rate = 1;
+    CHECK(tx_rig_start(&r, 44) == 0);
+    len = awdl_data(f, 0x31, 40);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_6M, 1, 1, &cookie) == 0);
+    CHECK_EQ_U32(r.f->air[0].txd[0] >> 25, 0x10);                 /* ALTX0, not AC BE (1) */
+    CHECK_EQ_U32((r.f->air[0].txd[1] >> 20) & 0xfu, 0);           /* TID 0 kept */
+    CHECK_EQ_U32(r.f->air[0].txd[3] & 1u, 0);                      /* ACK requested */
+    CHECK(r.f->air[0].txd[2] & 0x80000000u);                       /* FIX_RATE */
+    CHECK_EQ_U32(r.f->air[0].txd[6], 0x004b0004u);                 /* OFDM 6 */
+    CHECK(r.f->air[0].txd[5] & 0x400u);                            /* TX status requested */
+    CHECK(next_done(&r, &d) == 1);
+    CHECK_EQ_U32(d.acked, MT792X_ACK_YES);
+    len = awdl_action(f, 2);
+    CHECK(tx_send(&r, f, len, MT792X_RATE_OFDM_12M, 0, 0, &cookie) == 0);
+    CHECK_EQ_U32(r.f->air[1].txd[0] >> 25, 3);                     /* broadcast action: AC VO as before */
+    CHECK(rig_check_no_violations(&r) == 0);
+    CHECK_EQ_U32(r.m.log_errors, 0);
+    rig_free(&r);
+}
+
 TEST(tx_directed_probe_ack_status_single_and_pair)
 {
     directed_probe_case(0, 15);

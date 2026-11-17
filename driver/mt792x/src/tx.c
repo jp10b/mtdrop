@@ -152,6 +152,7 @@ static int classify(struct mt792x *dev, const struct mt792x_tx_req *req, struct 
         c->ac = up_to_ac[c->tid];
         c->psd = (uint8_t)!data_present;                                 /* tx.c:718-725 */
         c->fix_rate = (uint8_t)(c->group || dev->opt.tx_data_fixed_rate);
+        if (dev->opt.tx_data_altx) c->psd = 1; /* [HOST] opt.tx_data_altx (F-019): queue ALTX0, TID as computed */
     }
     return 0;
 }

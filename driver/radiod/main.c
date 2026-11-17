@@ -699,6 +699,7 @@ int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
     else if (strcmp(a, "--no-power-limits") == 0) c->extra.tx_power_mode = MT792X_TXPWR_NONE;
     else if (strcmp(a, "--mt76-power") == 0) c->extra.tx_power_max_half_db = 0;
     else if (strcmp(a, "--data-fixed-rate") == 0) c->extra.tx_data_fixed_rate = 1;
+    else if (strcmp(a, "--data-altx") == 0) c->extra.tx_data_altx = 1;
     else if (strcmp(a, "--max-dbm") == 0 && *i + 1 < argc) {
         int dbm = atoi(argv[++*i]);
         if (dbm < 1 || dbm > 23) {
@@ -736,6 +737,7 @@ int tx_start(struct session *s, const char *patch_path, const char *ram_path, lo
     g_dev.opt.tx_power_max_half_db = c->extra.tx_power_max_half_db;
     g_dev.opt.tx_allow_foreign_sa = foreign_sa;
     g_dev.opt.tx_data_fixed_rate = c->extra.tx_data_fixed_rate;
+    g_dev.opt.tx_data_altx = c->extra.tx_data_altx;
     err = mt792x_bringup(&g_dev, &s->fw, MT792X_STAGE_POSTBOOT);
     if (err) {
         printf("RESULT: FAIL - bring-up: %s (%d) at S%d\n", mt792x_strerror(err), err, mt792x_failed_step(&g_dev));
@@ -1561,6 +1563,8 @@ int main(int argc, char **argv) {
            "         --data                 unicast DATA frames shaped like awdld's instead of probe requests\n"
            "         --data-fixed-rate      FIX_RATE (--rate) on unicast data too (also for serve; mt76 leaves\n"
            "                                the rate of unicast data to the firmware)\n"
+           "         --data-altx            data frames on the management queue ALTX0 (also for serve; F-019:\n"
+           "                                the AC queues held unicast data 115-560 ms)\n"
            "         --rate, --pair, --spe-v70, --wcid-global, --max-dbm, --mt76-power, --no-power-limits,\n"
            "         --debug                as for txtest\n"
            "       radiod serve <channel 1-13|36|40|44|48> <patch file> <ram file> [options]\n"

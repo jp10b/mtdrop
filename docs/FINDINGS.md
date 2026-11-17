@@ -1100,3 +1100,49 @@ The access point ACKs any unicast frame addressed to it with a good FCS, associa
 | 3 data, fixed rate | AP ACKed >= 4/5 like run 1 |
 
 If run 2 is ACKed like run 1, the data path is fine and the timing hypothesis returns (next: `radiod serve --pcap` and an offline slot-phase analysis). If run 2 fails and run 3 passes, `serve` gets `--data-fixed-rate` and M5.4 is repeated.
+
+### Raw result (FACT, 2026-11-17 18:43, home, channel 2, random address, `-KeepGoing`)
+
+| run | AP ACKed | ghost NOT ACKed (15 tries) | TXS rate | time from submit to completion, AP frames | ghost frames |
+|---|---|---|---|---|---|
+| 1 probe requests | 5/5 (+5 probe responses) | 5/5 | `0x04b` OFDM 6 | 5.7–14 ms (one 94 ms) | 9.9–12.2 ms |
+| 2 data, firmware rate | **5/5** | 5/5 | **`0x000` CCK 1 Mb/s** | **148–390 ms** | **166–558 ms** |
+| 3 data, fixed rate | 5/5 | 5/5 | `0x04b` OFDM 6 | **134–415 ms** | **116–412 ms** |
+
+TXS word 0 of data frames: `0x0000800x` (firmware rate) / `0x8000804b` (fixed) against `0x9c00804b` for management frames. Give-back normal, no hang.
+
+### Conclusion
+
+1. **Prediction for run 2 falsified:** the access point acknowledges our unicast data at the firmware's rate. The data path itself works, with TX status and retries as for management frames.
+2. **Found instead: unicast data waits 115–560 ms in the chip** before its first transmission, at any rate (runs 2 and 3), against 6–14 ms for management frames. Data goes to an AC queue (BE, Q_IDX 1), management to ALTX0. For AWDL this alone explains F-018: the iPhone is on 44 for 2 windows of 16 TU in a 16-slot period (~262 ms), so a frame leaving at a random moment hundreds of ms after OWL chose the right window mostly finds nobody listening → NOT ACKed after 15 quick retries, for all 35 frames. (ASSUMPTION for why: the firmware schedules AC queues per station, and the vif's wcid has no `STA_REC`.)
+3. **Also found: the firmware's rate for unicast data is CCK 1 Mb/s** (`0x000`) – fine on 2.4 GHz, impossible on 5 GHz (channel 44). What the firmware does with it on 5 GHz is untested.
+4. The F-018 timing hypothesis (RX dating) is not needed to explain F-018; the measured offline dating error is ~0.1 ms anyway.
+
+### Change
+
+Library option `opt.tx_data_altx` ([HOST], not mt76): data frames on ALTX0 with their TID, ACK and TX status unchanged (test `tx_data_on_altx_queue`); `radiod --data-altx` for `acktest`, `txtest` and `serve`.
+
+---
+
+## F-020 – Unicast data on the ALTX queue, and the firmware's data rate on 5 GHz
+
+- **Date:** 2026-11-17 (predictions written before the run). Home: channel 2 (2 BSSIDs), channel 36 (1 BSSID). No iPhone.
+
+### Method
+
+One session, `-KeepGoing`, random address, `acktest --data` against the strongest access point:
+1. channel 2, `--data-altx` (firmware rate)
+2. channel 2, `--data-altx --data-fixed-rate` (OFDM 6)
+3. channel 36, `--data` (firmware rate, AC queue: what rate does the firmware use on 5 GHz?)
+4. channel 36, `--data-altx --data-fixed-rate`
+
+### Predictions
+
+| run | prediction |
+|---|---|
+| 1 | AP ACKed 5/5, completion within ~6–20 ms (like probes), rate still `0x000` |
+| 2 | AP ACKed 5/5, ~6–20 ms, rate `0x04b` |
+| 3 | ASSUMPTION: the firmware's CCK choice on 5 GHz fails – AP NOT ACKed, or a rate other than CCK in TXS; completion slow (AC queue) |
+| 4 | AP ACKed 5/5, ~6–20 ms, rate `0x04b` |
+
+If 2 and 4 hold, `serve` runs with `--data-altx --data-fixed-rate` and M5.4 is repeated with the iPhone.
