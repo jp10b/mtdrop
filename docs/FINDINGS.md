@@ -1045,3 +1045,25 @@ Wintun (`awdl0`) – needs the signed `wintun.dll` and elevation; OWL against a 
 | system | no hang; vendor driver and Wi-Fi back; `awdl0` gone afterwards |
 
 What would falsify it: the iPhone never becomes a valid peer (frame format or MIF parsing), "NO OVERLAP" throughout (iPhone never lists 44 → hopping needed), radio TX refused or dropped frames, `awdl0` left behind.
+
+### Raw result (FACT, 2026-11-17 18:33, home, channel 44, 120 s; device addresses and names omitted)
+
+- Radio server: 1233 frames taken, 1002 forwarded (AWDL), 231 filtered, 0 bad FCS, **0 pipe full**; 2840 TX submitted, **0 refused, 0 lost**; one channel switch (44, at start); interrupt guard as F-013; `RESULT: PASS`.
+- awdld: random address from HELLO; **Wintun adapter `awdl0` created (interface index 13)** and gone after the session (no leftover device); BSSID filter set.
+- **The iPhone appeared as a peer 1 s after awdld started, was reported reachable (`fe80::…%13`) at once, became the elected sync master, and awdld followed its sequence** (`following channel sequence of sync master …, enc 3`). `intersect: 2/16 slots overlap … on ch 44` throughout – never NO OVERLAP. The peer timed out once (18:34:03, 2 s without a frame) and was re-added 3 s later (new advertised name UUID, same address).
+- awdld sent ~21 action frames/s and 227 data frames: 35 unicast (ICMPv6 echo requests of the ping and neighbour traffic), the rest multicast. **All 35 unicast frames: NOT ACKed after 15 transmissions. 0 ACKed.** Received data frames from the iPhone: **0**.
+- `ping -6 -n 20` to the peer: **20 of 20 lost**.
+- Give-back normal (Wi-Fi reconnected after the log's 30 s window); no hang.
+
+### Conclusion
+
+1. Held: the whole chain radio → pipe → OWL works with a real iPhone – peer discovery, peer validity (winawdl's fixes), sync to the iPhone as master, sequence adoption with intersect on 44, Wintun `awdl0`, no frame lost on our side.
+2. **Failed: unicast to the iPhone.** None of 35 unicast frames was acknowledged, and the iPhone sent us no data. The firmware ACK/TXS path is proven (F-014, F-016), so a NOT ACKed after 15 tries means the iPhone did not receive the frame on 44 at that moment.
+3. Main hypothesis (ASSUMPTION): **our idea of the iPhone's slot timing is off.** OWL does not use the radiotap TSFT for synchronisation: `owl/src/rx.c:493` sets `tsft = clock_time_us()` when the frame is processed (a TODO in OWL). On Linux that is within ~1 ms of reception; here the frame first crosses radiod's poll loop, the pipe, the client's reader thread and the event loop, so every PSF/MIF is dated late by an unknown, variable amount, and OWL places the iPhone's 44 slots (2 × 16 TU of a 16-slot period) later than they are. Unicast is sent only in those slots (`txgate`), so a phase error of more than a slot misses all of them. Unicast TX latency (awdld → pipe → radiod → TX ring) adds to the error in the same direction.
+4. Alternatives not excluded: the iPhone does not stay on 44 for its whole 44 slots; the firmware's rate choice for unicast data (H14) is not decodable; the iPhone ignores a peer whose own sequence (intersect: only 2 slots) it finds unacceptable – but a NOT ACKed is a MAC-level miss, which points at timing or channel, not at peer policy.
+
+### Next (M5.4b, measure before changing anything)
+
+- awdld: per received frame, `clock_time_us()` at processing minus radiotap TSFT (radiod's QPC stamp when the frame left the RX ring), as count / mean / max in the status line – the RX dating error, directly.
+- radiod serve `--pcap <file>` (private directory only): every forwarded RX frame and every TX with QPC timestamps, plus a TX status log, so the iPhone's slot phase (from its sync parameters) can be compared offline with when our unicast frames went out and whether they were ACKed.
+- Then decide between: feeding the radiotap TSFT to OWL's synchronisation (a one-line change in `rx.c`, recorded in NOTICE), reducing latency, or both.
