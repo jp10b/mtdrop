@@ -1253,3 +1253,18 @@ What would falsify: the PC never appears (mDNS not reaching the phone, or the ph
 | `/Upload` | photo arrives in `received\` |
 
 What would falsify the dating hypothesis: still 0 data frames from the iPhone although the RX delay stays small – then the difference to F-021 lies elsewhere (airdropd's traffic, the iPhone's state), and the next step is a run without `-Airdrop` (exact F-021 conditions) to split the two.
+
+### Raw result (FACT, 2026-11-17 21:13, home, channel 44, 240 s; device names and addresses omitted)
+
+- **The PC appeared in the iPhone's AirDrop sheet and received the photo – three times.** `/Ask` at 21:13:57, 21:14:06 and 21:14:23 (16 s after airdropd started announcing), each auto-accepted; one JPEG of 1,764,159 bytes saved 3–5 s after each ask. All three copies are byte-identical (same SHA-256), begin with `FFD8` and end with `FFD9`.
+- Effective rate: ~1.76 MB in 3–5 s from ask to saved, i.e. **~350–590 kB/s** – roughly 10× what jedbillyb measured on Linux (45–67 kB/s; CLAUDE.md §2). One sample, home, iPhone close to the laptop.
+- **Ping 16 of 20** (RTT 6–793 ms, mean 248 ms). 4183 data frames from the iPhone (1635 of them joined from aggregates); 1358 unicast frames sent, radio: 1177 ACKed, 71 NOT ACKed.
+- RX delay in awdld still large at times (median of period means 5.7 ms; 12 of 119 periods with a mean above 100 ms, 20 with a maximum above 1 s), but sync now uses the TSFT dating.
+- Radio server: 8088 frames taken, 6896 forwarded, **1192 filtered** (F-022: 31), 0 bad FCS, 0 pipe full; 6136 TX submitted, **141 refused** (TX ring or status map full – during the transfer), 0 lost.
+- Large apps were closed before the session (maintainer). Give-back normal, no hang.
+
+### Conclusion
+
+1. **First end-to-end AirDrop receive on Windows over our own stack** (MT7921 + user-mode radio + OWL + airdropd), iOS 26.5.2, no app on the iPhone. The M6 transfer part works; what remains for M6 acceptance is the tray app's toast in place of `--yes` and the screen recording.
+2. The F-022 failure is fixed, but **which change fixed it is not separated**: the TSFT dating and less memory pressure came together. The dating is right either way and stays; a deliberate run under memory pressure would tell whether it is sufficient (low priority).
+3. Open, for throughput and robustness (none blocks M6): the 1192 filtered frames appeared only during the transfer – TODO-VERIFY whether these are iPhone aggregates larger than `RL_MAX_PAYLOAD` (4096) or header-translated frames, either of which costs TCP retransmissions; the 141 refused TX frames (TX queue depth in `radiod serve`); awdld's processing delay spikes.
