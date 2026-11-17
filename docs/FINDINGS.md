@@ -936,3 +936,14 @@ ADR-0003 splits the radio (`radiod serve`, MSVC, owns the chip) from AWDL (`awdl
 | system | no hang; vendor driver back afterwards |
 
 What would falsify it: AWDL frames seen by `radiod sniff` but not through the pipe (filter or radiotap bug); per-frame channel other than 44; TX statuses missing or different from F-014 when sent through the pipe; pipe full on a quiet channel (server loop too slow).
+
+### Raw result (FACT, 2026-11-17 17:56, `serve:44:@alt:--max-seconds:60` + `radioctl --seconds 40 --tx-test`)
+
+- `radioctl` connected 0.6 s after the radio was up on 44 (chip MAC, AWDL filter). In 40 s: **367 AWDL action frames through the pipe (276 PSF, 91 MIF), all from one transmitter (the iPhone), every per-frame channel = 44 (5220 MHz)**, RSSI -42..-23 dBm; no data frames (no AWDL peer yet).
+- Server: 391 frames taken from the chip, 368 forwarded, 23 filtered (not the AWDL BSSID), 0 bad FCS, 0 own, **0 pipe full**; client messages 46 (heartbeats, TX, STATS).
+- TX through the pipe, 6/6 as expected: broadcast probes done, no ACK requested, 1 transmission, 0.6–2.2 ms; ghost probes **NOT ACKed after 15 transmissions**, 9.6–9.9 ms (on channel 1 in F-014: 14–58 ms – a quieter channel).
+- `RESULT: PASS` on both sides; session ended by the client's disconnect after 40 s; orderly shutdown; interrupt guard as F-013 (162 checks, `HOST_INT_ENA` only at S23); vendor driver back and Wi-Fi connected 26 s after the end. No hang.
+
+### Conclusion
+
+All predictions held. The radio server delivers the iPhone's AWDL traffic with the correct per-frame channel and radiotap, keeps up easily (~9 AWDL frames/s, no queue overflow), and TX statuses survive the pipe unchanged. M5.1 gate passed. Next: M5.2 (does the firmware ACK a random locally administered address set as the vif address?) and M5.3 (build `awdld` with MinGW, offline against `radiod serve --loopback`).
