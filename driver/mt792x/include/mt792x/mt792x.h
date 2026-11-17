@@ -418,7 +418,7 @@ struct mt792x {
 
     uint32_t remap_saved;     /* MT_HIF_REMAP_L1 as found at S0 */
     int remap_saved_valid;
-    uint32_t pcie_int_saved;  /* MT_PCIE_MAC_INT_ENABLE as found at S0, restored at the end of shutdown */
+    uint32_t pcie_int_saved;  /* MT_PCIE_MAC_INT_ENABLE as found at S6, restored at the end of shutdown */
     int pcie_int_saved_valid;
     int bus_dead;             /* sticky: no further register writes during bring-up */
     int in_shutdown;          /* mt792x_shutdown is running: writes allowed best-effort */

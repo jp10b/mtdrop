@@ -182,7 +182,8 @@ TEST(fault_bus_dead_sweep)
                    mt792x_failed_step(r.dev));
             CHECK(0);
         }
-        CHECK_EQ_U32(r.f->writes_after_dead_read, 0); /* nothing written once all-ones was seen */
+        CHECK_EQ_U32(r.f->writes_after_dead_read, 0); /* nothing but CLR_OWN retries once all-ones was seen */
+        CHECK(r.f->clr_own_after_dead_read <= 9u);
         CHECK(r.f->violations == 0);
         sd = r.m.trace_len;
         mt792x_shutdown(r.dev);                       /* best effort, must terminate quickly */

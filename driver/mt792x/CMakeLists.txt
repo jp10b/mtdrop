@@ -51,6 +51,7 @@ add_executable(mt792x_tests
   test/test_paged.c
   test/test_tx.c
   test/test_irq.c
+  test/test_wake.c
 )
 target_include_directories(mt792x_tests PRIVATE test)
 target_link_libraries(mt792x_tests PRIVATE mt792x)

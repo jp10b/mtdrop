@@ -707,3 +707,38 @@ Each step only after the previous one passed, with a full power-off before the f
 | D | the session that hung: `--count 15 --control`, then `--count 15 --control --pair` | no hang. If the hypothesis is right, `HOST_INT_STA` or `MCU_CMD` may show a cause bit during run 2 without any effect on the system |
 
 What would falsify the hypothesis: a hang with the guard working (its last report in `radiod-live.log` shows both enables 0). Then the cause is elsewhere (DMA into memory we do not own, a PCIe completion timeout on a register read, a firmware state the vendor driver cannot survive) and the next step is to record which line came last.
+
+---
+
+## F-012 – Re-entry step A: no hang, but the chip stopped answering right after SET_OWN
+
+- **Date:** 2026-11-17
+- **Milestone:** M4 (F-011 re-entry ladder, step A)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). No iPhone involved.
+
+### Prediction (F-011, step A)
+
+`sniff 1 10 @alt` passes as in F-007; S6 logs 0; the interrupt guard finds `HOST_INT_ENA` = `0x20000000` once; Wi-Fi works after the give-back.
+
+### Raw result (FACT)
+
+- Preconditions first failed three times: "no System Restore point". Cause: drive C: had 0.15 GB free, so Windows had deleted the restore points. Fixed by the maintainer (space freed, restore point created); the script now names the free space in that error.
+- The fourth start bound the proxy normally. S0 read `MT_HIF_REMAP_L1` = `0x18451844` (seen once before, 2026-11-10, in a session that passed). **S1 fw-own** read OWN_SYNC = 1 as always.
+- **S2 drv-own:** the first LPCTL read after the CLR_OWN write returned `0xffffffff` (55 ms after S1). The library treated it as a dead bus and stopped after 1 attempt. Shutdown read all-ones from every register for another 90 ms.
+- The proxy close ops and the give-back ran normally. The MediaTek driver came back, the card reports OK and lists 25 networks. **No system hang**; no new error events.
+- Before this session Wi-Fi was not connected (the laptop was on iPhone USB tethering). In the 11.11 sessions it was connected right up to the swap. ASSUMPTION: an idle, disconnected vendor driver leaves the chip in a deeper power-save state, and after our SET_OWN the chip went to sleep with the link unreachable.
+
+### Conclusion
+
+1. In 17 earlier runs S2 succeeded at the first attempt in 4–9 ms; this is the first all-ones read at S2. Whether the chip was asleep or had dropped off the bus cannot be told from one read.
+2. Our S2 was stricter than mt76: mt76 writes CLR_OWN up to 10 times (50 ms poll each), we gave up at the first all-ones read.
+3. Nothing in step A tested the interrupt changes: the run ended before S6.
+
+### Changes
+
+- S2 (and the shutdown's drv-own) retry the CLR_OWN write after an all-ones read, inside mt76's own budget (10 attempts, about 0.5 s); no other register is written until the chip answers. The fake chip can now sleep after SET_OWN; tests for "wakes after 120 ms" and "never wakes" (gives up after 10 attempts, about 0.5 s).
+- `MT_PCIE_MAC_INT_ENABLE` is no longer read at S0 but at S6, where it is changed, so S0–S3 touch exactly the registers they touched in the 17 runs that passed. A shutdown after a failure before S6 records the value first and hands it back unchanged.
+
+### Prediction for the repeat of step A (written before running it)
+
+With Wi-Fi connected before the session (as on 11.11): S2 at the first attempt, then the F-011 step-A prediction. If S2 again reads all-ones: either the log shows "chip answered again after N all-ones read(s)" and the run continues, or ten all-ones attempts end it in about 0.5 s. In that second case the chip is unreachable after SET_OWN and S1 itself has to be revisited.

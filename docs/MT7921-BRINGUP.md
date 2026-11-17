@@ -798,7 +798,7 @@ Whether the ROM patch is still loaded after the vendor driver's exit cannot be r
 |---|---|---|
 | S0 | **[HOST]** Save `read(0xfe24c)` for restore at exit. Lay out the 2 MiB block: descriptor arrays (16 B × ndesc, 4-byte aligned) for TX 0/16/17 and RX 0/2/4, RX buffers (2048 B each), one command buffer, one 4096-byte chunk buffer. Zero everything. | — |
 | S1 | fw-own (2.2): up to 10 × { write 0xe0010 = 0x1; poll `(0xe0010 & 0x4) == 0x4`, 50 ms / 1 ms } | bit 2 of 0xe0010 = 1 |
-| S2 | drv-own (2.3): up to 10 × { write 0xe0010 = 0x2; sleep 2–3 ms; poll `(0xe0010 & 0x4) == 0`, 50 ms / 1 ms } | bit 2 of 0xe0010 = 0 |
+| S2 | drv-own (2.3): up to 10 × { write 0xe0010 = 0x2; sleep 2–3 ms; poll `(0xe0010 & 0x4) == 0`, 50 ms / 1 ms }. **[HOST]** (F-012) an all-ones read inside this loop is not final: wait 50 ms and retry the CLR_OWN write (nothing else) within the same 10 attempts | bit 2 of 0xe0010 = 0 |
 | S3 | L1 read 0x70010200 → expect 0x7961; L1 read 0x70010020 bit 7 must be 0; L1 read 0x70010204 & 0xff → 0x10 | chip id / rev as MEASURED |
 | S4 | WFSYS reset (2.5): L1 clear bit 0 @0x18000140; sleep 50 ms; L1 set bit 0; poll `(L1-read & 0x10) == 0x10`, 500 ms / 10 ms | `WFSYS_SW_INIT_DONE` = 1 |
 | S5 | write 0xd4204 = 0 | `HOST_INT_ENA` reads 0 |

@@ -85,6 +85,9 @@ struct fake_chip {
     int fw_own_never;           /* SET_OWN never sets OWN_SYNC */
     unsigned drv_own_fail_count;/* the first N CLR_OWN requests are ignored */
     int drv_own_never;
+    int sleep_after_set_own;    /* F-012: after SET_OWN has been read back, every access sees all-ones (writes
+                                   are lost) until wake_us after the first CLR_OWN; only CLR_OWN starts the wake */
+    uint32_t wake_us;           /* 0 = never wakes */
     int wfsys_never_done;
     uint32_t wfsys_done_delay_us;
     int dma_busy_stuck;
@@ -135,7 +138,12 @@ struct fake_chip {
     uint32_t accesses;
     int dead;
     int dead_read_seen;
-    unsigned writes_after_dead_read;
+    unsigned writes_after_dead_read;   /* except CLR_OWN wake-up requests, counted below */
+    unsigned clr_own_after_dead_read;
+    int sleep_pending, asleep;
+    uint64_t wake_at_us;               /* 0 = no wake-up requested yet */
+    unsigned writes_while_asleep;      /* other than CLR_OWN */
+    unsigned reads_while_asleep;
     int own_sync;
     int driver_owned_once;
     unsigned clr_own_requests;

@@ -75,23 +75,40 @@ static int fw_own(struct mt792x *dev)
     return 0;
 }
 
-/* Used by S2 and by shutdown (7.1 row 2). Returns 0, MT792X_E_BUS_DEAD or MT792X_E_DRV_OWN. */
+/* Used by S2 and by shutdown (7.1 row 2). Returns 0, MT792X_E_BUS_DEAD or MT792X_E_DRV_OWN.
+ *
+ * [HOST] docs/FINDINGS.md F-012: right after SET_OWN (S1) the chip once answered every read with
+ * all-ones for more than 100 ms (asleep, or gone). An all-ones LPCTL read is therefore not final
+ * here: the CLR_OWN wake-up request - and nothing else - is written again, within mt76's own budget
+ * of MT792x_DRV_OWN_RETRY_COUNT attempts of up to 50 ms. Only if every attempt reads all-ones is the
+ * bus declared dead. No value derived from an all-ones read is ever written. */
 static int drv_own(struct mt792x *dev, uint32_t *attempt, uint32_t *last)
 {
-    uint64_t el = 0;
-    uint32_t i, v = 0;
+    uint64_t el = 0, t0 = mt_now(dev);
+    uint32_t i, v = 0, dead_reads = 0;
     int rc = MT_POLL_TIMEOUT;
 
     for (i = 0; i < OWN_RETRY_COUNT; i++) {
+        if (rc == MT792X_E_BUS_DEAD) dev->bus_dead = 0; /* retry the wake-up after an all-ones read */
         mt_wr(dev, MT_CONN_ON_LPCTL, PCIE_LPCR_HOST_CLR_OWN);
         /* ASSUMPTION (spec 2.3): we cannot read aspm_supported, so always sleep as with ASPM. */
         if (!dev->opt.skip_aspm_sleep) mt_sleep(dev, ASPM_SLEEP_US);
         rc = mt_poll(dev, MT_CONN_ON_LPCTL, PCIE_LPCR_HOST_OWN_SYNC, 0, OWN_POLL_US, OWN_TICK_US, &v, &el);
+        if (rc == MT792X_E_BUS_DEAD) {
+            dead_reads++;
+            mt_logf(dev, MT_LOG_WARN, "drv-own attempt %u: LPCTL reads 0xffffffff (chip asleep or gone), %u ms so far",
+                    i + 1u, (uint32_t)((mt_now(dev) - t0) / 1000u));
+            if (i + 1u < OWN_RETRY_COUNT) mt_sleep(dev, OWN_POLL_US); /* the wait a normal poll would have had */
+            continue;
+        }
         if (rc != MT_POLL_TIMEOUT) break;
         mt_logf(dev, MT_LOG_WARN, "drv-own attempt %u: OWN_SYNC still 1 (LPCTL 0x%08x)", i + 1u, v);
     }
-    if (attempt) *attempt = i + 1u;
+    if (attempt) *attempt = i < OWN_RETRY_COUNT ? i + 1u : OWN_RETRY_COUNT;
     if (last) *last = v;
+    if (dead_reads && rc == 0)
+        mt_logf(dev, MT_LOG_WARN, "drv-own: chip answered again after %u all-ones read(s), %u ms", dead_reads,
+                (uint32_t)((mt_now(dev) - t0) / 1000u));
     if (rc == MT792X_E_BUS_DEAD) return MT792X_E_BUS_DEAD;
     return rc ? MT792X_E_DRV_OWN : 0;
 }
@@ -190,8 +207,12 @@ static int step_irq_mask(struct mt792x *dev)
     done(dev, 5);
 
     t0 = mt_now(dev);
+    /* Saved where it is first changed (not at S0: nothing new before S1/S2, F-012); restored at shutdown. */
+    dev->pcie_int_saved = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+    if (dev->bus_dead) return fail(dev, 6, MT792X_E_BUS_DEAD, t0);
+    dev->pcie_int_saved_valid = 1;
     if (dev->opt.pcie_mac_int == MT792X_PCIE_INT_AS_FOUND) {
-        v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+        v = dev->pcie_int_saved;
         mt_logf(dev, MT_LOG_INFO, "S6 PCIE_MAC_INT_ENABLE left as found: 0x%08x (option)", v);
     } else if (dev->opt.pcie_mac_int == MT792X_PCIE_INT_MT76) {
         mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0xffu);
@@ -205,7 +226,8 @@ static int step_irq_mask(struct mt792x *dev)
             mt_logf(dev, MT_LOG_ERROR, "S6 PCIE_MAC_INT_ENABLE reads 0x%08x after writing 0", v);
             return fail(dev, 6, MT792X_E_INT_MASK, t0);
         }
-        mt_logf(dev, MT_LOG_INFO, "S6 PCIE_MAC_INT_ENABLE = 0x%08x (interrupts off: polling host, R1/F-011)", v);
+        mt_logf(dev, MT_LOG_INFO, "S6 PCIE_MAC_INT_ENABLE = 0x%08x (found 0x%08x; interrupts off: polling host, R1/F-011)", v,
+                dev->pcie_int_saved);
     }
     if (dev->bus_dead) return fail(dev, 6, MT792X_E_BUS_DEAD, t0);
     done(dev, 6);
@@ -656,13 +678,9 @@ static int run(struct mt792x *dev, const struct mt792x_fw *fw, enum mt792x_stage
     dev->remap_saved = mt_rr(dev, MT_HIF_REMAP_L1);
     if (dev->bus_dead) return fail(dev, 0, MT792X_E_BUS_DEAD, t0);
     dev->remap_saved_valid = 1;
-    dev->pcie_int_saved = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
-    if (dev->bus_dead) return fail(dev, 0, MT792X_E_BUS_DEAD, t0);
-    dev->pcie_int_saved_valid = 1;
-    mt_logf(dev, MT_LOG_INFO,
-            "S0 MT_HIF_REMAP_L1 = 0x%08x, PCIE_MAC_INT_ENABLE = 0x%08x saved; DMA region bus 0x%08x len 0x%x, layout 0x%x bytes",
-            dev->remap_saved, dev->pcie_int_saved, dev->hal->dma_page_bus ? dev->hal->dma_page_bus[0] : dev->hal->dma_bus,
-            dev->hal->dma_len, MT792X_LAYOUT_TOTAL);
+    mt_logf(dev, MT_LOG_INFO, "S0 MT_HIF_REMAP_L1 = 0x%08x saved; DMA region bus 0x%08x len 0x%x, layout 0x%x bytes",
+            dev->remap_saved, dev->hal->dma_page_bus ? dev->hal->dma_page_bus[0] : dev->hal->dma_bus, dev->hal->dma_len,
+            MT792X_LAYOUT_TOTAL);
     done(dev, 0);
 
     if ((err = fw_own(dev)) != 0) return err;
@@ -795,6 +813,15 @@ void mt792x_shutdown(struct mt792x *dev)
 
     /* [HOST] F-011: interrupts off at the source before anything else (mt76's suspend writes, pci.c:522). */
     dev->bus_dead = 0;
+    if (!dev->pcie_int_saved_valid) {
+        /* bring-up stopped before S6: remember the value now, so that it is handed back as found */
+        v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+        if (!dev->bus_dead) {
+            dev->pcie_int_saved = v;
+            dev->pcie_int_saved_valid = 1;
+        }
+        dev->bus_dead = 0;
+    }
     mt_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0);
     mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0);
 

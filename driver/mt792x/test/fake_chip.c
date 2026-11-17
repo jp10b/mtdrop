@@ -1187,6 +1187,17 @@ static void on_read(void *user, uint32_t off, uint32_t *value)
         f->dead_read_seen = 1;
         return;
     }
+    if (f->asleep) {
+        if (f->wake_at_us && f->m->clock_us >= f->wake_at_us) {
+            f->asleep = 0;                     /* the CLR_OWN that woke it takes effect */
+            f->own_sync = 0;
+            f->driver_owned_once = 1;
+        } else {
+            f->reads_while_asleep++;
+            *value = 0xffffffffu;
+            return;
+        }
+    }
     if (f->fw_started && f->fw_int_ena && f->fw_int_rearm_us && f->m->clock_us >= f->next_int_rearm_us) {
         mock_set_reg(f->m, R_INT_ENA, mock_get_reg(f->m, R_INT_ENA) | f->fw_int_ena);
         f->next_int_rearm_us = f->m->clock_us + f->fw_int_rearm_us;
@@ -1194,6 +1205,10 @@ static void on_read(void *user, uint32_t off, uint32_t *value)
     }
     if (off == R_LPCTL) {
         *value = f->own_sync ? 4u : 0u;
+        if (f->sleep_pending && f->own_sync) { /* OWN_SYNC is seen once, then the chip goes to sleep */
+            f->sleep_pending = 0;
+            f->asleep = 1;
+        }
         if ((f->fw_own_never && f->set_own_writes && !f->own_sync) || (f->drv_own_never && f->clr_own_requests))
             mark_fault(f);
     } else if (off == R_MISC) {
@@ -1227,7 +1242,19 @@ static void on_write(void *user, uint32_t off, uint32_t v)
     uint32_t n, which;
 
     if (bus_tick(f)) {
-        if (f->dead_read_seen) f->writes_after_dead_read++;
+        if (f->dead_read_seen) {
+            if (off == R_LPCTL && v == 2u) f->clr_own_after_dead_read++;
+            else f->writes_after_dead_read++;
+        }
+        return;
+    }
+    if (f->asleep) {
+        if (off == R_LPCTL && (v & 2u)) {
+            f->clr_own_requests++;
+            if (!f->wake_at_us && f->wake_us) f->wake_at_us = f->m->clock_us + f->wake_us;
+        } else {
+            f->writes_while_asleep++;
+        }
         return;
     }
     if (off == R_LPCTL) {
@@ -1235,6 +1262,7 @@ static void on_write(void *user, uint32_t off, uint32_t v)
             f->set_own_writes++;
             if (f->driver_owned_once) violation(f, "SET_OWN written after the driver took ownership");
             if (!f->fw_own_never) f->own_sync = 1;
+            if (f->sleep_after_set_own && !f->driver_owned_once) f->sleep_pending = 1;
         }
         if (v & 2u) {
             f->clr_own_requests++;
