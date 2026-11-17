@@ -873,7 +873,7 @@ void mt792x_shutdown(struct mt792x *dev)
         mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, dev->pcie_int_saved);
         v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
         mt_logf(dev, v == dev->pcie_int_saved ? MT_LOG_INFO : MT_LOG_WARN,
-                "shutdown: PCIE_MAC_INT_ENABLE restored to 0x%08x (found 0x%08x at S0)", v, dev->pcie_int_saved);
+                "shutdown: PCIE_MAC_INT_ENABLE restored to 0x%08x (as found: 0x%08x)", v, dev->pcie_int_saved);
     }
 
     /* DMA is stopped and the Wi-Fi subsystem was reset: nothing can read a TX slot any more. */

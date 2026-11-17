@@ -742,3 +742,12 @@ What would falsify the hypothesis: a hang with the guard working (its last repor
 ### Prediction for the repeat of step A (written before running it)
 
 With Wi-Fi connected before the session (as on 11.11): S2 at the first attempt, then the F-011 step-A prediction. If S2 again reads all-ones: either the log shows "chip answered again after N all-ones read(s)" and the run continues, or ten all-ones attempts end it in about 0.5 s. In that second case the chip is unreachable after SET_OWN and S1 itself has to be revisited.
+
+### Repeat of step A, Wi-Fi connected before the session (FACT, 2026-11-17 09:13)
+
+- S2 drv-own at the first attempt in 4 ms (no all-ones read). One run: consistent with the assumption that an idle, disconnected vendor driver left the chip asleep, not proof of it.
+- S6 wrote `PCIE_MAC_INT_ENABLE` = 0 (found 0xff). The interrupt guard found `HOST_INT_ENA` = `0x20000000` once, at S23, and never again in 41 checks over 10 s; `PCIE_MAC_INT_ENABLE` was never found non-zero. `MCU_CMD` stayed 0. `HOST_INT_STA` showed pending causes (`0x0c400005`, OR of all reads), which reached nobody because both gates were closed.
+- **Reception unchanged:** `RESULT: PASS`, 4559 frames in 10 s, 480 beacons with good FCS, every per-frame channel = 1, no FCS errors (as F-007).
+- Shutdown restored `PCIE_MAC_INT_ENABLE` to 0xff after the WFSYS reset. Give-back normal; the MediaTek driver reconnected to Wi-Fi; no error events.
+
+**Conclusion:** keeping the interrupt gate closed does not disturb firmware download, post-boot, sniffer start or reception. Step A passed exactly as predicted. Next: step B (`txtest 1 @alt --count 5`).
