@@ -1268,3 +1268,23 @@ What would falsify the dating hypothesis: still 0 data frames from the iPhone al
 1. **First end-to-end AirDrop receive on Windows over our own stack** (MT7921 + user-mode radio + OWL + airdropd), iOS 26.5.2, no app on the iPhone. The M6 transfer part works; what remains for M6 acceptance is the tray app's toast in place of `--yes` and the screen recording.
 2. The F-022 failure is fixed, but **which change fixed it is not separated**: the TSFT dating and less memory pressure came together. The dating is right either way and stays; a deliberate run under memory pressure would tell whether it is sufficient (low priority).
 3. Open, for throughput and robustness (none blocks M6): the 1192 filtered frames appeared only during the transfer – TODO-VERIFY whether these are iPhone aggregates larger than `RL_MAX_PAYLOAD` (4096) or header-translated frames, either of which costs TCP retransmissions; the 141 refused TX frames (TX queue depth in `radiod serve`); awdld's processing delay spikes.
+
+---
+
+## F-024 – M6b: the full user story with the tray app (prompt, toast, recording)
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Milestone:** M6 acceptance (CLAUDE.md §7: screen recording – share sheet shows the PC, prompt/toast on Windows, photo opens)
+- **Setup:** as F-023, but the tray app (`D:\mtdrop-tools\build\app\mtdrop.exe --minutes 5 --name <neutral name>`) receives instead of airdropd's console host: started by the maintainer in the desktop session, **Start receiving** clicked before the radio session; it waits for `awdl0` (new in this change), then announces. Session script with `-Airdrop tray` (temporary firewall rules for `mtdrop.exe`, no airdropd). Files go to `%USERPROFILE%\Downloads`. Large apps closed. iPhone name changed to a neutral one for the recording (CLAUDE.md §9: no real device names in the repo). Recording: Windows Snipping Tool screen recording + iPhone screen recording.
+
+Offline (FACT, 2026-11-17): with an existing adapter the app listens on 8771 within 4 s and stops after its 15 s window; with `awdl0` missing it waits without listening and stays alive.
+
+### Predictions
+
+| step | prediction |
+|---|---|
+| tray | amber "waiting for awdl0" until awdld creates it, then green within ~1–2 s |
+| share sheet | the PC appears under the neutral name within ~20 s, as F-023 |
+| prompt | the Accept/Decline window appears bottom-right with the iPhone's (neutral) name and the photo's name/size |
+| Accept | photo saved in Downloads, toast with **Open folder**; the photo opens |
+| Decline (second try) | the iPhone shows the transfer as declined; nothing saved |

@@ -12,9 +12,9 @@ namespace Mtdrop.App;
 
 /// <summary>
 /// Tray application: "Receive" toggle with a time window, Accept/Decline prompt window, saved-file toasts.
-/// Prototype for M2: the network interface is given on the command line because the AWDL
-/// adapter does not exist yet.
-///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--receive]
+/// The AWDL adapter (awdl0) exists only while the radio session runs, so "Start receiving" first waits for it
+/// (amber icon), within the same time window, and then announces the PC on it.
+///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive]
 ///   mtdrop.exe --test-prompt     (developer: show one sample prompt and exit)
 /// </summary>
 public partial class App : System.Windows.Application
@@ -28,10 +28,12 @@ public partial class App : System.Windows.Application
     private WinForms.ToolStripMenuItem _toggle = null!;
     private Mutex? _single;
     private ReceiveSession? _session;
+    private CancellationTokenSource? _waiting;
     private int _activeTransfers;
     private string _interface = "awdl0";
     private string _destination = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     private TimeSpan _duration = TimeSpan.FromMinutes(2);
+    private string _shownName = Environment.MachineName;
 
     private static string? Arg(string[] args, string name)
     {
@@ -56,6 +58,7 @@ public partial class App : System.Windows.Application
         }
         _interface = Arg(e.Args, "--interface") ?? _interface;
         _destination = Arg(e.Args, "--dir") ?? _destination;
+        _shownName = Arg(e.Args, "--name") is { Length: > 0 } name ? name : _shownName;
         if (double.TryParse(Arg(e.Args, "--minutes"), System.Globalization.CultureInfo.InvariantCulture, out double minutes) && minutes is > 0 and <= 60)
             _duration = TimeSpan.FromMinutes(minutes);
 
@@ -100,14 +103,13 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private static Icon MakeIcon(bool receiving)
+    private static Icon MakeIcon(Color c)
     {
         using var bmp = new Bitmap(32, 32);
         using (Graphics g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
-            Color c = receiving ? Color.FromArgb(0, 150, 136) : Color.FromArgb(130, 130, 130);
             using var pen = new Pen(c, 3.2f);
             g.DrawArc(pen, 3, 3, 26, 26, 200, 140);
             g.DrawArc(pen, 9, 9, 14, 14, 200, 140);
@@ -120,18 +122,65 @@ public partial class App : System.Windows.Application
     private void UpdateTray()
     {
         bool on = _session is not null;
+        bool waiting = _waiting is not null;
         Icon? old = _tray.Icon;
-        _tray.Icon = MakeIcon(on);
+        _tray.Icon = MakeIcon(on ? Color.FromArgb(0, 150, 136) : waiting ? Color.FromArgb(230, 150, 0) : Color.FromArgb(130, 130, 130));
         old?.Dispose();
-        _tray.Text = on ? "mtdrop - receiving" : "mtdrop - not receiving";
-        _toggle.Text = on ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
+        _tray.Text = on ? "mtdrop - receiving" : waiting ? $"mtdrop - waiting for {Shorten(_interface, 40)}" : "mtdrop - not receiving";
+        _toggle.Text = on || waiting ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
+    }
+
+    /// <summary>NotifyIcon.Text is limited to 127 characters.</summary>
+    private static string Shorten(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
+
+    /// <summary>
+    /// Polls until the interface exists and has an IPv6 link-local address, or the token fires (then null).
+    /// Windows assigns the address a moment after the adapter appears, so a freshly seen adapter gets 1 s to settle.
+    /// </summary>
+    private static async Task<InterfaceInfo?> WaitForInterfaceAsync(string wanted, CancellationToken ct)
+    {
+        bool waited = false;
+        try
+        {
+            while (true)
+            {
+                if (ReceiveSession.FindInterface(wanted) is { LinkLocal: not null })
+                {
+                    if (waited) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+                    if (ReceiveSession.FindInterface(wanted) is { LinkLocal: not null } nic) return nic;
+                }
+                waited = true;
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     private async Task ToggleAsync()
     {
-        if (_session is not null)
+        if (_session is not null || _waiting is not null)
         {
             await StopAsync();
+            return;
+        }
+        // The wait for the adapter counts against the receive window: the PC is never visible longer than chosen.
+        var waiting = new CancellationTokenSource(_duration);
+        _waiting = waiting;
+        DateTime started = DateTime.UtcNow;
+        UpdateTray();
+        InterfaceInfo? nic = await WaitForInterfaceAsync(_interface, waiting.Token);
+        if (!ReferenceEquals(_waiting, waiting)) return;   // stopped (or exited) while waiting
+        _waiting = null;
+        waiting.Dispose();
+        TimeSpan left = _duration - (DateTime.UtcNow - started);
+        if (nic is null || left <= TimeSpan.Zero)
+        {
+            UpdateTray();
+            Prompts.ShowMessage("Not receiving",
+                $"The network adapter '{_interface}' did not appear within {_duration.TotalMinutes:0.#} min. Is the radio session running?");
             return;
         }
         try
@@ -139,7 +188,7 @@ public partial class App : System.Windows.Application
             _session = ReceiveSession.Start(new ReceiveSessionOptions
             {
                 Interface = _interface,
-                ComputerName = Environment.MachineName,
+                ComputerName = _shownName,
                 DestinationDirectory = _destination,
                 DataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mtdrop"),
                 ConsentTimeout = ConsentLimit,
@@ -162,7 +211,7 @@ public partial class App : System.Windows.Application
             if (r.Succeeded) Prompts.ShowSaved(r);
             else Prompts.ShowFailed(r);
         };
-        _window.Interval = _duration;
+        _window.Interval = left;
         _window.Start();
         UpdateTray();
     }
@@ -179,6 +228,10 @@ public partial class App : System.Windows.Application
 
     private async Task StopAsync()
     {
+        CancellationTokenSource? waiting = _waiting;
+        _waiting = null;
+        waiting?.Cancel();
+        waiting?.Dispose();
         _window.Stop();
         ReceiveSession? session = _session;
         _session = null;
