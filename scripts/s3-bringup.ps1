@@ -104,7 +104,11 @@ try {
     }
     if (-not $inf2cat) { throw 'Inf2Cat.exe not found under the WDK packages' }
     if (-not (Get-ChildItem (Join-Path $PrivateRoot 'vendor-driver-backup') -Recurse -Filter mtkwl6ex.inf -ErrorAction SilentlyContinue)) { throw 'vendor driver backup not found' }
-    if (@(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count -eq 0) { throw 'no System Restore point' }
+    if (@(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count -eq 0) {
+        # Windows deletes restore points (and cannot create one) when C: runs out of space.
+        $freeGb = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
+        throw "no System Restore point (C: has $freeGb GB free; free some space, then: Checkpoint-Computer -Description 'mtdrop' -RestorePointType MODIFY_SETTINGS)"
+    }
     $before = Get-CardDriver
     if (-not $before) { throw 'MT7921 not found' }
     if ($before.DriverProviderName -notlike 'MediaTek*') { throw "card is not on the MediaTek driver now ($($before.DriverProviderName) / $($before.InfName)); run wifi-giveback.ps1 first" }
