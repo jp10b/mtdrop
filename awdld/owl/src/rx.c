@@ -491,8 +491,22 @@ int awdl_rx(const struct buf *frame, struct buf ***data_frame, struct buf **data
 	uint8_t flags;
 
 	tsft = clock_time_us(); /* TODO Radiotap TSFT is more accurate but then need to access TSF in clock_time_us() */
+#ifdef OWL_RADIOTAP_TSFT_IS_HOST_CLOCK
+	/* mtdrop: the radio server writes into TSFT the host time (same clock as clock_time_us()) at which the frame
+	 * left the chip's RX ring. Dating sync readings with it removes the daemon's own queueing and processing delay,
+	 * which reached 1.4 s under memory pressure (docs/FINDINGS.md F-022). A missing or future value falls back to
+	 * the processing time. */
+	{
+		uint64_t host_rx = 0;
+		if (radiotap_parse(frame, &rssi, &flags, &host_rx) < 0)
+			return RX_UNEXPECTED_FORMAT;
+		if (host_rx && host_rx <= tsft && tsft - host_rx < OWL_RADIOTAP_TSFT_MAX_AGE_US)
+			tsft = host_rx;
+	}
+#else
 	if (radiotap_parse(frame, &rssi, &flags, NULL /* &tsft */) < 0)
 		return RX_UNEXPECTED_FORMAT;
+#endif
 	BUF_STRIP(frame, le16toh(((const struct ieee80211_radiotap_header *) buf_data(frame))->it_len));
 
 	if (check_fcs(frame, flags)) /* note that if no flags are present (flags==0), frames will pass */

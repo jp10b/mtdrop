@@ -92,10 +92,12 @@ static int frame_before_delivery(void) {
 	}
 }
 
-/* F-018 / M5.4b: how late OWL dates a received frame. OWL synchronises on clock_time_us() taken while it
- * processes the frame (owl/src/rx.c), not on the radiotap TSFT; radiod puts into TSFT the QPC microseconds at
- * which the frame left the RX ring. The difference is the dating error of every sync reading (if both clocks
- * are QPC-based; a huge or negative value would say they are not). Per status period. */
+/* F-018 / M5.4b: how long a received frame waits before OWL processes it. radiod puts into TSFT the QPC
+ * microseconds at which the frame left the RX ring; the difference to clock_time_us() now is the queueing and
+ * processing delay (both clocks are QPC-based; a huge or negative value would say they are not). Upstream OWL
+ * dated sync readings at processing time, so this was their dating error; since F-022 our build dates them with
+ * TSFT (owl/src/rx.c, OWL_RADIOTAP_TSFT_IS_HOST_CLOCK) and the delay only says how late OWL reacts. Per status
+ * period. */
 static struct {
 	unsigned long long n;
 	long long sum, min, max;

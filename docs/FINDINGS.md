@@ -1218,3 +1218,38 @@ What would falsify the fix: still 0 ACKed unicast frames with TXS rate `0x04b`/O
 | system | no hang; firewall rules and `awdl0` gone afterwards; Wi-Fi back |
 
 What would falsify: the PC never appears (mDNS not reaching the phone, or the phone needs more than the 4 records over AWDL); it appears but `/Discover` never arrives (TCP over AWDL not working); the upload stalls (throughput or loss).
+
+### Raw result (FACT, 2026-11-17 21:00, home, channel 44, 240 s; device addresses omitted)
+
+- **The PC did not appear in the share sheet; no `/Discover`, no file.** airdropd found `awdl0` and started announcing at once (its only other log line is one failed mDNS send when `awdl0` went away at the end).
+- Peer added and valid within 1 s, iPhone sync master within 2 s, no peer timeout, intersect 2/16 slots on 44, as F-021. The iPhone kept sending action frames for the whole session (2533 forwarded), so its AWDL stayed up.
+- **0 data frames from the iPhone** (F-021: 18). **Ping 0 of 20.** Unicast TX: 28 ACKed, 7 NOT ACKed – all 35 in the first 45 s (the pings); after that only multicast data went out (418 frames, airdropd's announcements among them), 0 TX refused or lost.
+- Radio server: 2569 frames taken, 2538 forwarded, 31 filtered, 0 bad FCS, 0 pipe full.
+- **RX delay in awdld (TSFT → OWL processing) much larger than in F-021:** over 118 status periods the median of the period means is 12.7 ms (F-021: 0.17–1.3 ms in most periods); 26 periods have a mean above 100 ms, 13 a maximum above 1 s (up to 1.38 s). The first period: 3.8–5.6 s (frames queued while awdld was starting).
+- The machine was short of memory: Claude Code had stopped a background job shortly before because the system was critically low on memory, and right after the session 1.7 of 15.4 GB RAM were free (Chrome alone ~3.3 GB).
+- Give-back normal, firewall rules and `awdl0` removed, no hang.
+
+### Conclusion
+
+1. **M6a failed below airdropd:** the iPhone never sent us a single data frame, so neither mDNS nor TCP could have worked. airdropd itself was not reached by anything.
+2. What changed against F-021 is the delay with which OWL processes received frames (×10–1000). Upstream OWL dates every sync reading with the time of *processing* (`rx.c`: `tsft = clock_time_us()`), so a frame processed 100 ms late shifts our estimate of the master's slot phase by about six 16 TU slots. **ASSUMPTION:** with our phase that far off, the schedule we announce no longer overlaps the iPhone's 44-slots as the iPhone sees it, so it sends nothing to us – while it still ACKs what we send in the first seconds (ACKs need no schedule). The cause of the larger delay is not proven either; memory pressure is the likeliest (TODO-VERIFY).
+3. Fix independent of the cause: `radiod` already writes into radiotap TSFT the host QPC microseconds at which the frame left the RX ring, on the same clock as MinGW's `clock_gettime(CLOCK_MONOTONIC)` (min delay 86–281 µs in this session, never negative). `awdld` now builds OWL with `OWL_RADIOTAP_TSFT_IS_HOST_CLOCK`: `rx.c` dates frames with that TSFT (falls back to processing time if missing, in the future or older than 10 s). Four new tests in `owl_tests` (`RxTsft.*`). The delay line in awdld's status now means "how late OWL reacts", no longer the dating error.
+
+---
+
+## F-023 – M6a repeated with OWL dating frames by radiod's TSFT
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Setup:** as F-022, with the rebuilt `awdld` (TSFT dating). Before the session: close Chrome, Discord, Spotify, Slack and other large apps (aim: at least 4 GB RAM free). iPhone: AirDrop receiving set to "Everyone for 10 Minutes", Photos → one photo → Share → AirDrop, sheet kept open.
+
+### Predictions
+
+| quantity | prediction |
+|---|---|
+| RX delay in awdld | smaller than F-022 with less memory pressure; no longer decisive for sync either way |
+| data from the iPhone | > 0 (as F-021) |
+| ping | some replies (as F-021) |
+| share sheet | the PC appears within ~20 s |
+| `/Upload` | photo arrives in `received\` |
+
+What would falsify the dating hypothesis: still 0 data frames from the iPhone although the RX delay stays small – then the difference to F-021 lies elsewhere (airdropd's traffic, the iPhone's state), and the next step is a run without `-Airdrop` (exact F-021 conditions) to split the two.

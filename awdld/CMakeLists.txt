@@ -46,6 +46,10 @@ list(TRANSFORM OWL_SOURCES APPEND ".c")
 # compat/ether.c: ether_ntoa / ether_aton, which OWL itself calls.
 add_library(awdl STATIC ${OWL_SOURCES} compat/ether.c)
 target_link_libraries(awdl PUBLIC owl_build radiotap)
+# radiod puts the QPC microseconds at which a frame left the RX ring into radiotap TSFT, the clock that MinGW's
+# clock_gettime(CLOCK_MONOTONIC) also reads (measured: F-019, F-022). OWL then dates sync readings with it (rx.c).
+# Frames older than 10 s are dated at processing instead, as a guard against a different timebase.
+target_compile_definitions(awdl PRIVATE OWL_RADIOTAP_TSFT_IS_HOST_CLOCK OWL_RADIOTAP_TSFT_MAX_AGE_US=10000000ull)
 
 # The radio link is plain C11 shared with radiod (MSVC); built here without owl_build's packed-struct options.
 add_library(radio_link STATIC "${RADIO_LINK}/radio_link.c")
@@ -109,7 +113,9 @@ if(MTDROP_OWL_TESTS)
   add_executable(owl_tests
     owl/tests/test_wire.cpp owl/tests/test_awdl_sync.cpp owl/tests/test_awdl_peers.cpp
     owl/tests/test_awdl_election.cpp owl/tests/test_awdl_channel.cpp owl/tests/test_awdl_txgate.cpp
-    owl/tests/test_awdl_rx.cpp)
+    owl/tests/test_awdl_rx.cpp
+    # own: dating received frames with radiod's TSFT (F-022)
+    tests/owl_rx_tsft_test.cpp)
   target_link_libraries(owl_tests PRIVATE awdl gtest gtest_main)
   target_link_options(owl_tests PRIVATE -static)
   add_test(NAME owl COMMAND owl_tests)
