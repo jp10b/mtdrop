@@ -1146,3 +1146,40 @@ One session, `-KeepGoing`, random address, `acktest --data` against the stronges
 | 4 | AP ACKed 5/5, ~6–20 ms, rate `0x04b` |
 
 If 2 and 4 hold, `serve` runs with `--data-altx --data-fixed-rate` and M5.4 is repeated with the iPhone.
+
+### Raw result (FACT, 2026-11-17 18:49, home, random address, `-KeepGoing`)
+
+| run | AP ACKed | ghost | TXS rate | completion, AP frames | ghost frames |
+|---|---|---|---|---|---|
+| 1 ch 2, ALTX, firmware rate | 5/5 (1 transmission each) | NOT ACKed 5/5, 15 tries | `0x000` CCK 1 | **27–117 ms** | 49–102 ms |
+| 2 ch 2, ALTX, fixed OFDM 6 | 5/5 (1 each) | NOT ACKed 5/5 | `0x04b` | **5.9–12.7 ms** | 10.2–14.9 ms |
+| 3 ch 36, AC, firmware rate | **0/5 – NOT ACKed after 15 tries** | NOT ACKed 5/5 | **`0x000` CCK 1** | 106–158 ms | 147–223 ms |
+| 4 ch 36, ALTX, fixed OFDM 6 | **5/5 (1 each)** | NOT ACKed 5/5 | `0x04b` | **5.9–6.5 ms** | 10.4–18.3 ms |
+
+The access point on 36 was weak (-79 dBm) – the same in runs 3 and 4, so run 4's first-try ACKs rule out distance as the cause of run 3. Give-back normal, no hang.
+
+### Conclusion
+
+1. **Unicast data needs both changes:** with `--data-altx --data-fixed-rate` data frames leave in ~6 ms and are ACKed at the first try on 2.4 and 5 GHz, exactly like management frames.
+2. **On 5 GHz the firmware's own rate choice for unicast data is unusable:** it picks CCK 1 Mb/s there too, and nothing is received (run 3; prediction held). This alone makes every unicast frame to the iPhone on channel 44 fail.
+3. ALTX alone shortens the wait (27–117 ms vs 115–560 ms on the AC queue) but the firmware-rate path stays slow; with a fixed rate the wait disappears. (ASSUMPTION: the firmware's rate lookup for an empty WLAN entry costs the extra time.)
+4. Together with F-019 this explains F-018 completely: awdld's unicast frames to the iPhone went out at CCK 1 Mb/s on a 5 GHz channel, and hundreds of milliseconds late.
+
+---
+
+## F-021 – M5.4 repeated with unicast data fixed (ALTX + fixed rate)
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Setup:** as F-018, but `radiod serve 44 @alt --max-seconds 120 --mac random --data-altx --data-fixed-rate`. Unicast data then goes out at the rate in OWL's radiotap header (12 Mb/s, OFDM) from ALTX0. iPhone share sheet open for the whole session.
+
+### Predictions
+
+| quantity | prediction |
+|---|---|
+| peer, sync, intersect | as F-018 (valid peer within seconds, iPhone as sync master, 2/16 slots on 44) |
+| RX dating error (new line in the status) | mean below 1 ms, max a few ms (confirms the offline measurement on hardware) |
+| unicast TX to the iPhone | **most frames ACKed** (some NOT ACKed where OWL's window and the iPhone's presence do not overlap) |
+| data from the iPhone | **> 0 data frames received** (neighbour discovery / echo replies) |
+| ping over `awdl0` | **at least some replies** (TODO-VERIFY that iOS answers ICMPv6 at all; jedbillyb saw 40 % replies on Linux) |
+
+What would falsify the fix: still 0 ACKed unicast frames with TXS rate `0x04b`/OFDM 12 and ~6 ms completion – then the remaining cause is timing (back to slot phase analysis).
