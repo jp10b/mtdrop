@@ -1,6 +1,6 @@
 # ADR-0003: awdld on Windows – process split, radio link, toolchain, reuse
 
-- **Status:** Proposed (2026-11-17)
+- **Status:** Accepted (2026-11-17, maintainer). MinGW-w64 install via winget approved the same day.
 - **Deciders:** maintainer
 - **Inputs:** `docs/RESEARCH.md` §2.1–2.2, §3.1, §6, §7, §9; ADR-0001, ADR-0002 (radio interface, fixed channel first); `docs/FINDINGS.md` F-008 (AWDL RX on 44 and 6), F-013, F-014 (unicast TX, ACK, TXS); `third_party/raph559_winawdl` @ 0db7031 (`awdl/`, `DESIGN-NOTES.md`); `third_party/jedbillyb_owl` @ 57b8678
 
@@ -43,7 +43,7 @@ What we know (FACT unless marked):
 
 Our own header (`driver/radiod/radio_link.h`, GPL-3.0-or-later or MIT, written here), message set modelled on winawdl's: `HELLO` (version, channel, own address, caps), `RX` (radiotap + 802.11 frame), `TX` (802.11 frame without FCS), `SET_CHANNEL`, `SET_BSSID_FILTER`, `SET_ADDRESS`, plus what our radio can do that winawdl's did not report: `TX_STATUS` (acked / not / dropped, transmissions) and `STATS`. We do not copy `radio/radio_link.h` (it sits in the GPL-2.0-only directory).
 
-## Decision (proposed)
+## Decision
 
 1. **Two processes (option A).** `radiod serve <channel> <patch> <ram>` becomes a long-running radio server: one client at a time on `\\.\pipe\mtdrop-radio`, pipe ACL SYSTEM + Administrators. **Lease:** when the client disconnects or stays silent past a heartbeat (default 5 s), `radiod` stops transmitting, shuts the chip down orderly and exits; the existing session scripts then give the card back. The chip library and its HAL do not change.
 2. **Radiotap is made in `radiod`, not in `awdld`.** Per received frame: `TSFT` (host clock in µs, as winawdl; OWL uses it only as a time base), `FLAGS` (bad FCS), `CHANNEL` (the per-frame channel, never the tuned one), `DBM_ANTSIGNAL`, `RATE` or `MCS`. `radiod` filters by AWDL BSSID (address 3 `00:25:00:ff:94:73`) and drops its own transmissions.
