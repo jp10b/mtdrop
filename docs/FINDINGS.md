@@ -751,3 +751,27 @@ With Wi-Fi connected before the session (as on 11.11): S2 at the first attempt, 
 - Shutdown restored `PCIE_MAC_INT_ENABLE` to 0xff after the WFSYS reset. Give-back normal; the MediaTek driver reconnected to Wi-Fi; no error events.
 
 **Conclusion:** keeping the interrupt gate closed does not disturb firmware download, post-boot, sniffer start or reception. Step A passed exactly as predicted. Next: step B (`txtest 1 @alt --count 5`).
+
+---
+
+## F-013 – Re-entry step B: raw TX works with interrupts gated off
+
+- **Date:** 2026-11-17 (12:32)
+- **Milestone:** M4 (F-011 re-entry ladder, step B)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). Channel 1, OFDM 6 Mbit/s, power capped at 14 dBm. No iPhone involved.
+
+### Prediction (F-011, step B)
+
+`txtest 1 @alt --count 5` behaves as in F-010 (TX PASS), no hang. Wi-Fi was connected before the session (F-012 precondition).
+
+### Raw result (FACT)
+
+- S2 drv-own at the first attempt in 7 ms. S6 wrote `PCIE_MAC_INT_ENABLE` = 0 (found 0xff). Bring-up to stage 6 in 994 ms; sniffer on channel 1, single vif.
+- 5 probe requests: 5 TX-free records with status 0 and 1 transmission each, none lost, no unknown tokens.
+- **31 probe responses to our MAC** from 8 transmitters (2 access points answered every probe); 23 without the Retry bit; 29 distinct sequence numbers, 7 with a Retry copy, 1 seen more than once. `TX: PASS`, `ACK: INCONCLUSIVE` (expected: this command has no control arm).
+- Interrupt guard: 22 checks; `HOST_INT_ENA` found on once (`0x20000000`, at S23, forced to 0), `PCIE_MAC_INT_ENABLE` never found non-zero, `MCU_CMD` stayed 0; `HOST_INT_STA` OR of all reads `0x0c400015` (bit 4 new compared to step A, appeared right after the first TX).
+- Orderly shutdown in 367 ms, `PCIE_MAC_INT_ENABLE` restored to 0xff. Give-back normal; the MediaTek driver reconnected (802.11ac, 5 GHz). Only system event: NDIS 10317 at the swap, which appears in every session since 2026-11-10 (informational).
+
+### Conclusion
+
+Step B passed as predicted: raw TX with both interrupt gates closed works as in F-010 (more responses than F-010 because more access points answered), and the system stayed responsive. The pending `HOST_INT_STA` bit 4 after TX reached nobody (TODO-VERIFY its meaning in mt76 headers; ASSUMPTION: TX-done/TX-free cause). Next: step C (`txtest 1 @alt --count 5 --pair`).
