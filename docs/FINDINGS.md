@@ -633,3 +633,77 @@ The chip does not consume the TX descriptor or never returns the token; no probe
 - Control arm in `txtest` (`--control`), then repeat with more probes per arm.
 - Unicast TX with ACK request and TX status report (TXS): does the access point acknowledge *our* unicast frames, and is that reported?
 - Repeat on channel 44/6 with the iPhone once the AWDL layer can provoke unicast frames.
+
+---
+
+## F-011 – ACK control arm says the firmware acknowledges our MAC; the next run hung the whole system
+
+- **Date:** 2026-11-11 (session), 2026-11-17 (analysis and mitigation)
+- **Milestone:** M4 (raw TX)
+- **Firmware:** linux-firmware MT7961 image (RAM `____010000`, build 20231109). Channel 1, OFDM 6 Mbit/s, power capped at 14 dBm. No iPhone involved.
+
+### Hypothesis (written before the session, F-010 follow-up)
+
+Probe responses addressed to our MAC are retransmitted less often than responses addressed to a random locally administered address that nobody acknowledges, if and only if the firmware ACKs frames to our MAC.
+
+### What would falsify it
+
+Equal retransmission counts (copies per (transmitter, sequence number) pair) in both arms, from the same access points in the same run.
+
+### Method
+
+One session, two commands: `txtest 1 @alt --count 15 --control` (single vif: our MAC in own-MAC slot 0), then the same with `--pair` (Linux plain + active vif pair). Probes alternate between the two arms, 1 s apart.
+
+### Raw result, run 1 (FACT)
+
+| | own MAC | control MAC |
+|---|---|---|
+| probe requests sent / TX-free returned | 15 / 15 | 15 / 15 |
+| probe responses | 25 | 62 |
+| distinct (transmitter, SN) pairs | 19 | 24 |
+| copies per pair 1 / 2 / 3 | 15 / 2 / 2 | 3 / 4 / 17 |
+| mean copies per pair | **1.32** | **2.58** |
+| responses with the Retry bit | 44 % | 69 % |
+
+Both arms were answered by the same 2 access points. Orderly shutdown afterwards (DMA stopped, WFSYS reset, exit code 0).
+
+### Raw result, run 2 – system hang (FACT)
+
+| time | event |
+|---|---|
+| 19:29:39 | run 2 (`--control --pair`) starts – the last line in `driver-swap.log` |
+| — | no further line in any log; the script collected radiod's output and wrote it only after the process ended |
+| 19:40 | Kernel-Power 41 after a forced power-off: **BugcheckCode 0**, no dump – a freeze, not a blue screen |
+| 19:40–21:22 | four boots, all in Safe Mode: every normal boot hung before the event log started |
+| 21:36 | first normal boot after the maintainer disabled the card in Device Manager (Safe Mode) |
+| later | recovery: dedicated dump file configured, full power-off (`shutdown /s /f /t 0`, charger unplugged 30 s), leftover proxy package deleted, card re-enabled. Since then: no unexpected shutdown, card on the MediaTek driver, Wi-Fi connected (checked 2026-11-17) |
+
+Also FACT, from the end-of-bring-up snapshots of all 16 radiod runs logged since F-006: in all 12 runs where the RAM firmware was running (`CONN_ON_MISC` = 3), `HOST_INT_ENA` read `0x20000000` (bit 29, "MCU command" interrupt); in the 4 runs that stopped before the firmware started it read 0. The host never writes a non-zero value there – the RAM firmware enables it itself. Every session wrote `MT_PCIE_MAC_INT_ENABLE = 0xff` (step S6, copied from mt76's probe). The proxy INF does not request MSI and the proxy has no interrupt handler.
+
+### Conclusion
+
+1. **ACK (run 1): supported.** Responses to our MAC needed half as many copies (1.32 vs 2.58) from the same access points in the same run, so the firmware acknowledges frames addressed to our MAC in the single-vif configuration. One run of 15 probes per arm; the `--pair` arm never ran. The question left open in F-010 is answered for the single-vif setup only.
+2. **The hang cannot be located**: no line of run 2 survived. Run 2 was the first time `--pair` and `--control` were combined, but nothing shows that this combination, rather than chance, triggered it.
+3. **Main hypothesis (ASSUMPTION): an unacknowledged hardware interrupt.** Every session armed both interrupt gates (S6 = 0xff, the firmware's bit 29). If the firmware raised the MCU-command interrupt (for example after an internal error) on a line-based (INTx) interrupt that no driver acknowledges, the line stays asserted and the CPU re-enters the interrupt path forever: a freeze without a bugcheck. This is open risk R1 of `docs/MT7921-BRINGUP.md`. Not proven: we do not know that an interrupt fired, nor whether Windows routes this device's INTx at all while the proxy is bound (TODO-VERIFY).
+4. **Why later warm boots hung too (ASSUMPTION):** the chip kept a broken state across restarts (the M.2 slot stays powered on a warm restart) and the vendor driver hung on it at boot; a full power-off cleared it.
+
+### Changes made before the next hardware run (2026-11-17)
+
+- **Interrupts off at the source.** S6 now writes `MT_PCIE_MAC_INT_ENABLE = 0` (the value mt76 itself writes on suspend, `mt7921/pci.c:522`); option `pcie_mac_int` keeps mt76's 0xff for comparison. An interrupt guard reads `HOST_INT_ENA`, `HOST_INT_STA`, `MT_MCU_CMD` and `MT_PCIE_MAC_INT_ENABLE` after the firmware boots (S23), after post-boot, after sniffer start and every 250 ms while receiving, forces the enables back to 0 and logs what it found. Shutdown turns both gates off before stopping DMA; the proxy's stop list does the same.
+- **Hand-back unchanged for the vendor driver:** after the WFSYS reset (RAM firmware gone, DMA stopped, `HOST_INT_ENA` 0) shutdown restores `MT_PCIE_MAC_INT_ENABLE` to the value found at S0 (0xff, MEASURED in F-004), and the stop list ends with the same write.
+- **The stop list carries mt76's 50 ms WFSYS reset hold itself** (new op kind `MT792X_STOP_DELAY`); radiod no longer inserts it by position.
+- **Crash-safe log.** `radiod --live-log <file>` writes every line except DEBUG messages through to disk before continuing (`FILE_FLAG_WRITE_THROUGH`); `s3-bringup.ps1` passes `<PrivateRoot>\radiod-live.log` and streams radiod's output into `driver-swap.log` line by line. After another hang the last line of `radiod-live.log` names the last step.
+- radiod prints an "interrupt guard" summary for every command. 96 library tests (7 new for the guard; the fake chip now enables bit 29 at firmware start, as the hardware does), MSVC and GCC.
+
+### Predictions for the re-entry runs (written before running them)
+
+Each step only after the previous one passed, with a full power-off before the first.
+
+| step | command(s) | prediction |
+|---|---|---|
+| A | `sniff 1 10 @alt` | PASS as in F-007; S6 logs 0; guard finds `HOST_INT_ENA` = `0x20000000` once (S23) and later only if the firmware re-arms it; `PCIE_MAC_INT_ENABLE` found 0 every time; Wi-Fi works after the give-back (the vendor driver starts with 0xff restored) |
+| B | `txtest 1 @alt --count 5` | as F-010 (TX PASS) |
+| C | `txtest 1 @alt --count 5 --pair` | as F-010 |
+| D | the session that hung: `--count 15 --control`, then `--count 15 --control --pair` | no hang. If the hypothesis is right, `HOST_INT_STA` or `MCU_CMD` may show a cause bit during run 2 without any effect on the system |
+
+What would falsify the hypothesis: a hang with the guard working (its last report in `radiod-live.log` shows both enables 0). Then the cause is elsewhere (DMA into memory we do not own, a PCIe completion timeout on a register read, a firmware state the vendor driver cannot survive) and the next step is to record which line came last.

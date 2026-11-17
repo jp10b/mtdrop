@@ -802,7 +802,7 @@ Whether the ROM patch is still loaded after the vendor driver's exit cannot be r
 | S3 | L1 read 0x70010200 → expect 0x7961; L1 read 0x70010020 bit 7 must be 0; L1 read 0x70010204 & 0xff → 0x10 | chip id / rev as MEASURED |
 | S4 | WFSYS reset (2.5): L1 clear bit 0 @0x18000140; sleep 50 ms; L1 set bit 0; poll `(L1-read & 0x10) == 0x10`, 500 ms / 10 ms | `WFSYS_SW_INIT_DONE` = 1 |
 | S5 | write 0xd4204 = 0 | `HOST_INT_ENA` reads 0 |
-| S6 | write 0x10188 = 0xff (mt76). **[HOST]** alternative: leave/write as found; see section 8 R1 | — |
+| S6 | **[HOST]** write 0x10188 = 0 (since F-011; mt76's probe writes 0xff, its suspend 0). Options: mt76's 0xff, or leave as found; see section 8 R1 | 0x10188 reads 0 |
 | S7 | DMA disable, force (2.7): clear 0x18208005 @0xd4208; poll `(0xd4208 & 0xa) == 0`, 100 ms / 1 ms; clear 0x40 @0xd42b0; set 0x10000000 @0xd6004; clear 0x30 @0xd4100; set 0x30 @0xd4100 | `GLO_CFG` bits 0–3 = 0 |
 | S8 | For each ring in the order TX 0, TX 17, TX 16, RX 0, RX 4, RX 2: all descriptors `ctrl = 0x80000000`; write `cpu_idx` = 0; write `dma_idx` = 0; write `ring_size` = ndesc; write `desc_base` = phys; read `dma_idx` (expect 0) → `head = tail`. After TX 0: write 0xd4600 = 0x4. | `dma_idx` reads 0, `desc_base`/`ring_size` read back |
 | S9 | Fill RX rings 2, 0, 4 (mt76 enum order `MAIN`, `MCU`, `MCU_WA`): ndesc − 1 buffers each (3.5); write each `cpu_idx` = ndesc − 1 | — |
@@ -853,6 +853,7 @@ Operation types: `W` = write value, `S` = set bits, `C` = clear bits, all on BAR
 |---|---|---|---|---|---|
 | 1 | W | 0xe0010 | 0x00000002 | request driver ownership so the following writes land (no-op if already owned) | `mt7921/pci.c:62`, 2.3 |
 | 2 | W | 0xd4204 | 0x00000000 | mask WFDMA interrupts | `mt7921/pci.c:521` |
+| 2a | W | 0x10188 | 0x00000000 | close the PCIe-side interrupt gate too (added in F-011) | `mt7921/pci.c:522` |
 | 3 | C | 0xd4208 | 0x18208005 | **stop TX and RX DMA** (the essential write) | `mt792x_dma.c:490-496` |
 | 4 | C | 0xd4208 | 0x18208005 | repeat (stands in for the busy poll the proxy cannot do) | [HOST] |
 | 5 | C | 0xd4100 | 0x00000030 | WFDMA logic + DMASHDL reset… | `mt792x_dma.c:503-505` |
@@ -860,22 +861,25 @@ Operation types: `W` = write value, `S` = set bits, `C` = clear bits, all on BAR
 | 7 | C | 0xfe24c | 0x0000ffff | L1 remap: clear base field, upper 16 bits preserved | 1.3 |
 | 8 | S | 0xfe24c | 0x00001800 | L1 remap: window → 0x1800xxxx | 1.3 |
 | 9 | C | 0x40140 | 0x00000001 | assert WFSYS reset: stops the firmware (and anything it does with host memory) | `mt792x_dma.c:607` |
+| 9a | wait | — | 50 ms | mt76's reset hold (op kind 4, added in F-011; the proxy supports waits up to 100 ms) | `mt792x_dma.c:608` |
 | 10 | S | 0x40140 | 0x00000001 | release WFSYS reset | `mt792x_dma.c:609` |
+| 11 | W | 0x10188 | 0x000000ff | hand the gate back as the vendor driver leaves it (MEASURED F-004); safe here: DMA stopped, 0xd4204 = 0, RAM firmware gone | F-011 |
 
 Notes:
 
 - Rows 3 and 9 are the two writes that matter. Row 3 alone disables the host-side DMA engines; row 9 kills the firmware. ASSUMPTION: the WFDMA host block is in CONN_INFRA and is not reset by the WFSYS reset (that is why mt76 resets it separately through `MT_WFDMA0_RST`), so row 3 must not be omitted.
-- mt76 waits 50 ms between rows 9 and 10. If the proxy can delay, insert ≥ 50 ms. If it cannot: TODO-VERIFY whether releasing immediately is accepted; the alternative is to stop after row 9 (WFSYS held in reset) — safe against DMA, and mt76's own start (clear, 50 ms, set) recovers from it, but whether the **vendor** driver starts cleanly from that state is TODO-VERIFY.
+- mt76 waits 50 ms between rows 9 and 10; the list carries that wait itself (row 9a, `MT792X_STOP_DELAY`), so the proxy replays it as is (13 operations).
 - After row 8 the low half of `MT_HIF_REMAP_L1` is 0x1800, identical to the MEASURED value left by the vendor driver.
 - The proxy must not free or unlock the DMA block before row 3 has executed.
-- `MT_PCIE_MAC_INT_ENABLE` is left at 0xff and ownership is left with the driver, matching both mt76-after-remove and the MEASURED vendor state.
+- `MT_PCIE_MAC_INT_ENABLE` is 0 from row 2a until row 11, then 0xff again; ownership is left with the driver, matching both mt76-after-remove and the MEASURED vendor state. The orderly shutdown does the same (gates off first, the value found at S0 restored after the WFSYS reset).
 - If the chip was firmware-owned and asleep when the client died, row 1 without a wait may not be sufficient (mt76 polls up to 10 × 50 ms). ASSUMPTION: our host never issues `SET_OWN` after S1, so this cannot occur after S2.
 
 ### 7.3 Orderly shutdown by the client (preferred when the process exits normally)
 
 1. Stop sending; (optional, if started) `MAC_INIT_CTRL {enable = 0}` and sniffer disable.
-2. Section 7.1 rows 2–4 with the real polls and the 50 ms delay.
+2. Section 7.1 row 2 (driver own), then **[HOST]** (F-011) write `HOST_INT_ENA` = 0 and `MT_PCIE_MAC_INT_ENABLE` = 0, then rows 3–4 with the real polls and the 50 ms delay.
 3. Restore `MT_HIF_REMAP_L1` low 16 bits to the value saved in S0.
+4. **[HOST]** (F-011) Restore `MT_PCIE_MAC_INT_ENABLE` to the value saved in S0 (MEASURED 0xff).
 
 ---
 
@@ -883,7 +887,7 @@ Notes:
 
 | # | risk | detail | source | mitigation / status |
 |---|---|---|---|---|
-| R1 | Unhandled interrupt | mt76 enables `HOST_INT_ENA` (TX/RX done, MCU cmd) via the tasklet after `dma_enable`, and writes `MT_PCIE_MAC_INT_ENABLE` = 0xff. A host with no ISR must never write a non-zero `HOST_INT_ENA`. Whether 0x10188 = 0xff with `HOST_INT_ENA` = 0 can still raise an interrupt from another source is unknown. | `mt792x_dma.c:352-356`, `mt7921/pci.c:424` | Keep 0xd4204 = 0. TODO-VERIFY whether 0x10188 should be written 0 while we own the device (mt76 does that only in suspend / reinit, `mt7921/pci.c:522`, `mt792x_dma.c:429`). |
+| R1 | Unhandled interrupt | mt76 enables `HOST_INT_ENA` (TX/RX done, MCU cmd) via the tasklet after `dma_enable`, and writes `MT_PCIE_MAC_INT_ENABLE` = 0xff. A host with no ISR must never write a non-zero `HOST_INT_ENA`. MEASURED (F-011): the RAM firmware sets `HOST_INT_ENA` bit 29 (MCU cmd) by itself in every run. Suspected cause of the system hang in F-011. | `mt792x_dma.c:352-356`, `mt7921/pci.c:424`, F-011 | Since F-011: 0x10188 = 0 while we own the device (mt76's suspend value, `mt7921/pci.c:522`); interrupt guard forces 0xd4204 and 0x10188 back to 0 after firmware start, post-boot, sniffer start and every 250 ms; both gates closed first at shutdown and in the stop list; 0x10188 restored after the WFSYS reset. TODO-VERIFY whether Windows routes the INTx of a device bound to the proxy at all. |
 | R2 | Bus mastering | mt76 calls `pci_set_master` and sets `PCI_COMMAND_MEMORY`. Without config-space access we cannot verify that Bus Master Enable is still set after the vendor driver unloaded and our UMDF driver started. If it is clear, register access works but no descriptor is ever fetched. | `mt7921/pci.c:319-324` | Symptom: TX `dma_idx` never moves after a kick. TODO-VERIFY on Windows. |
 | R3 | DMA address width / IOMMU | mt76 sets a 32-bit DMA mask; descriptors carry 32-bit `buf0`. mt76 uses bus addresses from the kernel DMA API; a user-mode host uses raw physical addresses, which is only valid if no IOMMU/DMA-remapping sits between the device and RAM. | `mt7921/pci.c:330`, `dma.c:304,375` | Block below 4 GiB satisfies the width. DMA remapping (Kernel DMA Protection) is TODO-VERIFY on the target. |
 | R4 | ASPM | `aspm_supported` (config space) adds a 2–3 ms sleep after `CLR_OWN`; L0s is disabled through BAR register 0x10194 bit 8 (accessible). Disabling ASPM through `LNKCTL` is not possible for us. | `mt7921/pci.c:400-401`, `mt792x_core.c:1047-1048`, `mt7921/pci_mcu.c:56` | Always sleep after `CLR_OWN`; set 0x10194 bit 8. |
