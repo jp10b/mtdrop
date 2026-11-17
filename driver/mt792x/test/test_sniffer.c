@@ -782,6 +782,6 @@ TEST(shutdown_after_stage_6_and_stop_list)
     /* the proxy replay alone (client died) still stops DMA */
     rig_replay_stop_ops(&r);
     CHECK(!(fake_glo_cfg(r.f) & 0x5u));
-    CHECK(mt792x_stop_ops(ops, MT792X_STOP_OPS_COUNT) == 10u); /* unchanged by the sniffer work */
+    CHECK(mt792x_stop_ops(ops, MT792X_STOP_OPS_COUNT) == 13u); /* unchanged by the sniffer work (F-011 added three) */
     rig_free(&r);
 }

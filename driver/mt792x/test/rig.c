@@ -175,6 +175,9 @@ void rig_replay_stop_ops(struct rig *r)
             v = h->rr(h->ctx, ops[i].bar_offset);
             h->wr(h->ctx, ops[i].bar_offset, v | ops[i].value);
             break;
+        case MT792X_STOP_DELAY:
+            h->sleep_us(h->ctx, ops[i].value * 1000u);
+            break;
         default:
             v = h->rr(h->ctx, ops[i].bar_offset);
             h->wr(h->ctx, ops[i].bar_offset, v & ~ops[i].value);

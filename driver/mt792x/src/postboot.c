@@ -406,6 +406,7 @@ int mt_postboot(struct mt792x *dev)
     t0 = mt_now(dev);
     dev->mac_enabled = 1;        /* set before sending: shutdown undoes whatever may have taken effect */
     err = mac_enable(dev, 1, MT_MCU_TIMEOUT_US);
+    if (!err) err = mt_irq_guard(dev, "post-boot done");
     if (err) return mt_step_fail(dev, 31, err, t0);
     dev->postboot_done = 1;
     dev->rx_active = 1;          /* from now on data ring 2 is drained during command waits */
@@ -648,6 +649,8 @@ int mt792x_sniffer_start(struct mt792x *dev, const struct mt792x_sniffer_cfg *cf
         mt_logf(dev, MT_LOG_INFO, "sniffer running on channel %u via %s; CONN_ON_MISC 0x%08x", cfg->channel,
                 tune_name(dev->tune_used), misc);
     }
+    err = mt_irq_guard(dev, "sniffer started");
+    if (err) return sn_fail(dev, 13, err);
     dev->sniff_started = 1;
     dev->tx_allowed = cfg->allow_tx ? 1 : 0;
     return 0;

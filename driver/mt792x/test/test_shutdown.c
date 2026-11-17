@@ -61,27 +61,28 @@ TEST(shutdown_waits_50ms_in_wfsys_reset)
 
 TEST(stop_ops_match_spec_7_2)
 {
-    static const struct mt792x_stop_op spec[10] = {
-        { 1, 0xe0010u, 0x00000002u }, { 1, 0xd4204u, 0x00000000u }, { 3, 0xd4208u, 0x18208005u },
+    static const struct mt792x_stop_op spec[13] = {
+        { 1, 0xe0010u, 0x00000002u }, { 1, 0xd4204u, 0x00000000u }, { 1, 0x10188u, 0x00000000u },
+        { 3, 0xd4208u, 0x18208005u },
         { 3, 0xd4208u, 0x18208005u }, { 3, 0xd4100u, 0x00000030u }, { 2, 0xd4100u, 0x00000030u },
         { 3, 0xfe24cu, 0x0000ffffu }, { 2, 0xfe24cu, 0x00001800u }, { 3, 0x40140u, 0x00000001u },
-        { 2, 0x40140u, 0x00000001u },
+        { 4, 0x00000u, 50u },         { 2, 0x40140u, 0x00000001u }, { 1, 0x10188u, 0x000000ffu },
     };
-    struct mt792x_stop_op ops[12];
+    struct mt792x_stop_op ops[15];
     size_t i;
     memset(ops, 0xee, sizeof(ops));
-    CHECK(mt792x_stop_ops(ops, 12) == 10u);
-    for (i = 0; i < 10; i++) {
+    CHECK(mt792x_stop_ops(ops, 15) == 13u);
+    for (i = 0; i < 13; i++) {
         CHECK_EQ_U32(ops[i].kind, spec[i].kind);
         CHECK_EQ_U32(ops[i].bar_offset, spec[i].bar_offset);
         CHECK_EQ_U32(ops[i].value, spec[i].value);
     }
-    CHECK_EQ_U32(ops[10].kind, 0xee);            /* nothing written past the count */
+    CHECK_EQ_U32(ops[13].kind, 0xee);            /* nothing written past the count */
     memset(ops, 0xee, sizeof(ops));
-    CHECK(mt792x_stop_ops(ops, 3) == 10u);
-    CHECK_EQ_U32(ops[2].bar_offset, 0xd4208u);
+    CHECK(mt792x_stop_ops(ops, 3) == 13u);
+    CHECK_EQ_U32(ops[2].bar_offset, 0x10188u);
     CHECK_EQ_U32(ops[3].kind, 0xee);
-    CHECK(mt792x_stop_ops(NULL, 0) == 10u);
+    CHECK(mt792x_stop_ops(NULL, 0) == 13u);
     /* the Windows proxy takes at most 32 and uses the same kind numbering (1 write, 2 set, 3 clear) */
     CHECK(MT792X_STOP_OPS_COUNT <= 32u);
 }
@@ -102,10 +103,11 @@ static void replay_and_check(struct rig *r, const char *when)
     CHECK_EQ_U32(mock_get_reg(&r->m, 0xfe24cu), 0x18451800u);
     CHECK_EQ_U32(r->f->wfsys_resets, resets + 1u);
     CHECK(r->f->own_sync == 0);
-    /* The proxy cannot wait 50 ms between rows 9 and 10 (spec 7.2, TODO-VERIFY): the fake reports
-     * exactly that and nothing else. */
-    CHECK_EQ_U32(r->f->violations, 1);
-    CHECK(strstr(r->f->first_violation, "WFSYS reset released") != NULL);
+    /* The list itself now holds mt76's 50 ms between assert and release (F-011): no violation at all. */
+    if (r->f->violations) printf("  stop list replay %s: %s\n", when, r->f->first_violation);
+    CHECK_EQ_U32(r->f->violations, 0);
+    CHECK_EQ_U32(mock_get_reg(&r->m, 0xd4204u), 0);
+    CHECK_EQ_U32(mock_get_reg(&r->m, 0x10188u), 0xffu);
 }
 
 TEST(stop_ops_replay_leaves_dma_disabled)

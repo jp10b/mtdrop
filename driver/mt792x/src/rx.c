@@ -269,6 +269,7 @@ static int liveness(struct mt792x *dev)
     misc = mt_rr(dev, MT_CONN_ON_MISC);
     dummy = mt_rr(dev, MT_WFDMA_DUMMY_CR);
     if (dev->bus_dead) return MT792X_E_BUS_DEAD;
+    if (mt_irq_guard(dev, "liveness")) return MT792X_E_BUS_DEAD;
     if ((misc & MT_TOP_MISC2_FW_N9_RDY) != MT_TOP_MISC2_FW_N9_RDY) {
         mt_logf(dev, MT_LOG_ERROR, "liveness: CONN_ON_MISC 0x%08x, firmware no longer ready", misc);
         return MT792X_E_FW_DEAD;

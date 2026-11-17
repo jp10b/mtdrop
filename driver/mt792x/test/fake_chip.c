@@ -18,6 +18,7 @@
 #define R_DUMMY        0x02120u
 #define R_MCU2HOST     0xd41f4u
 #define R_PCIE_INT     0x10188u
+#define R_INT_STA      0xd4200u
 #define R_TX_BASE      0xd4300u
 #define R_RX_BASE      0xd4500u
 #define L1_WIN         0x40000u
@@ -465,6 +466,11 @@ static void mcu_command(struct fake_chip *f, const uint8_t *p, uint32_t len)
         f->fw_start_option = le32(pl);
         f->fw_start_addr = le32(pl + 4);
         f->fw_started = 1;
+        if (f->fw_int_ena) {
+            mock_set_reg(f->m, R_INT_ENA, mock_get_reg(f->m, R_INT_ENA) | f->fw_int_ena);
+            mock_set_reg(f->m, R_INT_STA, mock_get_reg(f->m, R_INT_STA) | f->fw_int_ena);
+            f->next_int_rearm_us = f->m->clock_us + f->fw_int_rearm_us;
+        }
         respond(f, f->fw_start_ring, 0x01, seq, 0);
         break;
     default:
@@ -1181,6 +1187,11 @@ static void on_read(void *user, uint32_t off, uint32_t *value)
         f->dead_read_seen = 1;
         return;
     }
+    if (f->fw_started && f->fw_int_ena && f->fw_int_rearm_us && f->m->clock_us >= f->next_int_rearm_us) {
+        mock_set_reg(f->m, R_INT_ENA, mock_get_reg(f->m, R_INT_ENA) | f->fw_int_ena);
+        f->next_int_rearm_us = f->m->clock_us + f->fw_int_rearm_us;
+        if (off == R_INT_ENA) *value = mock_get_reg(f->m, R_INT_ENA);
+    }
     if (off == R_LPCTL) {
         *value = f->own_sync ? 4u : 0u;
         if ((f->fw_own_never && f->set_own_writes && !f->own_sync) || (f->drv_own_never && f->clr_own_requests))
@@ -1317,6 +1328,7 @@ void fake_init(struct fake_chip *f, struct mock *m)
     f->tx_stall_ring = -1;
     f->top_lpcr_fw_own = 1;
     f->txc_ring = 4;
+    f->fw_int_ena = 0x20000000u;
 
     mock_set_reg(m, R_REMAP, f->remap_initial);
     mock_set_reg(m, R_GLO, 0x1010b870u);

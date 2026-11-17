@@ -113,7 +113,7 @@ enum mt792x_fcs_mode {
 /* Behaviour switches for points the spec marks ASSUMPTION / TODO-VERIFY. All default to 0. */
 struct mt792x_options {
     uint8_t lenient_fw_state;     /* S15 timeout: 0 = fail with MT792X_E_FW_STATE, 1 = warn and go on (mt76) */
-    uint8_t skip_pcie_mac_int;    /* S6: 1 = do not write MT_PCIE_MAC_INT_ENABLE = 0xff (risk R1) */
+    uint8_t pcie_mac_int;         /* S6: enum mt792x_pcie_int_mode (risk R1, docs/FINDINGS.md F-011) */
     uint8_t skip_aspm_sleep;      /* S2: 1 = no 2.5 ms sleep after CLR_OWN (mt76 sleeps only with ASPM) */
     uint8_t skip_mcu2host_sw_int; /* S10: 1 = do not set MT_MCU2HOST_SW_INT_ENA bit 0 */
     uint8_t strict_hw_rev;        /* S3: 1 = fail unless HW_REV & 0xff == 0x10 (as measured) */
@@ -141,6 +141,31 @@ struct mt792x_options {
                                      bit 0 clear); every other foreign address 2 and every other frame type is still
                                      refused. Such a frame is sent from an address the chip does not acknowledge. */
     uint16_t tx_timeout_ms;       /* no TX-free notification within this time -> LOST, slot quarantined; 0 = 2000 */
+};
+
+/* MT_PCIE_MAC_INT_ENABLE (BAR 0x10188), the PCIe-side gate of every interrupt the chip can raise.
+ * This host has no interrupt handler, so an interrupt that reaches the CPU is never acknowledged
+ * (risk R1; suspected cause of the system hang in docs/FINDINGS.md F-011). */
+enum mt792x_pcie_int_mode {
+    MT792X_PCIE_INT_OFF = 0,      /* write 0 at S6 and keep it 0 (the value mt76 writes on suspend, mt7921/pci.c:522) */
+    MT792X_PCIE_INT_MT76 = 1,     /* write 0xff as mt76's probe does (mt7921/pci.c:424); the behaviour before F-011 */
+    MT792X_PCIE_INT_AS_FOUND = 2  /* leave the register as found */
+};
+
+/* Interrupt guard (F-011): HOST_INT_ENA and, in MT792X_PCIE_INT_OFF, MT_PCIE_MAC_INT_ENABLE are checked
+ * after the firmware boots, after post-boot, after sniffer start and every 250 ms while receiving;
+ * a non-zero value is logged and forced back to 0. The status registers are only read (diagnostics). */
+struct mt792x_irq_counters {
+    uint32_t checks;
+    uint32_t host_int_ena_fixed;  /* times HOST_INT_ENA was found non-zero (the firmware enables bit 29 itself) */
+    uint32_t host_int_ena_last;   /* last non-zero value found */
+    uint32_t pcie_int_fixed;      /* times MT_PCIE_MAC_INT_ENABLE was found non-zero */
+    uint32_t pcie_int_last;
+    uint32_t host_int_sta;        /* HOST_INT_STA (0xd4200) at the last check: interrupt causes pending */
+    uint32_t host_int_sta_seen;   /* OR of every HOST_INT_STA value read */
+    uint32_t mcu_cmd;             /* MT_MCU_CMD (0xd41f0) at the last check: MCU-to-host software interrupt bits */
+    uint32_t mcu_cmd_seen;        /* OR of every MT_MCU_CMD value read */
+    uint32_t status_changes;      /* checks where HOST_INT_STA or MT_MCU_CMD differed from the check before */
 };
 
 /* Which firmware "vifs" (OMAC + BSS entries) the sniffer start creates (spec 12.6). */
@@ -393,6 +418,8 @@ struct mt792x {
 
     uint32_t remap_saved;     /* MT_HIF_REMAP_L1 as found at S0 */
     int remap_saved_valid;
+    uint32_t pcie_int_saved;  /* MT_PCIE_MAC_INT_ENABLE as found at S0, restored at the end of shutdown */
+    int pcie_int_saved_valid;
     int bus_dead;             /* sticky: no further register writes during bring-up */
     int in_shutdown;          /* mt792x_shutdown is running: writes allowed best-effort */
 
@@ -432,6 +459,7 @@ struct mt792x {
     int sniff_failed_step;    /* SN<n> that failed, -1 = none */
     int last_status;          /* status of the last UNI status reply */
     uint64_t next_liveness_us;
+    struct mt792x_irq_counters irqc;
     struct mt792x_rx_counters rxc;
     uint8_t rx_raw[MT792X_RX_BUF_SIZE]; /* last data-ring packet; mt792x_rx_frame.data points into it */
 
@@ -481,6 +509,8 @@ int mt792x_sniffer_stop(struct mt792x *dev);
  * and 4 (events are counted, never block) and the non-frame packets of ring 2. */
 int mt792x_rx_poll(struct mt792x *dev, struct mt792x_rx_frame *out);
 const struct mt792x_rx_counters *mt792x_rx_counters(const struct mt792x *dev);
+/* Interrupt guard counters (F-011); valid at any time, also after mt792x_shutdown. */
+const struct mt792x_irq_counters *mt792x_irq_counters(const struct mt792x *dev);
 /* MAC address given to the firmware for our vif (valid after mt792x_sniffer_start). */
 const uint8_t *mt792x_own_mac(const struct mt792x *dev);
 
@@ -517,7 +547,8 @@ uint32_t mt792x_crc32(const uint8_t *p, uint32_t len);
 #define MT792X_STOP_WRITE 1u  /* register = value */
 #define MT792X_STOP_SET   2u  /* register |= value */
 #define MT792X_STOP_CLEAR 3u  /* register &= ~value */
-#define MT792X_STOP_OPS_COUNT 10u
+#define MT792X_STOP_DELAY 4u  /* wait 'value' ms (bar_offset unused); same numbering as the Windows proxy */
+#define MT792X_STOP_OPS_COUNT 13u
 struct mt792x_stop_op {
     uint8_t kind;
     uint32_t bar_offset;

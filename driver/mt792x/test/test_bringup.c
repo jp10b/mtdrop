@@ -65,7 +65,7 @@ TEST(stage_reset)
     CHECK_EQ_U32(r.f->wfsys_resets, 1);
     CHECK_EQ_U32(fake_glo_cfg(r.f), 0x00103870u);      /* spec 3.7: measured 0x1010b870 after dma_disable */
     CHECK_EQ_U32(mock_get_reg(&r.m, 0xd4204u), 0);
-    CHECK_EQ_U32(mock_get_reg(&r.m, 0x10188u), 0xffu);
+    CHECK_EQ_U32(mock_get_reg(&r.m, 0x10188u), 0);          /* F-011: interrupts off (mt76 writes 0xff) */
     CHECK_EQ_U32(mock_get_reg(&r.m, 0xd4100u) & 0x30u, 0x30u);
     CHECK(mock_get_reg(&r.m, 0xd6004u) & 0x10000000u);
     CHECK(!(mock_get_reg(&r.m, 0xd42b0u) & 0x40u));

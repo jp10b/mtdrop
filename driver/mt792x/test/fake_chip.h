@@ -125,8 +125,13 @@ struct fake_chip {
     int allow_foreign_sa;       /* do not flag a frame whose address 2 is not the OMAC's (ACK control experiment) */
     int txs_via_event;          /* TXS inside an MCU TX_DONE event (eid 0x0f) instead of PKT_TYPE_TXS */
     int tx_no_consume;          /* TX ring 0 kicks are never consumed (descriptors stay with the host) */
+    /* interrupt knobs (docs/FINDINGS.md F-011) */
+    uint32_t fw_int_ena;        /* bits the firmware itself sets in HOST_INT_ENA and HOST_INT_STA at FW_START
+                                   (default 0x20000000, MEASURED in every hardware run that started the RAM firmware, F-011) */
+    uint32_t fw_int_rearm_us;   /* 0 = once; else the firmware sets fw_int_ena again this often (virtual time) */
 
     /* ---- state ---- */
+    uint64_t next_int_rearm_us;
     uint32_t accesses;
     int dead;
     int dead_read_seen;

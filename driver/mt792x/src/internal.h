@@ -139,4 +139,10 @@ void mt_step_done(struct mt792x *dev, int step);
 int mt_postboot(struct mt792x *dev);
 void mt_sniffer_shutdown(struct mt792x *dev);
 
+/* ---- interrupt guard (bringup.c, F-011) ---- */
+/* Reads HOST_INT_ENA, HOST_INT_STA, MT_MCU_CMD and MT_PCIE_MAC_INT_ENABLE; forces the enables back to 0
+ * (MT_PCIE_MAC_INT_ENABLE only in MT792X_PCIE_INT_OFF). 'where' names the call site in the log.
+ * Returns 0 or MT792X_E_BUS_DEAD. */
+int mt_irq_guard(struct mt792x *dev, const char *where);
+
 #endif /* MT792X_SRC_INTERNAL_H */

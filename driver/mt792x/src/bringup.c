@@ -190,13 +190,22 @@ static int step_irq_mask(struct mt792x *dev)
     done(dev, 5);
 
     t0 = mt_now(dev);
-    if (dev->opt.skip_pcie_mac_int) {
+    if (dev->opt.pcie_mac_int == MT792X_PCIE_INT_AS_FOUND) {
         v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
         mt_logf(dev, MT_LOG_INFO, "S6 PCIE_MAC_INT_ENABLE left as found: 0x%08x (option)", v);
-    } else {
+    } else if (dev->opt.pcie_mac_int == MT792X_PCIE_INT_MT76) {
         mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0xffu);
         v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
-        mt_logf(dev, MT_LOG_INFO, "S6 PCIE_MAC_INT_ENABLE = 0x%08x (mt76 writes 0xff; TODO-VERIFY R1)", v);
+        mt_logf(dev, MT_LOG_WARN, "S6 PCIE_MAC_INT_ENABLE = 0x%08x (option: mt76's 0xff, interrupts can reach the host, R1)", v);
+    } else {
+        /* [HOST] F-011: no interrupt handler here, so no interrupt may leave the chip (mt76's suspend value). */
+        mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0);
+        v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+        if (!dev->bus_dead && v != 0) {
+            mt_logf(dev, MT_LOG_ERROR, "S6 PCIE_MAC_INT_ENABLE reads 0x%08x after writing 0", v);
+            return fail(dev, 6, MT792X_E_INT_MASK, t0);
+        }
+        mt_logf(dev, MT_LOG_INFO, "S6 PCIE_MAC_INT_ENABLE = 0x%08x (interrupts off: polling host, R1/F-011)", v);
     }
     if (dev->bus_dead) return fail(dev, 6, MT792X_E_BUS_DEAD, t0);
     done(dev, 6);
@@ -518,8 +527,66 @@ static int load_ram(struct mt792x *dev, const uint8_t *file)
         return fail(dev, 23, err == MT_POLL_TIMEOUT ? MT792X_E_N9_RDY : err, t0);
     }
     mt_logf(dev, MT_LOG_INFO, "S23 firmware ready: CONN_ON_MISC 0x%08x (N9_RDY) after %u ms", v, (uint32_t)(el / 1000u));
+    err = mt_irq_guard(dev, "S23 firmware ready");
+    if (err) return fail(dev, 23, err, t0);
     done(dev, 23);
     return 0;
+}
+
+/* ---- interrupt guard (F-011) ---- */
+
+#define IRQ_GUARD_LOG_FIRST 5u    /* log the first fixes of each kind, then every 100th */
+
+static int irq_log_due(uint32_t n)
+{
+    return n <= IRQ_GUARD_LOG_FIRST || n % 100u == 0u;
+}
+
+int mt_irq_guard(struct mt792x *dev, const char *where)
+{
+    struct mt792x_irq_counters *c = &dev->irqc;
+    uint32_t ena, sta, mcu, pcie;
+
+    if (dev->bus_dead) return MT792X_E_BUS_DEAD;
+    ena = mt_rr(dev, MT_WFDMA0_HOST_INT_ENA);
+    sta = mt_rr(dev, MT_WFDMA0_HOST_INT_STA);
+    mcu = mt_rr(dev, MT_MCU_CMD);
+    pcie = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+    if (dev->bus_dead) return MT792X_E_BUS_DEAD;
+    c->checks++;
+
+    if (ena) {
+        mt_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0);
+        c->host_int_ena_fixed++;
+        c->host_int_ena_last = ena;
+        if (irq_log_due(c->host_int_ena_fixed))
+            mt_logf(dev, MT_LOG_WARN, "irq guard (%s): HOST_INT_ENA was 0x%08x, forced to 0 (fix %u)", where, ena,
+                    c->host_int_ena_fixed);
+    }
+    if (pcie && dev->opt.pcie_mac_int == MT792X_PCIE_INT_OFF) {
+        mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0);
+        c->pcie_int_fixed++;
+        c->pcie_int_last = pcie;
+        if (irq_log_due(c->pcie_int_fixed))
+            mt_logf(dev, MT_LOG_WARN, "irq guard (%s): PCIE_MAC_INT_ENABLE was 0x%08x, forced to 0 (fix %u)", where, pcie,
+                    c->pcie_int_fixed);
+    }
+    if (c->checks == 1u || sta != c->host_int_sta || mcu != c->mcu_cmd) {
+        if (c->checks > 1u) c->status_changes++;
+        if (c->checks == 1u || irq_log_due(c->status_changes))
+            mt_logf(dev, MT_LOG_INFO, "irq guard (%s): HOST_INT_STA 0x%08x MCU_CMD 0x%08x (was 0x%08x / 0x%08x)", where, sta,
+                    mcu, c->host_int_sta, c->mcu_cmd);
+    }
+    c->host_int_sta = sta;
+    c->mcu_cmd = mcu;
+    c->host_int_sta_seen |= sta;
+    c->mcu_cmd_seen |= mcu;
+    return dev->bus_dead ? MT792X_E_BUS_DEAD : 0;
+}
+
+const struct mt792x_irq_counters *mt792x_irq_counters(const struct mt792x *dev)
+{
+    return dev ? &dev->irqc : NULL;
 }
 
 static void snapshot(struct mt792x *dev, const char *what)
@@ -589,9 +656,13 @@ static int run(struct mt792x *dev, const struct mt792x_fw *fw, enum mt792x_stage
     dev->remap_saved = mt_rr(dev, MT_HIF_REMAP_L1);
     if (dev->bus_dead) return fail(dev, 0, MT792X_E_BUS_DEAD, t0);
     dev->remap_saved_valid = 1;
-    mt_logf(dev, MT_LOG_INFO, "S0 MT_HIF_REMAP_L1 = 0x%08x saved; DMA region bus 0x%08x len 0x%x, layout 0x%x bytes",
-            dev->remap_saved, dev->hal->dma_page_bus ? dev->hal->dma_page_bus[0] : dev->hal->dma_bus, dev->hal->dma_len,
-            MT792X_LAYOUT_TOTAL);
+    dev->pcie_int_saved = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+    if (dev->bus_dead) return fail(dev, 0, MT792X_E_BUS_DEAD, t0);
+    dev->pcie_int_saved_valid = 1;
+    mt_logf(dev, MT_LOG_INFO,
+            "S0 MT_HIF_REMAP_L1 = 0x%08x, PCIE_MAC_INT_ENABLE = 0x%08x saved; DMA region bus 0x%08x len 0x%x, layout 0x%x bytes",
+            dev->remap_saved, dev->pcie_int_saved, dev->hal->dma_page_bus ? dev->hal->dma_page_bus[0] : dev->hal->dma_bus,
+            dev->hal->dma_len, MT792X_LAYOUT_TOTAL);
     done(dev, 0);
 
     if ((err = fw_own(dev)) != 0) return err;
@@ -722,6 +793,11 @@ void mt792x_shutdown(struct mt792x *dev)
         note_shutdown(dev, err);
     }
 
+    /* [HOST] F-011: interrupts off at the source before anything else (mt76's suspend writes, pci.c:522). */
+    dev->bus_dead = 0;
+    mt_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0);
+    mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0);
+
     /* 7.1 row 3: mt792x_dma_cleanup */
     dev->bus_dead = 0;
     err = mt_rmw(dev, MT_WFDMA0_GLO_CFG, GLO_CFG_DISABLE_CLEAR, 0);
@@ -762,6 +838,17 @@ void mt792x_shutdown(struct mt792x *dev)
         }
     }
 
+    /* [HOST] F-011: hand the card back with the interrupt gate as found (MEASURED 0xff, what the vendor
+     * driver and mt76-after-remove leave). Safe only now: DMA stopped, HOST_INT_ENA 0, and the RAM
+     * firmware that enables interrupts by itself is gone after the WFSYS reset. */
+    dev->bus_dead = 0;
+    if (dev->pcie_int_saved_valid) {
+        mt_wr(dev, MT_PCIE_MAC_INT_ENABLE, dev->pcie_int_saved);
+        v = mt_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+        mt_logf(dev, v == dev->pcie_int_saved ? MT_LOG_INFO : MT_LOG_WARN,
+                "shutdown: PCIE_MAC_INT_ENABLE restored to 0x%08x (found 0x%08x at S0)", v, dev->pcie_int_saved);
+    }
+
     /* DMA is stopped and the Wi-Fi subsystem was reset: nothing can read a TX slot any more. */
     mt_tx_abort_all(dev);
     for (i = 0; i < MT792X_RING_COUNT; i++) {
@@ -786,6 +873,7 @@ size_t mt792x_stop_ops(struct mt792x_stop_op *ops, size_t max)
     static const struct mt792x_stop_op list[MT792X_STOP_OPS_COUNT] = {
         { MT792X_STOP_WRITE, MT_CONN_ON_LPCTL, PCIE_LPCR_HOST_CLR_OWN },          /* driver ownership */
         { MT792X_STOP_WRITE, MT_WFDMA0_HOST_INT_ENA, 0 },                         /* mask WFDMA interrupts */
+        { MT792X_STOP_WRITE, MT_PCIE_MAC_INT_ENABLE, 0 },                         /* ... and the PCIe side (F-011) */
         { MT792X_STOP_CLEAR, MT_WFDMA0_GLO_CFG, GLO_CFG_DISABLE_CLEAR },          /* stop TX and RX DMA */
         { MT792X_STOP_CLEAR, MT_WFDMA0_GLO_CFG, GLO_CFG_DISABLE_CLEAR },          /* again (no busy poll possible) */
         { MT792X_STOP_CLEAR, MT_WFDMA0_RST, 0x30u },                              /* WFDMA logic + DMASHDL reset */
@@ -793,7 +881,9 @@ size_t mt792x_stop_ops(struct mt792x_stop_op *ops, size_t max)
         { MT792X_STOP_CLEAR, MT_HIF_REMAP_L1, MT_HIF_REMAP_L1_MASK },             /* L1 window ... */
         { MT792X_STOP_SET, MT_HIF_REMAP_L1, 0x1800u },                            /* ... -> 0x1800xxxx */
         { MT792X_STOP_CLEAR, MT_HIF_REMAP_BASE_L1 + 0x0140u, WFSYS_SW_RST_B },    /* assert WFSYS reset */
+        { MT792X_STOP_DELAY, 0, 50u },                                            /* mt76 holds it 50 ms */
         { MT792X_STOP_SET, MT_HIF_REMAP_BASE_L1 + 0x0140u, WFSYS_SW_RST_B },      /* release it */
+        { MT792X_STOP_WRITE, MT_PCIE_MAC_INT_ENABLE, 0xffu },                     /* back as the vendor leaves it */
     };
     size_t i;
     for (i = 0; ops && i < max && i < MT792X_STOP_OPS_COUNT; i++) ops[i] = list[i];
