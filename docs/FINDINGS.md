@@ -876,3 +876,31 @@ New command `radiod acktest 1 @alt` (default 5 frames per arm, 15 transmissions 
 | verdict | `UNICAST ACK: WORKING`; no hang, interrupt guard as in F-013 |
 
 What would falsify it: no TXS at all (then ACK outcome can only be read from the TX-free COUNT, and AWDL must not rely on TXS); a ghost frame reported ACKed (TXS bits misread); NOT ACKed for frames the access point answered; ghost transmissions other than 15 (firmware applies its own retry limit for frames without a station record).
+
+### Raw result (FACT, 2026-11-17 13:03, `acktest 1 @alt`, single vif, Wi-Fi connected before the session)
+
+- Scan: 14 BSSIDs beaconing on channel 1 in 2 s; target = best mean RSSI (20 beacons, -58 dBm). Its address is locally administered (a virtual BSSID).
+
+| frame | arm | TX-free status | transmissions | time to record | TXS word 0 | verdict |
+|---|---|---|---|---|---|---|
+| 1, 3, 5, 7, 9 | AP | 0 | 2, 1, 2, 1, 1 | 5.9–15.7 ms | `0x9c00804b` | ACKed |
+| 2, 4, 6, 8, 10 | ghost | 1 | 15, 15, 15, 15, 15 | 14.0–57.9 ms | `0x9c01804b` | NOT ACKed |
+
+- TXS records 10, unmatched 0 – one per frame. They arrived by **both** routes: 5 as `PKT_TYPE_TXS` packets and 5 inside `MCU_EVENT_TX_DONE` (0x0f) events. Which frame used which route was not logged (DEBUG only).
+- TXS word 0 differs only in bit 16 (`ACK_TIMEOUT`); `TX_RATE` = `0x04b` = OFDM 6 Mbit/s (mode 1, idx 11) as requested.
+- TX-free `STATUS` = 1 for every unacknowledged frame, 0 for every acknowledged one – a second, independent ACK indicator.
+- The target answered **none** of the directed (wildcard-SSID) probes with a probe response.
+- Summary lines: `TXS: DELIVERED - 10 of 10`, `UNICAST ACK: WORKING - access point ACKed 5 of 5, ghost NOT ACKed 5 of 5`, `RETRIES: AS REQUESTED`, exit code 0. The `TX:` line said FAIL because it only counted probe responses (fixed afterwards, see Changes).
+- Interrupt guard as in F-013 (`HOST_INT_ENA` once at S23, 48 checks, `PCIE_MAC_INT_ENABLE` never non-zero). Give-back normal; the vendor driver reconnected (to a 5 GHz network on channel 104); no new error events apart from the usual NDIS 10317 at the swap. No hang.
+
+### Conclusion
+
+1. **Unicast TX works, with retries and an honest TX status.** All predictions held except the probe-response one. The firmware retries an unacknowledged unicast frame exactly `REM_TX_COUNT` times (15 of 15) and reports the outcome three ways that agree: TXS `ACK_TIMEOUT` bit, TX-free `STATUS`, TX-free `COUNT`. The ghost arm rules out a TXS that always says "ACKed".
+2. **TXS needs no station record.** The frames went out on the monitor vif's wcid (19) without `STA_REC`; TXS still arrived for every frame. Both delivery routes occur, so the host must keep handling both (it does).
+3. The AP needed a second transmission for 2 of 5 frames: normal on a busy channel; it shows the retry path also helps acknowledged traffic.
+4. A virtual / hidden BSSID may never answer a wildcard probe; the AP's ACK (with a never-ACKed ghost as control) is the reliable proof of reception.
+5. Open: rate choice for unicast **data** frames without `FIX_RATE` (H14) – only management frames were tested here; AWDL data frames will exercise it in M5.
+
+### Changes
+
+- `radiod acktest`: `TX: PASS` now also when the access point ACKed and the ghost never was (reasoning in point 4).

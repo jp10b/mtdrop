@@ -1402,8 +1402,13 @@ static int acktest(int argc, char **argv) {
         ack_print_arm("AP", ap);
         ack_print_arm("ghost", gh);
 
-        if (ap->answered) printf("TX: PASS - the access point answered %u of %u directed probe(s)\n", ap->answered, ap->sent);
-        else printf("TX: FAIL - the access point answered none of the directed probes\n");
+        /* Reception by the access point is proven by a probe response, or by an ACK as long as the ghost (whose
+         * frames nobody can receive) was never reported ACKed. Some BSSIDs (hidden or virtual networks) never
+         * answer a wildcard probe (F-014), so a missing probe response alone is not a TX failure. */
+        if (ap->answered || (ap->yes && !gh->yes))
+            printf("TX: PASS - the access point received our frames: %u of %u ACKed, %u answered with a probe response\n",
+                   ap->yes, ap->sent, ap->answered);
+        else printf("TX: FAIL - the access point neither ACKed nor answered any of the directed probes\n");
 
         if (ap->txs + gh->txs == 0) {
             printf("TXS: NOT DELIVERED - no TX status record for any of %u frames that asked for one\n", sent);
