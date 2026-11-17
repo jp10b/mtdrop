@@ -1001,3 +1001,21 @@ Both access points answered both arms. Interrupt guard as F-013; give-back norma
 ### Conclusion
 
 **The firmware ACKs a random locally administered address given to the vif through `DEV_INFO`**, in both vif setups, as clearly as the chip's own MAC (F-013: 48 % / 46 %; here 38 % / 37 %, on a quieter channel where the control arm shows the access points' full retry count of 3). ADR-0003 decision 7 holds: `awdld` uses a fresh random address per session, set with `serve --mac random`. M5.2 gate passed.
+
+---
+
+## F-017 – M5.3: awdld builds with MinGW and runs against the loopback radio (offline)
+
+- **Date:** 2026-11-17
+- **Milestone:** M5.3 (ADR-0003). No hardware.
+
+### Result (FACT)
+
+- `awdld/` = jedbillyb/owl @ 57b8678 (`src/`, `daemon/core.c`, tests) + radiotap-library @ 94984dd + winawdl's Windows layer @ 0db7031 adapted to our radio link + own `radio_client.c`. Builds with MinGW-w64 GCC 16.2 (WinLibs, UCRT), `-Wall -Wextra -Werror` on our and winawdl's files, statically linked.
+- Tests: winawdl's 5 Windows-layer tests, `radio_link_test` built with GCC, **OWL's own googletest suite: 68 of 68 pass** after two portability fixes outside OWL: `<string.h>` added to the force-included `compat/owl_win.h` (OWL's `core.c` relied on glibc including it), and `compat/ether.c` printing addresses like glibc (`%x`, no leading zeros), which two OWL tests assert. OWL's `daemon/` include path is limited to the `awdld` target (its `io.h` shadowed the system `<io.h>` that googletest needs).
+- `radiod serve 44 - - --loopback --mac random` + `awdld -c 44 -n -w 5`: awdld takes its AWDL address from HELLO (the random one), sets the AWDL BSSID filter, requests channel 44, receives the synthetic PSFs (the fake peer appears, correctly never valid: the frames carry no TLVs), and transmits ~27 action frames/s (PSF/MIF) through the pipe – 216 in 8 s, none refused; the server ends cleanly when awdld exits.
+- Found and avoided: winawdl's log redaction hides everything after an address up to the line's **last** bracket (deliberately – peer names may contain brackets). Our longer status line therefore lost its radio counters under `-r`; the radio counters now come first and the sync tree last, and `redact_test` has a case for that line.
+
+### Not covered offline
+
+Wintun (`awdl0`) – needs the signed `wintun.dll` and elevation; OWL against a real iPhone (sync, peer validity, data frames). Both are M5.4.

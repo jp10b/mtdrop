@@ -11,6 +11,18 @@ driver/proxy/mtdrop_proxy.inf      <-  raph559/winawdl @ 0db7031, driver/regprox
 driver/tools/awe_probe/awe_probe.c <-  raph559/winawdl @ 0db7031, probes/awe_probe.c, MIT; unchanged except the provenance notice
 driver/mt792x/src/*                <-  openwrt/mt76 @ 0936617, register definitions, the MT7921 bring-up / post-boot / sniffer command sequences and the RX descriptor parsing derived from mt792x_regs.h, mt792x.h, mt7921/{regs.h,mt7921.h,pci.c,pci_mcu.c,mcu.{c,h},init.c,main.c,mac.c,regd.c}, mt792x_{core,dma,mac}.c, mt76_connac_mcu.{c,h}, mt76_connac.h, mt76_connac2_mac.h, mt76_connac_mac.c, mac80211.c, dma.{c,h}, mcu.c, util.c; BSD-3-Clause-Clear (c) 2020-2023 MediaTek Inc., (c) 2016 Felix Fietkau, (c) 2019 Lorenzo Bianconi; re-implemented in portable C, licence text in driver/mt792x/LICENSE.mt76
 driver/mt792x/src/tx.c             <-  openwrt/mt76 @ 0936617, TXD / hardware TXP / TX-free / TXS formats, token and PID rules and the SET_RATE_TX_POWER message derived from mt76_connac_mac.c, mt76_connac.h, mt76_connac2_mac.h, mt7921/{pci_mac.c,mac.c,mcu.{c,h},main.c,pci.c}, mt76_connac_mcu.{c,h}, dma.c, tx.c, eeprom.c, mac80211.c; BSD-3-Clause-Clear (c) 2016 Felix Fietkau, (c) 2020-2022 MediaTek Inc.; re-implemented in portable C. Facts only (no code) from Linux v7.0 net/mac80211/{wme.c,tx.c,iface.c} and include/linux/ieee80211.h (GPL-2.0-only): queue/priority mapping, bufferable-MMPDU rule, monitor vif addresses. PL power limits read from wireless-regdb db.txt @ 40095bd (ISC).
+awdld/owl/src/*, awdld/owl/daemon/{core.c,core.h,io.h,netutils.h}, awdld/owl/tests/*.cpp, awdld/owl/COPYING
+                                   <-  jedbillyb/owl @ 57b8678 (fork of seemoo-lab/owl), src/ and daemon/, GPL-3.0-or-later (file headers), (c) 2018 The Open Wireless Link Project, Milan Stute, and the fork's author; unchanged
+awdld/radiotap/*                   <-  radiotap/radiotap-library @ 94984dd (jedbillyb/owl submodule), radiotap.c, radiotap.h, radiotap_iter.h, platform.h, COPYING, ISC (c) 2007-2009 Andy Green, Johannes Berg; unchanged
+awdld/compat/*                     <-  raph559/winawdl @ 0db7031, awdl/compat/, GPL-3.0-or-later; owl_win.h adds <string.h>, ether.c prints addresses as glibc does, otherwise unchanged
+awdld/win/{ev_win.c,host_if.c,host_if.h,host_frame.c,host_frame.h,frame_fixup.c,frame_fixup.h,service_bridge.c,service_bridge.h,tcp_merge.c,tcp_merge.h,redact.c,redact.h}
+                                   <-  raph559/winawdl @ 0db7031, awdl/win/, GPL-3.0-or-later; unchanged
+awdld/win/{io_win.c,netutils_win.c,win_internal.h,main.c}
+                                   <-  raph559/winawdl @ 0db7031, awdl/win/, GPL-3.0-or-later; changed for our radio link (address from the radio server, connect timeout, set_channel_fd/drain, -S/-W/-w/-f options, radio statistics)
+awdld/tests/*.c                    <-  raph559/winawdl @ 0db7031, awdl/tests/, GPL-3.0-or-later; redact_test.c: one case added for the status line
+awdld/CMakeLists.txt               <-  raph559/winawdl @ 0db7031, awdl/CMakeLists.txt, GPL-3.0-or-later; paths, radio link, tests changed
+awdld/win/radio_client.{c,h}       own code; function names follow raph559/winawdl awdl/win/radio_client.h @ 0db7031 (GPL-3.0-or-later)
+driver/radiod/radio_link.{c,h}     own code (MIT); message set modelled on raph559/winawdl radio/radio_link.h @ 0db7031 (MIT per its SPDX header), no code copied
 
 When code is reused, add one entry per file:
   <our path>  <-  <project> @ <commit>, <their path>, <licence>, <what was changed>
