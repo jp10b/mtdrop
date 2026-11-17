@@ -1067,3 +1067,36 @@ What would falsify it: the iPhone never becomes a valid peer (frame format or MI
 - awdld: per received frame, `clock_time_us()` at processing minus radiotap TSFT (radiod's QPC stamp when the frame left the RX ring), as count / mean / max in the status line – the RX dating error, directly.
 - radiod serve `--pcap <file>` (private directory only): every forwarded RX frame and every TX with QPC timestamps, plus a TX status log, so the iPhone's slot phase (from its sync parameters) can be compared offline with when our unicast frames went out and whether they were ACKed.
 - Then decide between: feeding the radiotap TSFT to OWL's synchronisation (a one-line change in `rx.c`, recorded in NOTICE), reducing latency, or both.
+
+---
+
+## F-019 – M5.4b: is it the clock or the data frames? (RX dating measured; unicast DATA TX tested)
+
+- **Date:** 2026-11-17
+- **Milestone:** M5.4b (follow-up of F-018)
+
+### RX dating error, offline (FACT, loopback)
+
+awdld now prints, per status period, `clock_time_us()` at processing minus radiod's radiotap TSFT. Against `radiod serve --loopback`: min 26 µs, mean 43–142 µs, max 2.0 ms over ~20 frames per 2 s. Both clocks are QPC-based (small positive values) and the pipe path adds a fraction of a millisecond – far below a 16 TU (16.4 ms) slot. **This weakens the F-018 timing hypothesis**; the same numbers from a hardware run will confirm or refute it (the line is in every hardware log from now on). awdld's TX cookie now carries the low 32 bits of the QPC time of sending, for the same measurement on the TX side.
+
+### New suspect
+
+F-014 / F-016 proved ACK and TX status for unicast **management** frames, which carry a fixed rate. awdld's unicast frames are **data** frames: mt76 gives those no `FIX_RATE`, so the firmware picks the rate from the WLAN table entry of the vif's wcid – an entry we never fill (no `STA_REC`; open point H14). Unicast data TX has never been tested on hardware.
+
+### Method
+
+`acktest` gained `--data` (unicast data frames shaped like OWL's AWDL data frames: data, no QoS, address 3 = AWDL BSSID, AWDL data header) and the shared option `--data-fixed-rate` (`opt.tx_data_fixed_rate`: FIX_RATE = `--rate` on unicast data too; also accepted by `serve`). One session at home on channel 2, `-KeepGoing`, all with a random address as awdld uses:
+1. `acktest 2 @alt --mac random` – probe requests, baseline (F-014);
+2. `acktest 2 @alt --mac random --data` – data, firmware rate (what awdld sent in F-018);
+3. `acktest 2 @alt --mac random --data --data-fixed-rate` – data, OFDM 6 fixed.
+The access point ACKs any unicast frame addressed to it with a good FCS, associated or not (it may answer data from a stranger with a deauthentication, which is harmless). Each frame's TXS shows the rate actually used.
+
+### Predictions (written before running)
+
+| run | prediction |
+|---|---|
+| 1 probes | AP ACKed >= 4/5, ghost 0/5 (as F-014) |
+| 2 data, firmware rate | ASSUMPTION (the suspect): AP **NOT** ACKed, TXS rate unusual |
+| 3 data, fixed rate | AP ACKed >= 4/5 like run 1 |
+
+If run 2 is ACKed like run 1, the data path is fine and the timing hypothesis returns (next: `radiod serve --pcap` and an offline slot-phase analysis). If run 2 fails and run 3 passes, `serve` gets `--data-fixed-rate` and M5.4 is repeated.

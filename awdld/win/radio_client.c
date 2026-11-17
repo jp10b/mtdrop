@@ -23,7 +23,6 @@ struct radio_client {
 	HANDLE write_done;
 	SRWLOCK write_lock;
 	uint8_t wbuf[RL_MAX_MESSAGE];
-	uint32_t next_cookie;
 	volatile LONG64 last_write_ms;
 
 	SRWLOCK queue_lock;
@@ -341,9 +340,22 @@ int radio_client_has_frame(struct radio_client *c) {
 	return has;
 }
 
+/* QPC microseconds: the same clock radiod stamps frames with. */
+static uint64_t qpc_us(void) {
+	static LARGE_INTEGER f;
+	LARGE_INTEGER t;
+	if (!f.QuadPart)
+		QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&t);
+	return (uint64_t) (t.QuadPart / f.QuadPart) * 1000000u +
+	       (uint64_t) (t.QuadPart % f.QuadPart) * 1000000u / (uint64_t) f.QuadPart;
+}
+
 int radio_client_tx(struct radio_client *c, const uint8_t *buf, uint32_t len) {
 	uint8_t cookie[4];
-	uint32_t id = ++c->next_cookie; /* event loop thread only */
+	/* The cookie is the low 32 bits of the QPC time of this call, so radiod can tell how long the frame took
+	 * through the pipe (M5.4b). radiod only echoes it. */
+	uint32_t id = (uint32_t) qpc_us();
 	cookie[0] = (uint8_t) id;
 	cookie[1] = (uint8_t) (id >> 8);
 	cookie[2] = (uint8_t) (id >> 16);

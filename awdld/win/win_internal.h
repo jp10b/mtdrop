@@ -13,5 +13,8 @@ void winawdl_join_segments(int wait_us);
 /* How many segments have gone to the host inside another one's packet. */
 unsigned long long winawdl_segments_joined(void);
 
+/* RX dating error since the last call (clock_time_us() at processing minus radiod's TSFT), microseconds. */
+void mtdrop_rx_delay_take(unsigned long long *n, long long *mean, long long *min, long long *max);
+
 /* How long io_state_init waits for `radiod serve` to accept the connection. */
 void mtdrop_radio_connect_timeout(unsigned ms);

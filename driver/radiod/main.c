@@ -698,6 +698,7 @@ int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
     else if (strcmp(a, "--wcid-global") == 0) c->extra.tx_wcid_mode = MT792X_WCID_GLOBAL;
     else if (strcmp(a, "--no-power-limits") == 0) c->extra.tx_power_mode = MT792X_TXPWR_NONE;
     else if (strcmp(a, "--mt76-power") == 0) c->extra.tx_power_max_half_db = 0;
+    else if (strcmp(a, "--data-fixed-rate") == 0) c->extra.tx_data_fixed_rate = 1;
     else if (strcmp(a, "--max-dbm") == 0 && *i + 1 < argc) {
         int dbm = atoi(argv[++*i]);
         if (dbm < 1 || dbm > 23) {
@@ -734,6 +735,7 @@ int tx_start(struct session *s, const char *patch_path, const char *ram_path, lo
     g_dev.opt.tx_power_mode = c->extra.tx_power_mode;
     g_dev.opt.tx_power_max_half_db = c->extra.tx_power_max_half_db;
     g_dev.opt.tx_allow_foreign_sa = foreign_sa;
+    g_dev.opt.tx_data_fixed_rate = c->extra.tx_data_fixed_rate;
     err = mt792x_bringup(&g_dev, &s->fw, MT792X_STAGE_POSTBOOT);
     if (err) {
         printf("RESULT: FAIL - bring-up: %s (%d) at S%d\n", mt792x_strerror(err), err, mt792x_failed_step(&g_dev));
@@ -1227,6 +1229,31 @@ static int ack_scan(struct mt_hal *hal, uint8_t ch, uint32_t ms, uint8_t *target
     return 1;
 }
 
+/* Unicast data frame shaped like an AWDL data frame from OWL (src/tx.c): data, no QoS, ToDS = FromDS = 0,
+ * address 3 = the AWDL BSSID, then AWDL's 8-byte data header and an LLC/SNAP-free payload. With
+ * opt.tx_data_fixed_rate = 0 the firmware chooses the rate (mt76: no FIX_RATE for unicast data), which is what
+ * awdld's unicast frames got in F-018. */
+static uint32_t build_data_frame(uint8_t *f, const uint8_t *own, const uint8_t *da, uint16_t sn) {
+    static const uint8_t awdl_bssid[6] = {0x00, 0x25, 0x00, 0xff, 0x94, 0x73};
+    uint32_t n = 24;
+    memset(f, 0, 64);
+    f[0] = 0x08; /* data, subtype 0 */
+    memcpy(f + 4, da, 6);
+    memcpy(f + 10, own, 6);
+    memcpy(f + 16, awdl_bssid, 6);
+    f[22] = (uint8_t)(sn << 4);
+    f[23] = (uint8_t)(sn >> 4);
+    f[n++] = 0x03; /* AWDL data header: head 0x0403, seq, pad, ethertype 0x86dd */
+    f[n++] = 0x04;
+    f[n++] = (uint8_t)sn;
+    f[n++] = (uint8_t)(sn >> 8);
+    f[n++] = 0;
+    f[n++] = 0;
+    f[n++] = 0x86;
+    f[n++] = 0xdd;
+    return n + 24; /* 24 bytes of zero payload */
+}
+
 static const char *ack_name(uint8_t a) {
     return a == MT792X_ACK_YES ? "ACKed" : a == MT792X_ACK_NO ? "NOT ACKed" : a == MT792X_ACK_UNKNOWN ? "no TXS" : "?";
 }
@@ -1260,7 +1287,7 @@ static int acktest(int argc, char **argv) {
     static struct txt_state t; /* large: keep it off the stack */
     struct session s;
     struct tx_cli cli;
-    unsigned count = 5, tries = 15, scan_ms = 2000, sent = 0;
+    unsigned count = 5, tries = 15, scan_ms = 2000, sent = 0, data = 0;
     uint8_t target[6], ghost[6], ch, band;
     int have_target = 0, rc = 1, err, poll_err = 0, st;
     long chl = strtol(argv[2], NULL, 10);
@@ -1274,6 +1301,7 @@ static int acktest(int argc, char **argv) {
         if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) count = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--tries") == 0 && i + 1 < argc) tries = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--scan-ms") == 0 && i + 1 < argc) scan_ms = (unsigned)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--data") == 0) data = 1;
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
             if (parse_mac(argv[++i], target) != 0) {
                 printf("RESULT: FAIL - --target must be a unicast MAC address aa:bb:cc:dd:ee:ff\n");
@@ -1331,6 +1359,9 @@ static int acktest(int argc, char **argv) {
             print_masked_addr(target);
             printf(" (%u beacons, mean RSSI %d dBm)\n", beacons, rssi);
         }
+        printf("acktest: frames: %s\n", data ? (cli.extra.tx_data_fixed_rate ? "unicast DATA, fixed rate (--data-fixed-rate)"
+                                                                       : "unicast DATA, rate chosen by the firmware (as awdld's)")
+                                         : "directed probe requests (management, fixed rate)");
         printf("acktest: channel %u, %u directed probe request(s) (%u per arm: access point / ghost), ACK + TX status "
                "requested, %u transmission(s) allowed per frame, rate code %u, own MAC ",
                ch, frames, count, tries, cli.rate);
@@ -1345,7 +1376,8 @@ static int acktest(int argc, char **argv) {
             struct mt792x_tx_req q;
             uint64_t t0 = hal->now_us(hal->ctx);
             unsigned a = i & 1u; /* 0 = access point, 1 = ghost */
-            uint32_t len = build_probe_req(frame, own, a ? ghost : target, (uint16_t)(0x200 + i), band);
+            uint32_t len = data ? build_data_frame(frame, own, a ? ghost : target, (uint16_t)(0x200 + i))
+                                : build_probe_req(frame, own, a ? ghost : target, (uint16_t)(0x200 + i), band);
             memset(&q, 0, sizeof(q));
             q.frame = frame;
             q.len = len;
@@ -1526,6 +1558,9 @@ int main(int argc, char **argv) {
            "         --target MAC           access point to address, aa:bb:cc:dd:ee:ff or aa-bb-cc-dd-ee-ff\n"
            "                                (default: the beaconing BSSID with the best mean RSSI)\n"
            "         --scan-ms N            how long to listen for beacons first (500..10000, default 2000)\n"
+           "         --data                 unicast DATA frames shaped like awdld's instead of probe requests\n"
+           "         --data-fixed-rate      FIX_RATE (--rate) on unicast data too (also for serve; mt76 leaves\n"
+           "                                the rate of unicast data to the firmware)\n"
            "         --rate, --pair, --spe-v70, --wcid-global, --max-dbm, --mt76-power, --no-power-limits,\n"
            "         --debug                as for txtest\n"
            "       radiod serve <channel 1-13|36|40|44|48> <patch file> <ram file> [options]\n"

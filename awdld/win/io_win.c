@@ -22,6 +22,7 @@
 #include "netutils.h"
 #include "radio_client.h"
 #include "service_bridge.h"
+#include "state.h"
 #include "tcp_merge.h"
 #include "win_internal.h"
 
@@ -89,6 +90,39 @@ static int frame_before_delivery(void) {
 			return 1;
 		YieldProcessor();
 	}
+}
+
+/* F-018 / M5.4b: how late OWL dates a received frame. OWL synchronises on clock_time_us() taken while it
+ * processes the frame (owl/src/rx.c), not on the radiotap TSFT; radiod puts into TSFT the QPC microseconds at
+ * which the frame left the RX ring. The difference is the dating error of every sync reading (if both clocks
+ * are QPC-based; a huge or negative value would say they are not). Per status period. */
+static struct {
+	unsigned long long n;
+	long long sum, min, max;
+} rx_delay;
+
+static void note_rx_delay(const uint8_t *frame, int len) {
+	uint64_t tsft = 0;
+	long long d;
+	/* radiod's radiotap: TSFT (present bit 0) directly after the 8-byte header */
+	if (len < 16 || frame[0] != 0 || !(frame[4] & 1u))
+		return;
+	memcpy(&tsft, frame + 8, sizeof(tsft)); /* little-endian on every Windows host */
+	d = (long long) (clock_time_us() - tsft);
+	if (!rx_delay.n || d < rx_delay.min)
+		rx_delay.min = d;
+	if (!rx_delay.n || d > rx_delay.max)
+		rx_delay.max = d;
+	rx_delay.sum += d;
+	rx_delay.n++;
+}
+
+void mtdrop_rx_delay_take(unsigned long long *n, long long *mean, long long *min, long long *max) {
+	*n = rx_delay.n;
+	*mean = rx_delay.n ? rx_delay.sum / (long long) rx_delay.n : 0;
+	*min = rx_delay.min;
+	*max = rx_delay.max;
+	memset(&rx_delay, 0, sizeof(rx_delay));
 }
 
 static void on_radio_disconnect(void) {
@@ -160,6 +194,7 @@ int pcap_dispatch(pcap_t *handle, int count, pcap_handler callback, unsigned cha
 	if (length == 0)
 		return 0;
 	joining.last_frame_us = now_us();
+	note_rx_delay(frame, length);
 	length = frame_fixup_received(frame, length);
 	static uint8_t announced[SERVICE_BRIDGE_MAX_PACKET];
 	int announced_len = service_bridge_packet(frame, length, announced);
