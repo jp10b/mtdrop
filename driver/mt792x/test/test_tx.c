@@ -241,6 +241,64 @@ TEST(tx_not_acked_reports_retries)
     rig_free(&r);
 }
 
+/* radiod acktest: a directed probe request with ACK + TX status and a retry limit, in both vif setups;
+ * the access point ACKs (TXS ACKed, one transmission), the ghost does not (TXS ACK_TIMEOUT, all tries). */
+static void directed_probe_case(int pair, uint8_t tries)
+{
+    struct rig r;
+    uint8_t f[64];
+    uint32_t len, cookie = 0, i;
+    struct mt792x_tx_done d;
+    CHECK(rig_init(&r, 0) == 0);
+    if (pair) r.dev->opt.vif_mode = MT792X_VIF_LINUX_PAIR;
+    CHECK(tx_rig_start(&r, 1) == 0);
+    for (i = 0; i < 2u; i++) {
+        struct mt792x_tx_req q;
+        const struct fake_air *a;
+        r.f->tx_mode = i ? FAKE_TX_NOACK : FAKE_TX_ACK;
+        len = hdr(f, 0x0040, peer, chip_mac, peer, (uint16_t)(0x200 + i));
+        f[len++] = 0; /* SSID, wildcard */
+        f[len++] = 0;
+        memset(&q, 0, sizeof(q));
+        q.frame = f;
+        q.len = len;
+        q.rate = MT792X_RATE_OFDM_6M;
+        q.want_ack = 1;
+        q.want_status = 1;
+        q.tx_count = tries;
+        CHECK(mt792x_tx_frame(r.dev, &q, &cookie) == 0);
+        a = &r.f->air[i];
+        CHECK_EQ_U32(a->txd[0] >> 25, 0x10);                       /* not bufferable -> ALTX0 */
+        CHECK_EQ_U32(a->txd[1] & 0x3ffu, pair ? 18u : 19u);        /* the vif's wcid */
+        CHECK(a->txd[2] & 0x80000000u);                            /* FIX_RATE (management) */
+        CHECK_EQ_U32(a->txd[3] & 1u, 0);                           /* NO_ACK clear */
+        CHECK_EQ_U32((a->txd[3] >> 11) & 0xfu, tries ? tries : 15u); /* REM_TX_COUNT */
+        CHECK(a->txd[5] & 0x400u);                                 /* TX_STATUS_HOST */
+        CHECK((a->txd[5] & 0xffu) >= 3u);                          /* PID from 3 */
+        CHECK_EQ_U32(a->txd[6], 0x004b0004u);                      /* OFDM 6 = (1 << 6) | 11, FIXED_BW */
+        CHECK(next_done(&r, &d) == 1);
+        CHECK_EQ_U32(d.cookie, cookie);
+        CHECK_EQ_U32(d.result, MT792X_TXR_DONE);
+        CHECK(d.has_txs);
+        CHECK_EQ_U32(d.acked, i ? MT792X_ACK_NO : MT792X_ACK_YES);
+        CHECK_EQ_U32(d.tx_count, i ? (tries ? tries : 15u) : 1u);
+    }
+    CHECK_EQ_U32(r.dev->txc.acked, 1);
+    CHECK_EQ_U32(r.dev->txc.not_acked, 1);
+    CHECK_EQ_U32(r.dev->txc.txs_unmatched, 0);
+    CHECK(rig_check_no_violations(&r) == 0);
+    CHECK_EQ_U32(r.m.log_errors, 0);
+    rig_free(&r);
+}
+
+TEST(tx_directed_probe_ack_status_single_and_pair)
+{
+    directed_probe_case(0, 15);
+    directed_probe_case(1, 15);
+    directed_probe_case(0, 4);
+    directed_probe_case(1, 0);
+}
+
 TEST(tx_probe_request_options_and_pair_mode)
 {
     struct rig r;

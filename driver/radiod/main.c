@@ -15,6 +15,11 @@
  *                                              whether the access points had to retransmit them (spec 12.8);
  *                                              --control adds a control arm (probes from a random address
  *                                              that nobody acknowledges) to judge the ACK behaviour
+ *   radiod acktest <channel> <patch> <ram> [options]
+ *                                              sniffer with TX allowed; directed probe requests with ACK and
+ *                                              TX status requested, alternating between an access point and a
+ *                                              ghost address nobody owns, one per second (at most 2 x 20);
+ *                                              reports the TX status (ACKed / not) and transmissions per frame
  *
  *   radiod --live-log <file> <command> ...      also append every line (except DEBUG messages) to <file>,
  *                                              written through to disk line by line, so the last line
@@ -652,19 +657,118 @@ static int tx_channel_ok(uint8_t ch) {
     return (ch >= 1 && ch <= 13) || ch == 36 || ch == 40 || ch == 44 || ch == 48;
 }
 
-/* Broadcast probe request (802.11 probe request: wildcard SSID + supported rates). Rates per band, in
- * 500 kb/s units with the basic bit: 2.4 GHz 1, 2, 5.5, 11 (basic), 6, 9, 12, 18 + extended 24, 36, 48,
- * 54; 5 GHz 6, 12, 24 (basic), 9, 18, 36, 48, 54. */
-static uint32_t build_probe_req(uint8_t *f, const uint8_t *own, uint16_t sn, uint8_t band) {
+/* Options every transmitting command shares. */
+struct tx_cli {
+    struct mt792x_options extra; /* only the TX / vif fields are used */
+    uint8_t rate;
+    int debug;
+};
+
+static void tx_cli_init(struct tx_cli *c) {
+    memset(c, 0, sizeof(*c));
+    c->rate = MT792X_RATE_OFDM_6M;
+    /* [HOST] default cap 14 dBm (28 half-dB): below mt76's regulatory limits for PL (20 / 23 dBm), leaving
+     * margin for the unknown antenna gain and the ACPI SAR tables mt76 would apply (spec 12.6) */
+    c->extra.tx_power_max_half_db = 28;
+}
+
+/* Consumes argv[*i] (and its value) if it is a shared TX option: 1 = consumed, 0 = not ours, -1 = invalid
+ * (already printed). */
+static int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
+    const char *a = argv[*i];
+    if (strcmp(a, "--rate") == 0 && *i + 1 < argc) {
+        const char *v = argv[++*i];
+        c->rate = 0;
+        for (size_t k = 0; k < sizeof(txt_rates) / sizeof(txt_rates[0]); k++)
+            if (strcmp(v, txt_rates[k].name) == 0) c->rate = txt_rates[k].rate;
+        if (!c->rate) {
+            printf("RESULT: FAIL - --rate must be one of 1 2 5.5 11 6 9 12 18 24 36 48 54\n");
+            return -1;
+        }
+    } else if (strcmp(a, "--debug") == 0) c->debug = 1;
+    else if (strcmp(a, "--pair") == 0) c->extra.vif_mode = MT792X_VIF_LINUX_PAIR;
+    else if (strcmp(a, "--spe-v70") == 0) c->extra.tx_spe_mode = MT792X_SPE_LINUX_7_0;
+    else if (strcmp(a, "--wcid-global") == 0) c->extra.tx_wcid_mode = MT792X_WCID_GLOBAL;
+    else if (strcmp(a, "--no-power-limits") == 0) c->extra.tx_power_mode = MT792X_TXPWR_NONE;
+    else if (strcmp(a, "--mt76-power") == 0) c->extra.tx_power_max_half_db = 0;
+    else if (strcmp(a, "--max-dbm") == 0 && *i + 1 < argc) {
+        int dbm = atoi(argv[++*i]);
+        if (dbm < 1 || dbm > 23) {
+            printf("RESULT: FAIL - --max-dbm must be 1..23 (it can only lower mt76's limits)\n");
+            return -1;
+        }
+        c->extra.tx_power_max_half_db = (uint8_t)(2 * dbm);
+    } else return 0;
+    return 1;
+}
+
+/* Checks channel and rate, then: session, bring-up to post-boot, sniffer on 'ch' with TX allowed. Returns 0,
+ * 1 if the arguments were refused before anything was touched (exit code 2), or -1 after a failure (printed;
+ * the caller still closes the session). */
+static int tx_start(struct session *s, const char *patch_path, const char *ram_path, long chl,
+                    const struct tx_cli *c, uint8_t foreign_sa) {
+    uint8_t ch, band;
+    int err;
+    if (chl < 1 || chl > 255 || !tx_channel_ok((uint8_t)chl)) {
+        printf("RESULT: FAIL - transmitting is only allowed on 2.4 GHz channels 1-13 and 5 GHz channels 36, 40, 44, 48\n");
+        return 1;
+    }
+    ch = (uint8_t)chl;
+    band = band_of(ch);
+    if (band == MT792X_BAND_5GHZ && c->rate <= MT792X_RATE_CCK_11M) {
+        printf("RESULT: FAIL - CCK rates are not allowed on 5 GHz\n");
+        return 1;
+    }
+    if (session_open(s, patch_path, ram_path) != 0) return -1;
+    halwin_set_log_level(s->h, c->debug ? MT_LOG_DEBUG : MT_LOG_INFO);
+    g_dev.opt.vif_mode = c->extra.vif_mode;
+    g_dev.opt.tx_spe_mode = c->extra.tx_spe_mode;
+    g_dev.opt.tx_wcid_mode = c->extra.tx_wcid_mode;
+    g_dev.opt.tx_power_mode = c->extra.tx_power_mode;
+    g_dev.opt.tx_power_max_half_db = c->extra.tx_power_max_half_db;
+    g_dev.opt.tx_allow_foreign_sa = foreign_sa;
+    err = mt792x_bringup(&g_dev, &s->fw, MT792X_STAGE_POSTBOOT);
+    if (err) {
+        printf("RESULT: FAIL - bring-up: %s (%d) at S%d\n", mt792x_strerror(err), err, mt792x_failed_step(&g_dev));
+        return -1;
+    }
+    {
+        struct mt792x_sniffer_cfg cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.channel = ch;
+        cfg.band = band;
+        cfg.flags = MT792X_SNIFF_CONTROL | MT792X_SNIFF_OTHER_BSS;
+        cfg.allow_tx = 1;
+        err = mt792x_sniffer_start(&g_dev, &cfg);
+        if (err) {
+            printf("RESULT: FAIL - sniffer start: %s (%d) at SN%d\n", mt792x_strerror(err), err, g_dev.sniff_failed_step);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static const char *tx_power_desc(const struct tx_cli *c) {
+    return c->extra.tx_power_mode == MT792X_TXPWR_NONE ? "limits NOT sent (firmware defaults)"
+           : c->extra.tx_power_max_half_db            ? "mt76 PL limits, capped by --max-dbm"
+                                                       : "mt76 PL limits";
+}
+
+/* Probe request (802.11 probe request: wildcard SSID + supported rates), broadcast if 'da' is NULL, else
+ * directed (address 1 = address 3 = 'da'). Rates per band, in 500 kb/s units with the basic bit: 2.4 GHz
+ * 1, 2, 5.5, 11 (basic), 6, 9, 12, 18 + extended 24, 36, 48, 54; 5 GHz 6, 12, 24 (basic), 9, 18, 36, 48, 54. */
+static uint32_t build_probe_req(uint8_t *f, const uint8_t *own, const uint8_t *da, uint16_t sn, uint8_t band) {
     static const uint8_t rates_2g[8] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
     static const uint8_t ext_2g[4] = {0x30, 0x48, 0x60, 0x6c};
     static const uint8_t rates_5g[8] = {0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c};
     uint32_t n = 0;
     memset(f, 0, 24);
     f[0] = 0x40; /* management, subtype 4 */
-    memset(f + 4, 0xff, 6);
+    if (da) memcpy(f + 4, da, 6);
+    else memset(f + 4, 0xff, 6);
     memcpy(f + 10, own, 6);
-    memset(f + 16, 0xff, 6);
+    if (da) memcpy(f + 16, da, 6);
+    else memset(f + 16, 0xff, 6);
     f[22] = (uint8_t)(sn << 4);
     f[23] = (uint8_t)(sn >> 4);
     n = 24;
@@ -799,90 +903,37 @@ static void txt_print_arm(const char *label, unsigned sent, const struct txt_arm
 static int txtest(int argc, char **argv) {
     static struct txt_state t; /* large: keep it off the stack */
     struct session s;
-    unsigned count = 5, show_ssid = 0, ssid_len_only = 0, debug = 0, sent = 0, control = 0;
-    uint8_t rate = MT792X_RATE_OFDM_6M, ch, band;
-    struct mt792x_options extra;
-    int rc = 1, err, poll_err = 0;
+    unsigned count = 5, show_ssid = 0, ssid_len_only = 0, sent = 0, control = 0;
+    uint8_t rate, ch, band;
+    struct tx_cli cli;
+    int rc = 1, err, poll_err = 0, st;
     long chl = strtol(argv[2], NULL, 10);
 
-    memset(&extra, 0, sizeof(extra));
+    tx_cli_init(&cli);
     memset(&t, 0, sizeof(t));
-    /* [HOST] default cap 14 dBm (28 half-dB): below mt76's regulatory limits for PL (20 / 23 dBm), leaving
-     * margin for the unknown antenna gain and the ACPI SAR tables mt76 would apply (spec 12.6) */
-    extra.tx_power_max_half_db = 28;
     for (int i = 5; i < argc; i++) {
+        int used = tx_cli_parse(&cli, argc, argv, &i);
+        if (used < 0) return 2;
+        if (used) continue;
         if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) count = (unsigned)atoi(argv[++i]);
-        else if (strcmp(argv[i], "--rate") == 0 && i + 1 < argc) {
-            const char *v = argv[++i];
-            rate = 0;
-            for (size_t k = 0; k < sizeof(txt_rates) / sizeof(txt_rates[0]); k++)
-                if (strcmp(v, txt_rates[k].name) == 0) rate = txt_rates[k].rate;
-            if (!rate) {
-                printf("RESULT: FAIL - --rate must be one of 1 2 5.5 11 6 9 12 18 24 36 48 54\n");
-                return 2;
-            }
-        } else if (strcmp(argv[i], "--ssid-len-only") == 0) ssid_len_only = 1;
+        else if (strcmp(argv[i], "--ssid-len-only") == 0) ssid_len_only = 1;
         else if (strcmp(argv[i], "--show-ssid") == 0) show_ssid = 1;
-        else if (strcmp(argv[i], "--debug") == 0) debug = 1;
         else if (strcmp(argv[i], "--control") == 0) control = 1;
-        else if (strcmp(argv[i], "--pair") == 0) extra.vif_mode = MT792X_VIF_LINUX_PAIR;
-        else if (strcmp(argv[i], "--spe-v70") == 0) extra.tx_spe_mode = MT792X_SPE_LINUX_7_0;
-        else if (strcmp(argv[i], "--wcid-global") == 0) extra.tx_wcid_mode = MT792X_WCID_GLOBAL;
-        else if (strcmp(argv[i], "--no-power-limits") == 0) extra.tx_power_mode = MT792X_TXPWR_NONE;
-        else if (strcmp(argv[i], "--mt76-power") == 0) extra.tx_power_max_half_db = 0;
-        else if (strcmp(argv[i], "--max-dbm") == 0 && i + 1 < argc) {
-            int dbm = atoi(argv[++i]);
-            if (dbm < 1 || dbm > 23) {
-                printf("RESULT: FAIL - --max-dbm must be 1..23 (it can only lower mt76's limits)\n");
-                return 2;
-            }
-            extra.tx_power_max_half_db = (uint8_t)(2 * dbm);
-        } else {
+        else {
             printf("RESULT: FAIL - unknown option %s\n", argv[i]);
             return 2;
         }
-    }
-    if (chl < 1 || chl > 255 || !tx_channel_ok((uint8_t)chl)) {
-        printf("RESULT: FAIL - transmitting is only allowed on 2.4 GHz channels 1-13 and 5 GHz channels 36, 40, 44, 48\n");
-        return 2;
     }
     if (count < 1 || count > TXT_MAX_PROBES) {
         printf("RESULT: FAIL - --count must be 1..%d%s\n", TXT_MAX_PROBES, control ? " (per arm)" : "");
         return 2;
     }
+    rate = cli.rate;
+    st = tx_start(&s, argv[3], argv[4], chl, &cli, (uint8_t)control);
+    if (st > 0) return 2;
+    if (st < 0) goto out;
     ch = (uint8_t)chl;
     band = band_of(ch);
-    if (band == MT792X_BAND_5GHZ && rate <= MT792X_RATE_CCK_11M) {
-        printf("RESULT: FAIL - CCK rates are not allowed on 5 GHz\n");
-        return 2;
-    }
-
-    if (session_open(&s, argv[3], argv[4]) != 0) goto out;
-    halwin_set_log_level(s.h, debug ? MT_LOG_DEBUG : MT_LOG_INFO);
-    g_dev.opt.vif_mode = extra.vif_mode;
-    g_dev.opt.tx_spe_mode = extra.tx_spe_mode;
-    g_dev.opt.tx_wcid_mode = extra.tx_wcid_mode;
-    g_dev.opt.tx_power_mode = extra.tx_power_mode;
-    g_dev.opt.tx_power_max_half_db = extra.tx_power_max_half_db;
-    g_dev.opt.tx_allow_foreign_sa = (uint8_t)control;
-    err = mt792x_bringup(&g_dev, &s.fw, MT792X_STAGE_POSTBOOT);
-    if (err) {
-        printf("RESULT: FAIL - bring-up: %s (%d) at S%d\n", mt792x_strerror(err), err, mt792x_failed_step(&g_dev));
-        goto out;
-    }
-    {
-        struct mt792x_sniffer_cfg cfg;
-        memset(&cfg, 0, sizeof(cfg));
-        cfg.channel = ch;
-        cfg.band = band;
-        cfg.flags = MT792X_SNIFF_CONTROL | MT792X_SNIFF_OTHER_BSS;
-        cfg.allow_tx = 1;
-        err = mt792x_sniffer_start(&g_dev, &cfg);
-        if (err) {
-            printf("RESULT: FAIL - sniffer start: %s (%d) at SN%d\n", mt792x_strerror(err), err, g_dev.sniff_failed_step);
-            goto out;
-        }
-    }
     {
         struct mt_hal *hal = halwin_hal(s.h);
         const uint8_t *own = mt792x_own_mac(&g_dev);
@@ -904,15 +955,12 @@ static int txtest(int argc, char **argv) {
             printf(", control MAC ");
             print_masked_addr(ctl);
         }
-        printf(", vifs %s, TX power %s\n", extra.vif_mode ? "Linux pair" : "single",
-               extra.tx_power_mode == MT792X_TXPWR_NONE ? "limits NOT sent (firmware defaults)"
-               : extra.tx_power_max_half_db              ? "mt76 PL limits, capped by --max-dbm"
-                                                         : "mt76 PL limits");
+        printf(", vifs %s, TX power %s\n", cli.extra.vif_mode ? "Linux pair" : "single", tx_power_desc(&cli));
         for (unsigned i = 0; i < frames && !poll_err; i++) {
             struct mt792x_tx_req q;
             uint64_t t0 = hal->now_us(hal->ctx);
             unsigned arm = control ? (i & 1u) : 0u;
-            uint32_t len = build_probe_req(frame, arm ? ctl : own, (uint16_t)(0x100 + i), band);
+            uint32_t len = build_probe_req(frame, arm ? ctl : own, NULL, (uint16_t)(0x100 + i), band);
             memset(&q, 0, sizeof(q));
             q.frame = frame;
             q.len = len;
@@ -1067,6 +1115,335 @@ out:
     return rc;
 }
 
+/* ------------------------------------------------------------------------------------------------ */
+/* acktest (F-010 / F-013 follow-up: unicast TX with ACK request and TX status report)              */
+/*
+ * Two arms alternate, one frame per second, each frame a directed probe request sent with an ACK request
+ * (retries allowed) and a TX status request (TXS):
+ *   - AP arm: address 1 = address 3 = the BSSID of an access point on the channel. Every 802.11 station
+ *     acknowledges a unicast frame addressed to it that it received with a good FCS, associated or not,
+ *     so the TXS should say "ACKed" and the TX-free COUNT (transmissions) should mostly be 1. The access
+ *     point usually also answers with a probe response: independent proof that it received the frame.
+ *   - ghost arm: the same frame to a random locally administered address that no station owns. Nobody can
+ *     acknowledge it, so the TXS must say "not ACKed" and the chip should have used all its tries.
+ * Only both arms together give a verdict: "ACKed" for the ghost, or "not ACKed" for frames the access point
+ * demonstrably received, would mean the TXS ACK bits (mt76: TXS0 bits 18:16 clear = ACKed) do not mean what
+ * we read them as.
+ */
+
+#define ACK_MAX_PER_ARM 20
+#define ACK_MAX_BSS 64
+
+struct ack_bss {
+    uint8_t mac[6];
+    unsigned beacons, with_rssi;
+    int rssi_sum;
+};
+
+struct ack_arm {
+    unsigned sent, done, lost, aborted, pending;
+    unsigned txs, yes, no, unknown;
+    unsigned answered;        /* frames the access point answered with a probe response to us */
+    unsigned tries_hist[16];  /* TX-free COUNT 0..15 (0 = not reported) */
+};
+
+/* aa:bb:cc:dd:ee:ff or aa-bb-cc-dd-ee-ff (s3-bringup.ps1 turns ':' into spaces). */
+static int parse_mac(const char *s, uint8_t *mac) {
+    unsigned v[6];
+    char tail, buf[32];
+    size_t n = strlen(s);
+    if (n != 17) return -1;
+    memcpy(buf, s, n + 1);
+    for (size_t k = 0; k < n; k++)
+        if (buf[k] == '-') buf[k] = ':';
+    if (sscanf(buf, "%x:%x:%x:%x:%x:%x%c", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &tail) != 6) return -1;
+    for (int k = 0; k < 6; k++) {
+        if (v[k] > 0xff) return -1;
+        mac[k] = (uint8_t)v[k];
+    }
+    return (mac[0] & 1u) ? -1 : 0; /* unicast only */
+}
+
+/* Listens for 'ms' and picks the beaconing BSSID with the best mean RSSI (at least 3 beacons with good FCS
+ * and an RSSI on the tuned channel). Returns 1 with 'target' set, 0 if none qualified, < 0 on a poll error. */
+static int ack_scan(struct mt_hal *hal, uint8_t ch, uint32_t ms, uint8_t *target, unsigned *n_bss, int *rssi_mean,
+                    unsigned *beacons) {
+    static struct ack_bss b[ACK_MAX_BSS];
+    unsigned n = 0, best = ACK_MAX_BSS;
+    uint64_t until = hal->now_us(hal->ctx) + (uint64_t)ms * 1000u;
+    memset(b, 0, sizeof(b));
+    while (hal->now_us(hal->ctx) < until) {
+        struct mt792x_rx_frame fr;
+        int r = mt792x_rx_poll(&g_dev, &fr);
+        if (r < 0) return r;
+        if (r == 0) {
+            hal->sleep_us(hal->ctx, 500);
+            continue;
+        }
+        if ((fr.flags & MT792X_RXF_HDR_TRANS) || !fr.fcs_ok || fr.len < 24 || fr.channel != ch) continue;
+        if ((fr.data[0] & 0xfc) != 0x80 || (fr.data[10] & 1u)) continue; /* beacons from a unicast address */
+        unsigned k;
+        for (k = 0; k < n; k++)
+            if (memcmp(b[k].mac, fr.data + 10, 6) == 0) break;
+        if (k == n) {
+            if (n == ACK_MAX_BSS) continue;
+            memcpy(b[n++].mac, fr.data + 10, 6);
+        }
+        b[k].beacons++;
+        if (fr.rssi_dbm != -128) {
+            b[k].with_rssi++;
+            b[k].rssi_sum += fr.rssi_dbm;
+        }
+    }
+    for (unsigned k = 0; k < n; k++) {
+        if (b[k].beacons < 3 || !b[k].with_rssi) continue;
+        if (best == ACK_MAX_BSS ||
+            b[k].rssi_sum * (int)b[best].with_rssi > b[best].rssi_sum * (int)b[k].with_rssi)
+            best = k;
+    }
+    *n_bss = n;
+    if (best == ACK_MAX_BSS) return 0;
+    memcpy(target, b[best].mac, 6);
+    *rssi_mean = b[best].rssi_sum / (int)b[best].with_rssi;
+    *beacons = b[best].beacons;
+    return 1;
+}
+
+static const char *ack_name(uint8_t a) {
+    return a == MT792X_ACK_YES ? "ACKed" : a == MT792X_ACK_NO ? "NOT ACKed" : a == MT792X_ACK_UNKNOWN ? "no TXS" : "?";
+}
+
+/* Probe responses to us from 'from' recorded for frame 'probe'. */
+static unsigned ack_answers(const struct txt_state *t, const uint8_t *from, unsigned probe) {
+    unsigned n = 0;
+    for (unsigned k = 0; k < t->n; k++)
+        if (t->r[k].probe == probe && memcmp(t->r[k].ta, from, 6) == 0) n++;
+    return n;
+}
+
+static void ack_print_arm(const char *label, const struct ack_arm *a) {
+    unsigned sum = 0, n = 0;
+    printf("  %-6s frames %u: TX-free %u, lost %u, aborted %u, pending %u; TXS %u: ACKed %u, NOT ACKed %u, no TXS %u; "
+           "transmissions",
+           label, a->sent, a->done, a->lost, a->aborted, a->pending, a->txs, a->yes, a->no, a->unknown);
+    for (unsigned c = 0; c < 16; c++) {
+        if (!a->tries_hist[c]) continue;
+        printf(" %u:%u", c, a->tries_hist[c]);
+        if (c) {
+            sum += c * a->tries_hist[c];
+            n += a->tries_hist[c];
+        }
+    }
+    printf(" (mean %.2f)", n ? (double)sum / (double)n : 0.0);
+    printf("; answered by the access point %u\n", a->answered);
+}
+
+static int acktest(int argc, char **argv) {
+    static struct txt_state t; /* large: keep it off the stack */
+    struct session s;
+    struct tx_cli cli;
+    unsigned count = 5, tries = 15, scan_ms = 2000, sent = 0;
+    uint8_t target[6], ghost[6], ch, band;
+    int have_target = 0, rc = 1, err, poll_err = 0, st;
+    long chl = strtol(argv[2], NULL, 10);
+
+    tx_cli_init(&cli);
+    memset(&t, 0, sizeof(t));
+    for (int i = 5; i < argc; i++) {
+        int used = tx_cli_parse(&cli, argc, argv, &i);
+        if (used < 0) return 2;
+        if (used) continue;
+        if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) count = (unsigned)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--tries") == 0 && i + 1 < argc) tries = (unsigned)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--scan-ms") == 0 && i + 1 < argc) scan_ms = (unsigned)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
+            if (parse_mac(argv[++i], target) != 0) {
+                printf("RESULT: FAIL - --target must be a unicast MAC address aa:bb:cc:dd:ee:ff\n");
+                return 2;
+            }
+            have_target = 1;
+        } else {
+            printf("RESULT: FAIL - unknown option %s\n", argv[i]);
+            return 2;
+        }
+    }
+    if (count < 1 || count > ACK_MAX_PER_ARM) {
+        printf("RESULT: FAIL - --count must be 1..%d (per arm)\n", ACK_MAX_PER_ARM);
+        return 2;
+    }
+    if (tries < 1 || tries > 15) {
+        printf("RESULT: FAIL - --tries must be 1..15 (transmissions per frame including retries)\n");
+        return 2;
+    }
+    if (scan_ms < 500 || scan_ms > 10000) {
+        printf("RESULT: FAIL - --scan-ms must be 500..10000\n");
+        return 2;
+    }
+    st = tx_start(&s, argv[3], argv[4], chl, &cli, 0);
+    if (st > 0) return 2;
+    if (st < 0) goto out;
+    ch = (uint8_t)chl;
+    band = band_of(ch);
+    {
+        struct mt_hal *hal = halwin_hal(s.h);
+        const uint8_t *own = mt792x_own_mac(&g_dev);
+        uint8_t frame[64];
+        unsigned frames = 2u * count;
+        struct ack_arm arm[2];
+
+        memset(arm, 0, sizeof(arm));
+        if (random_control_mac(ghost, own) != 0) {
+            printf("RESULT: FAIL - no random ghost address available (rand_s failed)\n");
+            goto out;
+        }
+        if (!have_target) {
+            unsigned n_bss = 0, beacons = 0;
+            int rssi = 0;
+            int r = ack_scan(hal, ch, scan_ms, target, &n_bss, &rssi, &beacons);
+            if (r < 0) {
+                printf("RESULT: FAIL - receive error while scanning: %s (%d)\n", mt792x_strerror(r), r);
+                goto out;
+            }
+            if (r == 0) {
+                printf("RESULT: FAIL - no access point with >= 3 beacons heard on channel %u in %u ms (%u BSSID(s) seen)\n",
+                       ch, scan_ms, n_bss);
+                goto out;
+            }
+            printf("scan: %u BSSID(s) beaconing on channel %u in %u ms; target ", n_bss, ch, scan_ms);
+            print_masked_addr(target);
+            printf(" (%u beacons, mean RSSI %d dBm)\n", beacons, rssi);
+        }
+        printf("acktest: channel %u, %u directed probe request(s) (%u per arm: access point / ghost), ACK + TX status "
+               "requested, %u transmission(s) allowed per frame, rate code %u, own MAC ",
+               ch, frames, count, tries, cli.rate);
+        print_masked_addr(own);
+        printf(", target ");
+        print_masked_addr(target);
+        printf(", ghost ");
+        print_masked_addr(ghost);
+        printf(", vifs %s, TX power %s\n", cli.extra.vif_mode ? "Linux pair" : "single", tx_power_desc(&cli));
+
+        for (unsigned i = 0; i < frames && !poll_err; i++) {
+            struct mt792x_tx_req q;
+            uint64_t t0 = hal->now_us(hal->ctx);
+            unsigned a = i & 1u; /* 0 = access point, 1 = ghost */
+            uint32_t len = build_probe_req(frame, own, a ? ghost : target, (uint16_t)(0x200 + i), band);
+            memset(&q, 0, sizeof(q));
+            q.frame = frame;
+            q.len = len;
+            q.rate = cli.rate;
+            q.want_ack = 1;
+            q.want_status = 1;
+            q.tx_count = (uint8_t)tries;
+            err = mt792x_tx_frame(&g_dev, &q, &t.cookie[i]);
+            if (err) {
+                printf("frame %u: TX refused: %s (%d)\n", i + 1, mt792x_strerror(err), err);
+                poll_err = err;
+                break;
+            }
+            sent = i + 1;
+            /* listen until the record is complete (TX-free + TXS, or the TXS wait ran out), at most 1 s */
+            while (!poll_err && !t.done_seen[i] && hal->now_us(hal->ctx) < t0 + 1000000u)
+                poll_err = txt_listen(hal, &t, own, NULL, (uint8_t)i, ch, hal->now_us(hal->ctx) + 20000u, sent);
+            printf("frame %u [%s]: ", i + 1, a ? "ghost" : "AP");
+            if (t.done_seen[i]) {
+                const struct mt792x_tx_done *d = &t.done[i];
+                printf("%s (TX-free status %u, transmissions %u, %u us); %s", txr_name(d->result), d->free_status,
+                       d->tx_count, d->elapsed_us, ack_name(d->acked));
+                if (d->has_txs) printf(" (TXS word0 0x%08x, rate 0x%03x)", d->txs[0], d->txs_rate);
+            } else {
+                printf("no TX record within 1 s");
+            }
+            /* the rest of the second: responses to this frame */
+            if (!poll_err) poll_err = txt_listen(hal, &t, own, NULL, (uint8_t)i, ch, t0 + (i + 1 < frames ? 1000000u : 300000u), sent);
+            printf("; probe responses from the target %u\n", ack_answers(&t, target, i));
+        }
+        /* late records: the library reports LOST after its TX timeout (2 s) at the latest */
+        {
+            uint64_t until = hal->now_us(hal->ctx) + 2500000u;
+            int all = 0;
+            while (!poll_err && !all && hal->now_us(hal->ctx) < until) {
+                poll_err = txt_listen(hal, &t, own, NULL, (uint8_t)(sent ? sent - 1 : 0), ch, hal->now_us(hal->ctx) + 20000u,
+                                      sent);
+                all = 1;
+                for (unsigned i = 0; i < sent; i++)
+                    if (!t.done_seen[i]) all = 0;
+            }
+        }
+        if (poll_err) printf("receive/transmit loop stopped: %s (%d)\n", mt792x_strerror(poll_err), poll_err);
+
+        /* ---- analysis ---- */
+        for (unsigned i = 0; i < sent; i++) {
+            struct ack_arm *x = &arm[i & 1u];
+            x->sent++;
+            if (ack_answers(&t, target, i)) x->answered++;
+            if (!t.done_seen[i]) {
+                x->pending++;
+                continue;
+            }
+            const struct mt792x_tx_done *d = &t.done[i];
+            if (d->result == MT792X_TXR_DONE) x->done++;
+            else if (d->result == MT792X_TXR_LOST) x->lost++;
+            else x->aborted++;
+            if (d->has_txs) x->txs++;
+            if (d->acked == MT792X_ACK_YES) x->yes++;
+            else if (d->acked == MT792X_ACK_NO) x->no++;
+            else x->unknown++;
+            if (d->result == MT792X_TXR_DONE) x->tries_hist[d->tx_count > 15u ? 15u : d->tx_count]++;
+        }
+        const struct mt792x_tx_counters *tc = mt792x_tx_counters(&g_dev);
+        const struct mt792x_rx_counters *rxc = mt792x_rx_counters(&g_dev);
+        const struct ack_arm *ap = &arm[0], *gh = &arm[1];
+        printf("\n==== acktest summary ====\n");
+        printf("frames sent %u; library: done %u, lost %u, ACKed %u, not ACKed %u; TXS records %u (unmatched %u); "
+               "RX packets: TXS %u, TX_DONE events %u, TX-free MSDUs %u\n",
+               sent, tc->done, tc->lost, tc->acked, tc->not_acked, tc->txs_records, tc->txs_unmatched, rxc->pkt_type[0],
+               rxc->event_by_id[0x0f], rxc->tx_free_msdus);
+        ack_print_arm("AP", ap);
+        ack_print_arm("ghost", gh);
+
+        if (ap->answered) printf("TX: PASS - the access point answered %u of %u directed probe(s)\n", ap->answered, ap->sent);
+        else printf("TX: FAIL - the access point answered none of the directed probes\n");
+
+        if (ap->txs + gh->txs == 0) {
+            printf("TXS: NOT DELIVERED - no TX status record for any of %u frames that asked for one\n", sent);
+        } else {
+            printf("TXS: DELIVERED - %u of %u frames got a TX status record\n", ap->txs + gh->txs, sent);
+        }
+
+        int cover = ap->txs * 5u >= ap->sent * 4u && gh->txs * 5u >= gh->sent * 4u && ap->sent && gh->sent;
+        if (gh->yes)
+            printf("UNICAST ACK: CONTRADICTION - the ghost address, which nobody owns, was reported ACKed %u time(s): the "
+                   "TXS ACK bits do not mean what we read them as\n", gh->yes);
+        else if (cover && ap->answered && ap->yes == 0)
+            printf("UNICAST ACK: CONTRADICTION - the access point answered %u probe(s) but none of its frames was reported "
+                   "ACKed\n", ap->answered);
+        else if (cover && ap->yes * 5u >= ap->txs * 4u && gh->no == gh->txs) {
+            printf("UNICAST ACK: WORKING - access point ACKed %u of %u, ghost NOT ACKed %u of %u\n", ap->yes, ap->txs, gh->no,
+                   gh->txs);
+            rc = 0;
+        } else if (cover && ap->yes == 0)
+            printf("UNICAST ACK: NOT WORKING - no frame to the access point was ACKed, and it never answered\n");
+        else
+            printf("UNICAST ACK: INCONCLUSIVE - TXS for %u/%u (AP) and %u/%u (ghost) frames, need >= 80%% each; AP ACKed "
+                   "%u, ghost NOT ACKed %u\n", ap->txs, ap->sent, gh->txs, gh->sent, ap->yes, gh->no);
+
+        /* Retries: a frame nobody ACKs should use every allowed transmission. */
+        {
+            unsigned full = gh->tries_hist[tries], n = 0;
+            for (unsigned c = 1; c < 16; c++) n += gh->tries_hist[c];
+            if (n == 0) printf("RETRIES: UNKNOWN - no TX-free COUNT reported for the ghost frames\n");
+            else if (full == n) printf("RETRIES: AS REQUESTED - every ghost frame used all %u transmission(s)\n", tries);
+            else printf("RETRIES: DIFFERENT - %u of %u ghost frames used all %u transmission(s); see the histogram\n", full, n,
+                        tries);
+        }
+    }
+
+out:
+    session_close(&s);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 3 && strcmp(argv[1], "--live-log") == 0) {
         if (out_open_live(argv[2]) != 0) {
@@ -1085,6 +1462,7 @@ int main(int argc, char **argv) {
     if (argc == 5 && strcmp(argv[1], "bringup") == 0) return bringup(atoi(argv[2]), argv[3], argv[4]);
     if (argc >= 6 && strcmp(argv[1], "sniff") == 0) return sniff(argc, argv);
     if (argc >= 5 && strcmp(argv[1], "txtest") == 0) return txtest(argc, argv);
+    if (argc >= 5 && strcmp(argv[1], "acktest") == 0) return acktest(argc, argv);
     printf("usage: radiod [--live-log <file>] <command> ...\n"
            "         --live-log <file>      also append each line (not DEBUG) to <file>, written through to disk\n"
            "       radiod dma-probe\n"
@@ -1113,6 +1491,16 @@ int main(int argc, char **argv) {
            "         --max-dbm D            cap every TX power limit at D dBm (1..23, default 14)\n"
            "         --mt76-power           no extra cap: exactly mt76's limits for PL (20 / 23 dBm)\n"
            "         --no-power-limits      do not send SET_RATE_TX_POWER (firmware defaults)\n"
-           "         --debug                print DEBUG library messages\n");
+           "         --debug                print DEBUG library messages\n"
+           "       radiod acktest <channel 1-13|36|40|44|48> <patch file> <ram file> [options]\n"
+           "         directed probe requests with ACK + TX status requested, alternating: access point / ghost\n"
+           "         (a random locally administered address nobody owns), one per second\n"
+           "         --count N              frames per arm (default 5, max 20)\n"
+           "         --tries T              transmissions allowed per frame incl. retries (1..15, default 15 = mt76)\n"
+           "         --target MAC           access point to address, aa:bb:cc:dd:ee:ff or aa-bb-cc-dd-ee-ff\n"
+           "                                (default: the beaconing BSSID with the best mean RSSI)\n"
+           "         --scan-ms N            how long to listen for beacons first (500..10000, default 2000)\n"
+           "         --rate, --pair, --spe-v70, --wcid-global, --max-dbm, --mt76-power, --no-power-limits,\n"
+           "         --debug                as for txtest\n");
     return 2;
 }
