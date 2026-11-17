@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "hal_win.h"
+#include "out.h"
 #include "../proxy/mtdrop_proxy_ioctl.h"
 
 #ifndef MEM_EXTENDED_PARAMETER_NONPAGED_LARGE
@@ -116,9 +117,12 @@ static void hal_log(void *ctx, enum mt_log_level level, const char *message) {
     if ((int)level > ((struct halwin *)ctx)->log_level) return;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    printf("%02u:%02u:%02u.%03u %s %s\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
-           names[level <= MT_LOG_DEBUG ? level : MT_LOG_DEBUG], message);
-    fflush(stdout);
+    const char *name = names[level <= MT_LOG_DEBUG ? level : MT_LOG_DEBUG];
+    /* DEBUG lines (per-frame detail) stay on the console: too many for a write-through file. */
+    if (level >= MT_LOG_DEBUG)
+        out_printf_console("%02u:%02u:%02u.%03u %s %s\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, name, message);
+    else
+        out_printf("%02u:%02u:%02u.%03u %s %s\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, name, message);
 }
 
 struct halwin *halwin_create(char *error, size_t error_len) {

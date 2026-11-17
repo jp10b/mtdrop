@@ -11,6 +11,9 @@
 #     Wi-Fi card, Wi-Fi DOWN until the card is given back.
 #   - From stage 3 on, the chip is told to use one locked 2 MiB block of RAM for DMA.
 #
+# AFTER A SYSTEM HANG (docs/FINDINGS.md F-011)
+#   - radiod's own lines are in <PrivateRoot>\radiod-live.log, written through to disk one by one.
+#
 # HOW IT IS UNDONE
 #   - radiod always runs the orderly chip shutdown; if radiod dies, the proxy replays the stop list.
 #   - The card is given back at the end of this script whatever happens (finally block).
@@ -41,6 +44,8 @@ $HardwareMatch = 'PCI\VEN_14C3&DEV_7961*'
 $HardwareId = 'PCI\VEN_14C3&DEV_7961&CC_0280'
 $CertSubject = 'CN=mtdrop local driver signing'
 $log = Join-Path $PrivateRoot 'driver-swap.log'
+# radiod --live-log: every line on disk before radiod continues; after a hang, its last line is the last step.
+$liveLog = Join-Path $PrivateRoot 'radiod-live.log'
 $giveback = Join-Path $PSScriptRoot 'wifi-giveback.ps1'
 New-Item -ItemType Directory -Force -Path $PrivateRoot | Out-Null
 function Say([string]$m) { $line = "{0:yyyy-MM-dd HH:mm:ss} [s3] {1}" -f (Get-Date), $m; Add-Content -Path $log -Value $line; Write-Output $line }
@@ -174,9 +179,10 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
     foreach ($c in $commandList) {
         Say "--- radiod $c"
         $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } elseif ($_ -eq '@alt') { $altPatch; $altRam } else { $_ } })
-        $result = & $regtool @argv 2>&1
+        # Streamed line by line, and radiod itself writes every line through to $liveLog before it goes
+        # on (F-011: when the system hung, the collected output of the running command was lost).
+        & $regtool --live-log $liveLog @argv 2>&1 | ForEach-Object { Say "  radiod: $_" }
         $code = $LASTEXITCODE
-        $result | ForEach-Object { Say "  radiod: $_" }
         Say "radiod $c -> exit code: $code"
         if ($code -ne 0) { $exit = 1; if ($KeepGoing) { Say "'$c' failed; continuing (-KeepGoing)" } else { Say "stopping: '$c' failed"; break } }
         Start-Sleep -Seconds 1

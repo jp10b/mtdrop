@@ -11,7 +11,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_subdirectory(../mt792x mt792x)
 
-add_executable(radiod main.c hal_win.c)
+add_executable(radiod main.c hal_win.c out.c)
 target_link_libraries(radiod PRIVATE mt792x cfgmgr32 advapi32)
 target_compile_definitions(radiod PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(radiod PRIVATE /W4 /WX /utf-8)

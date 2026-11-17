@@ -16,7 +16,12 @@
  *                                              --control adds a control arm (probes from a random address
  *                                              that nobody acknowledges) to judge the ACK behaviour
  *
- * Privacy: MAC addresses are printed as OUI:xx:xx:xx only; SSIDs only with --show-ssid.
+ *   radiod --live-log <file> <command> ...      also append every line (except DEBUG messages) to <file>,
+ *                                              written through to disk line by line, so the last line
+ *                                              survives a system hang (docs/FINDINGS.md F-011)
+ *
+ * Privacy: MAC addresses are printed as OUI:xx:xx:xx only; SSIDs only with --show-ssid (and never
+ * into the live log).
  */
 #define _CRT_RAND_S /* rand_s (txtest --control): must come before <stdlib.h> */
 #include <stdio.h>
@@ -25,6 +30,10 @@
 
 #include "hal_win.h"
 #include "mt792x/mt792x.h"
+#include "out.h"
+
+/* Every line radiod prints also goes to the live log (out.h). */
+#define printf out_printf
 
 static int dma_probe(void) {
     char error[256];
@@ -138,21 +147,13 @@ static int session_open(struct session *s, const char *patch_path, const char *r
     /* 4. The stop list must be armed before the chip gets any chance to do DMA. */
     {
         struct mt792x_stop_op ops[MT792X_STOP_OPS_COUNT];
-        struct halwin_close_op close_ops[MT792X_STOP_OPS_COUNT + 1];
+        struct halwin_close_op close_ops[MT792X_STOP_OPS_COUNT];
         size_t n = mt792x_stop_ops(ops, MT792X_STOP_OPS_COUNT), m = 0;
-        for (size_t i = 0; i < n; i++) {
-            /* mt76 holds the WFSYS reset for 50 ms; the proxy can wait, so put the delay before the
-             * last operation (the release of the reset asserted by the one before it). */
-            if (i + 1 == n) {
-                close_ops[m].offset = 0;
-                close_ops[m].value = 50;
-                close_ops[m].kind = 4;
-                m++;
-            }
+        for (size_t i = 0; i < n; i++, m++) {
+            /* same numbering: 1 write, 2 set, 3 clear, 4 wait (the library includes mt76's 50 ms WFSYS hold) */
             close_ops[m].offset = ops[i].bar_offset;
             close_ops[m].value = ops[i].value;
-            close_ops[m].kind = ops[i].kind; /* same numbering: 1 write, 2 set, 3 clear */
-            m++;
+            close_ops[m].kind = ops[i].kind;
         }
         if (halwin_set_close_ops(s->h, close_ops, (uint32_t)m) != 0) {
             printf("RESULT: FAIL - the proxy did not accept the stop list; not starting\n");
@@ -172,7 +173,17 @@ static int session_open(struct session *s, const char *patch_path, const char *r
 
 /* Always: orderly shutdown (a no-op if nothing was touched), then close the proxy (which replays the
  * stop list) and only then free the DMA block. */
+static void print_irq_guard(void) {
+    const struct mt792x_irq_counters *c = mt792x_irq_counters(&g_dev);
+    if (!c || !c->checks) return;
+    printf("interrupt guard: %u checks; HOST_INT_ENA found on %u time(s) (last 0x%08x), PCIE_MAC_INT_ENABLE found on "
+           "%u time(s) (last 0x%08x); HOST_INT_STA seen 0x%08x, MCU_CMD seen 0x%08x, %u status change(s)\n",
+           c->checks, c->host_int_ena_fixed, c->host_int_ena_last, c->pcie_int_fixed, c->pcie_int_last,
+           c->host_int_sta_seen, c->mcu_cmd_seen, c->status_changes);
+}
+
 static void session_close(struct session *s) {
+    print_irq_guard();
     mt792x_shutdown(&g_dev);
     if (g_dev.shutdown_error) printf("shutdown reported: %s\n", mt792x_strerror(g_dev.shutdown_error));
     halwin_destroy(s->h);
@@ -1057,12 +1068,26 @@ out:
 }
 
 int main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "--live-log") == 0) {
+        if (out_open_live(argv[2]) != 0) {
+            printf("RESULT: FAIL - cannot open the live log %s\n", argv[2]);
+            return 2;
+        }
+        printf("=== radiod live log:");
+        for (int i = 3; i < argc; i++) printf(" %s", argv[i]);
+        printf("\n");
+        argv[2] = argv[0];
+        argv += 2;
+        argc -= 2;
+    }
     printf("radiod (mt792x library %s)\n", mt792x_version());
     if (argc >= 2 && strcmp(argv[1], "dma-probe") == 0) return dma_probe();
     if (argc == 5 && strcmp(argv[1], "bringup") == 0) return bringup(atoi(argv[2]), argv[3], argv[4]);
     if (argc >= 6 && strcmp(argv[1], "sniff") == 0) return sniff(argc, argv);
     if (argc >= 5 && strcmp(argv[1], "txtest") == 0) return txtest(argc, argv);
-    printf("usage: radiod dma-probe\n"
+    printf("usage: radiod [--live-log <file>] <command> ...\n"
+           "         --live-log <file>      also append each line (not DEBUG) to <file>, written through to disk\n"
+           "       radiod dma-probe\n"
            "       radiod bringup <stage 1-6> <patch file> <ram file>\n"
            "         stages: 1 ownership, 2 reset, 3 rings, 4 MCU, 5 firmware, 6 post-boot\n"
            "       radiod sniff <channel> <seconds, max 120> <patch file> <ram file> [options]\n"

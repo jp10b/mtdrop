@@ -3,6 +3,7 @@
 User-mode host of the `mt792x` chip library on Windows (ADR-0002, option A).
 
 - `hal_win.c`: HAL backend. Registers go through the UMDF proxy (`driver/proxy`); DMA memory is one locked 2 MiB physical block below 4 GiB.
+- `out.c`: console output, mirrored with `--live-log <file>` (first argument, before the command) to a file written through to disk line by line (DEBUG messages excluded), so the last line survives a system hang (`docs/FINDINGS.md` F-011). Every command also prints an `interrupt guard:` summary (what the library found in the interrupt enable/status registers).
 - `main.c`: bring-up commands.
   - `radiod dma-probe` allocates, checks and frees the DMA block without touching any device.
   - `radiod bringup <stage 1-6> <patch file> <ram file>` runs the staged bring-up of `docs/MT7921-BRINGUP.md` (1 ownership, 2 reset, 3 rings, 4 MCU, 5 firmware, 6 post-boot).
