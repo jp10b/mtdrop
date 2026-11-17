@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Origin: raph559/winawdl awdl/win/host_if.c @ 0db7031 (GPL-3.0-or-later). Changed for mtdrop: tunnel type and adapter GUID. */
 #include "host_if.h"
 
 #include <winsock2.h>
@@ -13,7 +14,7 @@
 #include <string.h>
 
 #define ADAPTER_NAME L"" HOST_IF_NAME
-#define TUNNEL_TYPE L"winawdl"
+#define TUNNEL_TYPE L"mtdrop"
 #define RING_BYTES 0x400000
 /* OWL's limit: leaves room for the AWDL and 802.11 headers in one frame. */
 #define HOST_MTU 1450
@@ -21,9 +22,10 @@
 #define STACK_WAIT_MS 3000
 #define STACK_POLL_MS 50
 
-/* Fixed, so Windows sees the same network on every run, not a new one. */
+/* Fixed, so Windows sees the same network on every run, not a new one. mtdrop's own GUID (winawdl's differs),
+ * so both projects can be installed side by side. */
 static const GUID adapter_guid = {
-	0x2be941ea, 0xa750, 0x450a, {0xba, 0x41, 0xfd, 0xd8, 0xdf, 0x08, 0x70, 0xb6}};
+	0x3ddcc3cd, 0x1404, 0x4874, {0xa1, 0xfd, 0xd7, 0x43, 0x15, 0x95, 0x82, 0xd0}};
 
 /* The part of Wintun 0.14's wintun.h used here. The DLL is loaded at run time
  * so the daemon still starts, without a host interface, when it is absent. */

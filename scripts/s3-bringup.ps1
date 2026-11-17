@@ -35,6 +35,10 @@ param(
     # radioctl arguments (ADR-0003 M5.1): radioctl is started in the background before the radiod commands
     # and connects to `radiod serve` when it is up. ':' may stand for a space, e.g. --seconds:40:--tx-test
     [string]$Client = '',
+    # awdld arguments (ADR-0003 M5.4): awdld (with wintun.dll beside it) is started in the background before the
+    # radiod commands, connects to `radiod serve`, and ends when the server does. The first peer it reports
+    # reachable is pinged over awdl0. ':' may stand for a space, e.g. -c:44:-S:intersect:-v
+    [string]$Awdl = '',
     [switch]$KeepGoing,
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
     [string]$ToolsRoot = 'D:\mtdrop-tools',
@@ -100,6 +104,12 @@ try {
     foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff|txtest|acktest|serve) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
     $Client = ($Client -replace ':', ' ').Trim()
     $clientTool = Join-Path $ToolsRoot 'build\radiod\radioctl.exe'
+    $Awdl = ($Awdl -replace ':', ' ').Trim()
+    $awdlTool = Join-Path $ToolsRoot 'build\awdld\awdld.exe'
+    if ($Awdl) {
+        if ($Awdl -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing awdld arguments '$Awdl'" }
+        foreach ($need in $awdlTool, (Join-Path (Split-Path $awdlTool) 'wintun.dll')) { if (-not (Test-Path $need)) { throw "missing $need" } }
+    }
     if ($Client) {
         if ($Client -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing radioctl arguments '$Client'" }
         if (-not (Test-Path $clientTool)) { throw "missing $clientTool" }
@@ -198,6 +208,31 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
         $null = $clientProc.Handle   # keeps the process handle, without which ExitCode stays empty
         Say "radioctl $Client started (pid $($clientProc.Id)); it connects once radiod serve is up"
     }
+    $awdlProc = $null
+    $pingJob = $null
+    $awdlLog = Join-Path $PrivateRoot 'awdld.log'
+    if ($Awdl) {
+        Remove-Item $awdlLog, "$awdlLog.err", (Join-Path $PrivateRoot 'awdl-ping.log') -ErrorAction SilentlyContinue
+        $awdlProc = Start-Process -FilePath $awdlTool -ArgumentList ($Awdl -split ' ' | Where-Object { $_ }) `
+            -WorkingDirectory (Split-Path $awdlTool) -RedirectStandardOutput $awdlLog -RedirectStandardError "$awdlLog.err" -NoNewWindow -PassThru
+        $null = $awdlProc.Handle
+        Say "awdld $Awdl started (pid $($awdlProc.Id)); it connects once radiod serve is up"
+        # Pings the first peer awdld reports reachable ("peer ... is reachable at fe80::...%N"), 20 times.
+        $pingJob = Start-Job -ArgumentList $awdlLog, "$awdlLog.err", (Join-Path $PrivateRoot 'awdl-ping.log') -ScriptBlock {
+            param($log, $err, $out)
+            $deadline = (Get-Date).AddSeconds(600)
+            while ((Get-Date) -lt $deadline) {
+                $hit = Get-Content $log, $err -ErrorAction SilentlyContinue | Select-String 'reachable at (fe80::[0-9a-f:]+%\d+)' | Select-Object -First 1
+                if ($hit) {
+                    $addr = $hit.Matches[0].Groups[1].Value
+                    "pinging $addr" | Out-File $out -Encoding utf8
+                    & ping.exe -6 -n 20 -w 1000 $addr 2>&1 | Out-File $out -Append -Encoding utf8
+                    return
+                }
+                Start-Sleep -Milliseconds 500
+            }
+        }
+    }
     foreach ($c in $commandList) {
         Say "--- radiod $c"
         $argv = @($c -split ' ' | Where-Object { $_ } | ForEach-Object { if ($_ -eq '@fw') { $patch; $ram } elseif ($_ -eq '@alt') { $altPatch; $altRam } else { $_ } })
@@ -208,6 +243,18 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
         Say "radiod $c -> exit code: $code"
         if ($code -ne 0) { $exit = 1; if ($KeepGoing) { Say "'$c' failed; continuing (-KeepGoing)" } else { Say "stopping: '$c' failed"; break } }
         Start-Sleep -Seconds 1
+    }
+    if ($awdlProc) {
+        if (-not $awdlProc.WaitForExit(15000)) { Stop-Process -Id $awdlProc.Id -Force -ErrorAction SilentlyContinue; Say 'awdld did not end within 15 s after radiod; stopped' }
+        foreach ($f in $awdlLog, "$awdlLog.err") { if (Test-Path $f) { Get-Content $f | ForEach-Object { Say "  awdld: $_" } } }
+        $awdlProc.Refresh()
+        Say "awdld -> exit code: $($awdlProc.ExitCode)"
+        if ($pingJob) {
+            $null = Wait-Job $pingJob -Timeout 30
+            Stop-Job $pingJob -ErrorAction SilentlyContinue; Remove-Job $pingJob -Force -ErrorAction SilentlyContinue
+            $pingLog = Join-Path $PrivateRoot 'awdl-ping.log'
+            if (Test-Path $pingLog) { Get-Content $pingLog | ForEach-Object { Say "  ping: $_" } } else { Say '  ping: no peer was reported reachable' }
+        }
     }
     if ($clientProc) {
         if (-not $clientProc.WaitForExit(30000)) { Stop-Process -Id $clientProc.Id -Force -ErrorAction SilentlyContinue; Say 'radioctl did not finish within 30 s after radiod; stopped' }

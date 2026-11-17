@@ -1019,3 +1019,29 @@ Both access points answered both arms. Interrupt guard as F-013; give-back norma
 ### Not covered offline
 
 Wintun (`awdl0`) – needs the signed `wintun.dll` and elevation; OWL against a real iPhone (sync, peer validity, data frames). Both are M5.4.
+
+---
+
+## F-018 – M5.4: awdld + radiod serve with the iPhone (sync, peer, ping over awdl0)
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Milestone:** M5.4 (ADR-0003; M5 acceptance criterion of CLAUDE.md §7)
+- **Setup:** `radiod serve 44 @alt --max-seconds 120 --mac random`; `awdld -c 44 -S intersect -v` with the signed `wintun.dll` 0.14.1 (zip SHA-256 `07c25618…ef51`, Authenticode valid, WireGuard LLC) beside it; the Wintun driver 0.14.0.0 is already installed (by Tailscale), awdld creates its own adapter `awdl0` (tunnel type `mtdrop`, own GUID) and removes it on exit. iPhone 15 Pro, iOS 26.5.2, AirDrop "Everyone for 10 Minutes", share sheet open for the whole session. The session script pings the first peer awdld reports reachable (`ping -6 -n 20`).
+
+### Why `-S intersect` and not the fork's default `verbatim`
+
+`verbatim` copies the sync master's whole sequence, so OWL would switch the radio every ~16 ms across 6, 44 and 149 (we may not transmit on 149: TX allow-list) at ~10 ms per switch. `intersect` advertises only the iPhone's slots on our channel 44 and leaves the others empty, so the radio never leaves 44 (`awdl_switch_channel` skips empty slots) and the sequence never claims a slot we cannot serve (ADR-0002 §5 / ADR-0003 decision 6: fixed 44 first). The jedbillyb rig measured intersect working with iOS 26 behind a P2P-GO (~73 kB/s, their FINDINGS §47).
+
+### Predictions (written before running)
+
+| quantity | prediction |
+|---|---|
+| connect | awdld takes the random address from HELLO, Wintun adapter `awdl0` created, BSSID filter set |
+| peer | the iPhone appears as a peer within seconds of opening the share sheet and becomes **valid** (winawdl's MIF trailing-zero fix is in `frame_fixup.c`) |
+| sync | a sync master is elected (the iPhone or us) and logged |
+| sequence | `intersect` keeps >= 1 of 16 slots on 44 (winawdl: an idle iPhone lists 44 for one slot), no "NO OVERLAP" for the whole session |
+| radio | `rx dropped 0`, `refused 0`, no channel switches after the first |
+| ping | **uncertain** (TODO-VERIFY whether iOS answers ICMPv6 over AWDL at all): ASSUMPTION some replies, with loss (jedbillyb: 60 % loss with verbatim on Linux) |
+| system | no hang; vendor driver and Wi-Fi back; `awdl0` gone afterwards |
+
+What would falsify it: the iPhone never becomes a valid peer (frame format or MIF parsing), "NO OVERLAP" throughout (iPhone never lists 44 → hopping needed), radio TX refused or dropped frames, `awdl0` left behind.

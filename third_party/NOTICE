@@ -15,10 +15,10 @@ awdld/owl/src/*, awdld/owl/daemon/{core.c,core.h,io.h,netutils.h}, awdld/owl/tes
                                    <-  jedbillyb/owl @ 57b8678 (fork of seemoo-lab/owl), src/ and daemon/, GPL-3.0-or-later (file headers), (c) 2018 The Open Wireless Link Project, Milan Stute, and the fork's author; unchanged
 awdld/radiotap/*                   <-  radiotap/radiotap-library @ 94984dd (jedbillyb/owl submodule), radiotap.c, radiotap.h, radiotap_iter.h, platform.h, COPYING, ISC (c) 2007-2009 Andy Green, Johannes Berg; unchanged
 awdld/compat/*                     <-  raph559/winawdl @ 0db7031, awdl/compat/, GPL-3.0-or-later; owl_win.h adds <string.h>, ether.c prints addresses as glibc does, otherwise unchanged
-awdld/win/{ev_win.c,host_if.c,host_if.h,host_frame.c,host_frame.h,frame_fixup.c,frame_fixup.h,service_bridge.c,service_bridge.h,tcp_merge.c,tcp_merge.h,redact.c,redact.h}
+awdld/win/{ev_win.c,host_if.h,host_frame.c,host_frame.h,frame_fixup.c,frame_fixup.h,service_bridge.c,service_bridge.h,tcp_merge.c,tcp_merge.h,redact.c,redact.h}
                                    <-  raph559/winawdl @ 0db7031, awdl/win/, GPL-3.0-or-later; unchanged
-awdld/win/{io_win.c,netutils_win.c,win_internal.h,main.c}
-                                   <-  raph559/winawdl @ 0db7031, awdl/win/, GPL-3.0-or-later; changed for our radio link (address from the radio server, connect timeout, set_channel_fd/drain, -S/-W/-w/-f options, radio statistics)
+awdld/win/{io_win.c,netutils_win.c,win_internal.h,main.c,host_if.c}
+                                   <-  raph559/winawdl @ 0db7031, awdl/win/, GPL-3.0-or-later; changed for our radio link (address from the radio server, connect timeout, set_channel_fd/drain, -S/-W/-w/-f options, radio statistics; host_if.c: tunnel type and adapter GUID)
 awdld/tests/*.c                    <-  raph559/winawdl @ 0db7031, awdl/tests/, GPL-3.0-or-later; redact_test.c: one case added for the status line
 awdld/CMakeLists.txt               <-  raph559/winawdl @ 0db7031, awdl/CMakeLists.txt, GPL-3.0-or-later; paths, radio link, tests changed
 awdld/win/radio_client.{c,h}       own code; function names follow raph559/winawdl awdl/win/radio_client.h @ 0db7031 (GPL-3.0-or-later)
