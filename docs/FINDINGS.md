@@ -800,3 +800,51 @@ Step B passed as predicted: raw TX with both interrupt gates closed works as in 
 ### Conclusion
 
 Step C passed as predicted. `--pair` alone, with both interrupt gates closed, neither disturbs TX nor hangs the system. Next: step D, the exact session that hung in F-011 (`--count 15 --control`, then `--count 15 --control --pair`).
+
+---
+
+## F-013 – Re-entry steps B, C, D: transmission and the session that hung, now with interrupts gated off – no hang
+
+- **Date:** 2026-11-17 (12:32, 12:48, 12:51; three sessions, each with its own swap and give-back)
+- **Milestone:** M4 (F-011 re-entry ladder, steps B–D)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). Channel 1, OFDM 6 Mbit/s, power capped at 14 dBm. No iPhone involved.
+
+### Predictions (F-011, written before running)
+
+B and C: as F-010 (TX PASS). D (the exact session that hung on 2026-11-11): no hang; `HOST_INT_STA` or `MCU_CMD` may show a cause bit without any effect on the system.
+
+### Raw result (FACT)
+
+| step | command | probes sent / TX-free returned | responses to our MAC | TX | ACK verdict |
+|---|---|---|---|---|---|
+| B | `txtest 1 @alt --count 5` | 5 / 5, lost 0 | 31 (8 transmitters) | PASS | INCONCLUSIVE (no control arm) |
+| C | `txtest 1 @alt --count 5 --pair` | 5 / 5, lost 0 | 25 (8 transmitters) | PASS | INCONCLUSIVE (no control arm) |
+| D1 | `txtest 1 @alt --count 15 --control` | 30 / 30, lost 0 | 88 | PASS | **WORKING** |
+| D2 | `txtest 1 @alt --count 15 --control --pair` | 30 / 30, lost 0 | 96 | PASS | **WORKING** |
+
+ACK control arms (all transmitters; the "answered in both arms" subset differs by at most one response):
+
+| | D1 own MAC | D1 control | D2 own MAC | D2 control |
+|---|---|---|---|---|
+| responses | 88 | 158 | 96 | 212 |
+| (transmitter, SN) pairs | 73 | 63 | 83 | 85 |
+| copies per pair 1 / 2 / 3 / 4 / 5+ | 62 / 8 / 2 / 1 / 0 | 11 / 21 / 19 / 12 / 0 | 74 / 7 / 0 / 2 / 0 | 19 / 28 / 16 / 21 / 1 |
+| mean copies per pair | **1.21** | **2.51** | **1.16** | **2.49** |
+| responses with the Retry bit | 43 % | 75 % | 42 % | 76 % |
+| transmitters answering both arms | 9 | | 10 | |
+
+Interrupt guard, identical pattern in all four runs: `HOST_INT_ENA` = `0x20000000` found once (S23, firmware ready, forced to 0) and never again (22 checks in B and C, 119 / 121 in D1 / D2); `PCIE_MAC_INT_ENABLE` never found non-zero; `MCU_CMD` always 0; `HOST_INT_STA` OR of all reads `0x0c400015` (bit 4 appears once transmission starts; step A without TX showed `0x0c400005`).
+
+Every run: exit code 0, orderly shutdown (DMA stopped, WFSYS reset, `PCIE_MAC_INT_ENABLE` restored to 0xff as found), vendor driver back (`S3 RESULT: PASS`). After B and C the give-back reported "not connected yet"; after D, "Wi-Fi connected". The only System-log warnings/errors since 12:00 are NDIS 10317 "Network Interface deleted while PNP Device still exists" at each swap – the same informational event seen at every swap since 2026-11-11. **No hang**, no unexpected shutdown.
+
+### Conclusion
+
+1. **TX works with interrupts gated off.** Both vif setups radiate and get answers, as in F-010. All tokens came back through TX-free on a polled ring – the interrupt gate is not needed for TX completion.
+2. **ACK: confirmed for both vif setups.** Own MAC needs about half the copies of the control MAC (48 % single, 46 % pair), reproducing F-011 run 1 (1.32 vs 2.58) with 5× more data. This answers the `--pair` arm that never ran on 11.11. The firmware ACKs frames addressed to our MAC in both configurations; for AWDL this means the single-vif setup is sufficient (ASSUMPTION for AWDL data frames from an iPhone until seen).
+3. **The hang did not repeat.** The exact session that hung (D) ran cleanly with both gates closed. This is consistent with hypothesis R1 (an unacknowledged interrupt) but **does not prove it**: the 11.11 hang happened once, so one clean run is weak evidence. The hypothesis was not falsified (the falsifier was a hang with the guard working). `HOST_INT_STA` does carry pending causes during TX that nobody services – on 11.11, with the gates open, those could have reached the CPU.
+4. Decision: keep `MT_PCIE_MAC_INT_ENABLE = 0` as the default while the user-mode library owns the chip (polling only). Option `pcie_mac_int` stays for experiments; do not use it without a reason and a full power-off plan.
+
+### Next
+
+- Unicast TX with ACK request and a TX status record (TXS), F-010 follow-up: is a TXS delivered on a polled ring, and does it report the ACK from an access point? (H14/H15 of `docs/MT7921-BRINGUP.md`.)
+- Then M5: OWL core on Windows over radiod.
