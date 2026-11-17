@@ -675,6 +675,20 @@ int tx_cli_parse(struct tx_cli *c, int argc, char **argv, int *i) {
             printf("RESULT: FAIL - --rate must be one of 1 2 5.5 11 6 9 12 18 24 36 48 54\n");
             return -1;
         }
+    } else if (strcmp(a, "--mac") == 0 && *i + 1 < argc) {
+        static const uint8_t zero[6] = {0, 0, 0, 0, 0, 0};
+        const char *v = argv[++*i];
+        if (strcmp(v, "chip") == 0) c->mac_random = 0;
+        else if (strcmp(v, "random") == 0) {
+            if (random_control_mac(c->mac, zero) != 0) {
+                printf("RESULT: FAIL - no random address (rand_s failed)\n");
+                return -1;
+            }
+            c->mac_random = 1;
+        } else {
+            printf("RESULT: FAIL - --mac must be chip or random\n");
+            return -1;
+        }
     } else if (strcmp(a, "--debug") == 0) c->debug = 1;
     else if (strcmp(a, "--pair") == 0) c->extra.vif_mode = MT792X_VIF_LINUX_PAIR;
     else if (strcmp(a, "--spe-v70") == 0) c->extra.tx_spe_mode = MT792X_SPE_LINUX_7_0;
@@ -920,7 +934,7 @@ static int txtest(int argc, char **argv) {
         return 2;
     }
     rate = cli.rate;
-    st = tx_start(&s, argv[3], argv[4], chl, &cli, (uint8_t)control, NULL);
+    st = tx_start(&s, argv[3], argv[4], chl, &cli, (uint8_t)control, cli.mac_random ? cli.mac : NULL);
     if (st > 0) return 2;
     if (st < 0) goto out;
     ch = (uint8_t)chl;
@@ -1270,7 +1284,7 @@ static int acktest(int argc, char **argv) {
         printf("RESULT: FAIL - --scan-ms must be 500..10000\n");
         return 2;
     }
-    st = tx_start(&s, argv[3], argv[4], chl, &cli, 0, NULL);
+    st = tx_start(&s, argv[3], argv[4], chl, &cli, 0, cli.mac_random ? cli.mac : NULL);
     if (st > 0) return 2;
     if (st < 0) goto out;
     ch = (uint8_t)chl;
@@ -1486,6 +1500,8 @@ int main(int argc, char **argv) {
            "         --spe-v70              TXD7 SPE_IDX as Linux 7.0 (0)\n"
            "         --wcid-global          transmit with wcid 0 instead of the vif's\n"
            "         --max-dbm D            cap every TX power limit at D dBm (1..23, default 14)\n"
+           "         --mac chip|random      vif address: the chip's (default) or a random locally administered\n"
+           "                                one for this run (also for acktest and serve)\n"
            "         --mt76-power           no extra cap: exactly mt76's limits for PL (20 / 23 dBm)\n"
            "         --no-power-limits      do not send SET_RATE_TX_POWER (firmware defaults)\n"
            "         --debug                print DEBUG library messages\n"

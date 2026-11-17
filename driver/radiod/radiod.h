@@ -27,6 +27,8 @@ void session_close(struct session *s);
 struct tx_cli {
     struct mt792x_options extra; /* only the TX / vif fields are used */
     uint8_t rate;
+    int mac_random;              /* --mac random: a locally administered address for this run */
+    uint8_t mac[6];
     int debug;
 };
 

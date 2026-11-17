@@ -584,8 +584,7 @@ int serve(int argc, char **argv) {
     struct session s;
     struct tx_cli cli;
     unsigned max_seconds = 120, wait_seconds = 60;
-    int random_mac = 0, rc = 1, st;
-    uint8_t mac[6];
+    int rc = 1, st;
     long chl = strtol(argv[2], NULL, 10);
 
     tx_cli_init(&cli);
@@ -600,15 +599,7 @@ int serve(int argc, char **argv) {
         if (used) continue;
         if (strcmp(argv[i], "--max-seconds") == 0 && i + 1 < argc) max_seconds = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--wait-client") == 0 && i + 1 < argc) wait_seconds = (unsigned)atoi(argv[++i]);
-        else if (strcmp(argv[i], "--mac") == 0 && i + 1 < argc) {
-            const char *v = argv[++i];
-            if (strcmp(v, "random") == 0) random_mac = 1;
-            else if (strcmp(v, "chip") == 0) random_mac = 0;
-            else {
-                printf("RESULT: FAIL - --mac must be chip or random\n");
-                return 2;
-            }
-        } else if (strcmp(argv[i], "--no-filter") == 0) sv.filter_on = 0;
+        else if (strcmp(argv[i], "--no-filter") == 0) sv.filter_on = 0;
         else if (strcmp(argv[i], "--loopback") == 0) loopback = 1;
         else {
             printf("RESULT: FAIL - unknown option %s\n", argv[i]);
@@ -621,10 +612,6 @@ int serve(int argc, char **argv) {
     }
     if (wait_seconds < 1 || wait_seconds > 300) {
         printf("RESULT: FAIL - --wait-client must be 1..300\n");
-        return 2;
-    }
-    if (random_mac && random_control_mac(mac, (const uint8_t *)"\0\0\0\0\0\0") != 0) {
-        printf("RESULT: FAIL - no random address (rand_s failed)\n");
         return 2;
     }
     if (outq_init(&sv.q) != 0) {
@@ -651,10 +638,10 @@ int serve(int argc, char **argv) {
         }
         lb_channel = (uint8_t)chl;
         lb_band = band_of(lb_channel);
-        if (random_mac) memcpy(lb_own, mac, 6);
+        if (cli.mac_random) memcpy(lb_own, cli.mac, 6);
         printf("serve: LOOPBACK - synthetic radio, no hardware access\n");
     } else {
-        st = tx_start(&s, argv[3], argv[4], chl, &cli, 0, random_mac ? mac : NULL);
+        st = tx_start(&s, argv[3], argv[4], chl, &cli, 0, cli.mac_random ? cli.mac : NULL);
         if (st > 0) {
             rc = 2;
             goto done_pipe;
@@ -671,7 +658,7 @@ int serve(int argc, char **argv) {
         printf("serve: channel %u, address ", r_channel());
         print_masked_addr(sv.own);
         printf(" (%s), BSSID filter %s, TX power %s; waiting up to %u s for a client on %s\n",
-               random_mac ? "random" : loopback ? "fixed" : "chip", sv.filter_on ? "AWDL" : "off", tx_power_desc(&cli),
+               cli.mac_random ? "random" : loopback ? "fixed" : "chip", sv.filter_on ? "AWDL" : "off", tx_power_desc(&cli),
                wait_seconds, RL_PIPE_NAME);
         c = wait_client(sv.pipe, wait_seconds * 1000u);
         if (c <= 0) {

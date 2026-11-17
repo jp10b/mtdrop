@@ -947,3 +947,28 @@ What would falsify it: AWDL frames seen by `radiod sniff` but not through the pi
 ### Conclusion
 
 All predictions held. The radio server delivers the iPhone's AWDL traffic with the correct per-frame channel and radiotap, keeps up easily (~9 AWDL frames/s, no queue overflow), and TX statuses survive the pipe unchanged. M5.1 gate passed. Next: M5.2 (does the firmware ACK a random locally administered address set as the vif address?) and M5.3 (build `awdld` with MinGW, offline against `radiod serve --loopback`).
+
+---
+
+## F-016 – M5.2: does the firmware ACK a random locally administered vif address?
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Milestone:** M5.2 (ADR-0003 decision 7)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). Channel 1, 14 dBm cap. No iPhone needed.
+
+### Why
+
+Apple devices use a fresh random locally administered address for AWDL, and so should we (privacy: the chip's burnt-in MAC would be broadcast in every AWDL frame). The firmware must then ACK unicast frames to that address, or every AWDL data frame from the iPhone is retried to death. F-013/F-014 proved ACK for the chip's own MAC only.
+
+### Method
+
+New shared option `--mac random` (`txtest`, `acktest`, `serve`): a random locally administered unicast address is given to the sniffer start (`cfg.mac` → `DEV_INFO` of the vif; the library's TX address check uses it too). One session, `txtest 1 @alt --count 15 --control --mac random`, then the same with `--pair`: probe requests alternate between our (random) address and a second random control address nobody acknowledges; the access points' retransmission of their probe responses tells whether our address was ACKed (F-011 method).
+
+### Predictions (written before running)
+
+| run | prediction |
+|---|---|
+| single vif, random address | `TX: PASS`; `ACK: WORKING` – mean copies per pair about 1.2 (own) vs about 2.5 (control), ratio <= 60 % (as F-013 with the chip MAC) |
+| pair, random address | the same |
+
+What would falsify it: `ACK: NOT WORKING` or own ≈ control (the firmware ACKs only its efuse address, or needs more than `DEV_INFO` – e.g. a `STA_REC`/`BSS_INFO` address – to learn a new one). Then AWDL falls back to the chip MAC (ADR-0003 decision 7) and the README states the privacy cost.
