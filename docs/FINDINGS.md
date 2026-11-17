@@ -972,3 +972,14 @@ New shared option `--mac random` (`txtest`, `acktest`, `serve`): a random locall
 | pair, random address | the same |
 
 What would falsify it: `ACK: NOT WORKING` or own ≈ control (the firmware ACKs only its efuse address, or needs more than `DEV_INFO` – e.g. a `STA_REC`/`BSS_INFO` address – to learn a new one). Then AWDL falls back to the chip MAC (ADR-0003 decision 7) and the README states the privacy cost.
+
+### Run 1 (FACT, 2026-11-17 18:00, channel 1) – inconclusive: no access point on the channel
+
+- Random address `fe:ae:c7:…` accepted: `DEV_INFO_UPDATE` / `BSS_INFO_UPDATE` result 0, sniffer running. 30/30 probe requests completed (TX-free status 0, 1 transmission; probe 6 completed after its 300 ms window).
+- **0 probe responses in both arms** – including the control arm, which got 158 in F-013. The second command (`--pair`) did not run (the script stops at the first failure).
+- The laptop had moved: after the give-back Windows connected on **channel 2**, and the scan listed only 4 BSSIDs (2 on channel 2, 1 on 11, 1 on 36) – **none on channel 1**. A missing answer from nobody says nothing about our TX or ACK.
+- Change: `txtest` now prints how many beacons (and BSSIDs) it heard on the channel, so "no access point" and "TX broken" can be told apart.
+
+### Prediction for the repeat (channel 2, where 2 BSSIDs beacon; both commands, `-KeepGoing`)
+
+As above: `ACK: WORKING` for the random address in single and pair mode. With only 2 access points the verdict may be `INCONCLUSIVE - too little data` (< 5 pairs per arm from common transmitters); that would call for a run with `--count 20` or a busier place, not a conclusion.

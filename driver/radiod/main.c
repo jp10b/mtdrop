@@ -629,6 +629,9 @@ struct txt_state {
     struct txt_resp r[TXT_MAX_RESP];
     unsigned n;
     unsigned overflow;
+    unsigned beacons;                 /* beacons with good FCS on the channel (F-016: is any AP there at all?) */
+    unsigned n_bssid;
+    uint8_t bssid[64][6];
     uint32_t cookie[TXT_MAX_FRAMES];
     int done_seen[TXT_MAX_FRAMES];
     struct mt792x_tx_done done[TXT_MAX_FRAMES];
@@ -816,6 +819,14 @@ static int txt_listen(struct mt_hal *hal, struct txt_state *t, const uint8_t *ow
             continue;
         }
         if ((fr.flags & MT792X_RXF_HDR_TRANS) || !fr.fcs_ok || fr.len < 24 || fr.channel != ch) continue;
+        if (fr.data[0] == 0x80) {
+            unsigned k;
+            t->beacons++;
+            for (k = 0; k < t->n_bssid; k++)
+                if (memcmp(t->bssid[k], fr.data + 10, 6) == 0) break;
+            if (k == t->n_bssid && k < 64u) memcpy(t->bssid[t->n_bssid++], fr.data + 10, 6);
+            continue;
+        }
         if (fr.data[0] != 0x50) continue; /* not a probe response */
         uint8_t arm;
         if (memcmp(fr.data + 4, own, 6) == 0) arm = 0;
@@ -1066,6 +1077,8 @@ static int txtest(int argc, char **argv) {
         } else {
             printf("TX: FAIL - no probe response addressed to our MAC (is an access point on channel %u?)\n", ch);
         }
+        printf("channel %u: %u beacon(s) with good FCS from %u BSSID(s) heard during the run%s\n", ch, t.beacons, t.n_bssid,
+               t.beacons ? "" : " - no access point here: a missing answer says nothing about TX");
         if (control) {
             /* Control arm comparison (see the comment above): only transmitters that answered in both arms,
              * so that distance, load and retry policy are the same for both. The verdict needs >= 5
