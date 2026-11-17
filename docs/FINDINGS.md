@@ -775,3 +775,28 @@ With Wi-Fi connected before the session (as on 11.11): S2 at the first attempt, 
 ### Conclusion
 
 Step B passed as predicted: raw TX with both interrupt gates closed works as in F-010 (more responses than F-010 because more access points answered), and the system stayed responsive. The pending `HOST_INT_STA` bit 4 after TX reached nobody (TODO-VERIFY its meaning in mt76 headers; ASSUMPTION: TX-done/TX-free cause). Next: step C (`txtest 1 @alt --count 5 --pair`).
+
+---
+
+## F-014 – Re-entry step C: raw TX with the Linux vif pair works with interrupts gated off
+
+- **Date:** 2026-11-17 (12:48)
+- **Milestone:** M4 (F-011 re-entry ladder, step C)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). Channel 1, OFDM 6 Mbit/s, power capped at 14 dBm. No iPhone involved. Wi-Fi connected before the session.
+
+### Prediction (F-011, step C)
+
+`txtest 1 @alt --count 5 --pair` behaves as in F-010 (TX PASS), no hang.
+
+### Raw result (FACT)
+
+- S2 drv-own at the first attempt in 7 ms; S6 wrote `PCIE_MAC_INT_ENABLE` = 0 (found 0xff); bring-up to stage 6 in 1005 ms. Sniffer vifs: Linux pair (OMAC 0 = zero address, OMAC 1 = our MAC); `DEV_INFO_UPDATE 1` / `BSS_INFO_UPDATE 1` answered with result 0; frames went out on wcid 18, OMAC 1.
+- 5 probe requests: 5 TX-free records with status 0 and 1 transmission each, none lost.
+- **25 probe responses to our MAC** from 8 transmitters (3 access points this time); 17 without the Retry bit; 23 distinct sequence numbers, 7 with a Retry copy, 2 seen more than once. `TX: PASS`, `ACK: INCONCLUSIVE` (no control arm).
+- Interrupt guard: identical to step B – 22 checks, `HOST_INT_ENA` on once at S23 (forced to 0), `PCIE_MAC_INT_ENABLE` never non-zero, `MCU_CMD` 0, `HOST_INT_STA` OR `0x0c400015`.
+- Shutdown tore vif 1 down first, then vif 0; done in 418 ms, `PCIE_MAC_INT_ENABLE` restored to 0xff. Give-back normal, Wi-Fi reconnected (802.11ac). System events: NDIS 10317 and WLAN-AutoConfig 10002 at the swap (both informational, seen at earlier swaps).
+- Preflight clock check measured 5.5 ms of sleeps as 20.0 ms (7.1 ms in step B): coarser system timer at that moment; no effect on the run.
+
+### Conclusion
+
+Step C passed as predicted. `--pair` alone, with both interrupt gates closed, neither disturbs TX nor hangs the system. Next: step D, the exact session that hung in F-011 (`--count 15 --control`, then `--count 15 --control --pair`).
