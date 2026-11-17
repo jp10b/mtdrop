@@ -1183,3 +1183,18 @@ The access point on 36 was weak (-79 dBm) – the same in runs 3 and 4, so run 4
 | ping over `awdl0` | **at least some replies** (TODO-VERIFY that iOS answers ICMPv6 at all; jedbillyb saw 40 % replies on Linux) |
 
 What would falsify the fix: still 0 ACKed unicast frames with TXS rate `0x04b`/OFDM 12 and ~6 ms completion – then the remaining cause is timing (back to slot phase analysis).
+
+### Raw result (FACT, 2026-11-17 18:56, home, channel 44, 120 s; device addresses omitted)
+
+- **Ping over `awdl0` to the iPhone's link-local address: 17 of 20 replies (15 % loss), RTT 46–415 ms.** First reply to the first request.
+- Unicast TX to the iPhone: **18 ACKed, 3 NOT ACKed** (F-018: 0 of 35). **18 data frames received from the iPhone** (F-018: 0).
+- Peer added 1 s after start, iPhone sync master within 2 s, **no peer timeout during the whole session** (F-018 lost it once), intersect on 44, one channel switch (at start).
+- Radio server: 1371 frames taken, 1318 forwarded, 0 bad FCS, 0 pipe full; 2936 TX submitted, 0 refused, 0 lost.
+- **RX dating error on hardware** (status periods of 2 s, ~20 frames each): mean 0.17–1.3 ms and max 0.36–12.6 ms in most periods, but spikes of mean 3.8–11.8 ms / max 56–131 ms in three periods, and 0.8 s mean / 2.5 s max in the first period (frames queued while awdld was starting).
+- Give-back normal; Wi-Fi reconnected after the log's window; no hang; `awdl0` removed.
+
+### Conclusion
+
+1. **The M5 acceptance criterion (CLAUDE.md §7) is met:** AWDL sync with the iPhone, peer discovered and valid, and `ping` over `awdl0` link-local to the iPhone works – and iOS does answer ICMPv6 over AWDL (TODO-VERIFY closed).
+2. The F-019/F-020 fix was the missing piece: with unicast data on ALTX0 at a fixed OFDM rate, the iPhone ACKs our frames and talks back. `radiod serve` now uses both by default (`--data-fw-rate-ac` restores mt76's behaviour for experiments).
+3. Open, for throughput later: RTTs grow in runs of 5–10 pings (78 → 415 ms, then back to ~160 ms), i.e. the echo waits for one of our two 44-slots per 16-slot period; occasional RX dating spikes up to 131 ms (the event loop was busy – ASSUMPTION – which can skew OWL's sync readings); OFDM 12 Mb/s fixed rate. None of these blocks M6.

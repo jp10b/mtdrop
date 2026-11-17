@@ -588,6 +588,10 @@ int serve(int argc, char **argv) {
     long chl = strtol(argv[2], NULL, 10);
 
     tx_cli_init(&cli);
+    /* F-019 / F-020 / F-021: unicast data on ALTX0 at a fixed rate is required (AC queues held it 115-560 ms and
+     * the firmware picked CCK 1 Mb/s, dead on 5 GHz). Default for serve; --data-fw-rate-ac restores mt76. */
+    cli.extra.tx_data_altx = 1;
+    cli.extra.tx_data_fixed_rate = 1;
     memset(&sv, 0, sizeof(sv));
     memset(&s, 0, sizeof(s));
     sv.pipe = INVALID_HANDLE_VALUE;
@@ -601,6 +605,7 @@ int serve(int argc, char **argv) {
         else if (strcmp(argv[i], "--wait-client") == 0 && i + 1 < argc) wait_seconds = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--no-filter") == 0) sv.filter_on = 0;
         else if (strcmp(argv[i], "--loopback") == 0) loopback = 1;
+        else if (strcmp(argv[i], "--data-fw-rate-ac") == 0) cli.extra.tx_data_altx = cli.extra.tx_data_fixed_rate = 0;
         else {
             printf("RESULT: FAIL - unknown option %s\n", argv[i]);
             return 2;

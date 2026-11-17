@@ -1574,6 +1574,7 @@ int main(int argc, char **argv) {
            "         --wait-client S        how long to wait for the client (1..300, default 60)\n"
            "         --mac chip|random      address to ACK and transmit from (default chip)\n"
            "         --no-filter            forward every frame, not only AWDL (BSSID 00:25:00:ff:94:73)\n"
+           "         unicast data goes on ALTX0 at the client's fixed rate (F-021); --data-fw-rate-ac: mt76's way\n"
            "         --loopback             synthetic radio, NO hardware access (patch/ram arguments ignored):\n"
            "                                for testing clients offline\n"
            "         --pair, --max-dbm, --mt76-power, --no-power-limits, --debug   as for txtest\n");
