@@ -37,7 +37,8 @@ param(
     [string]$Client = '',
     # awdld arguments (ADR-0003 M5.4): awdld (with wintun.dll beside it) is started in the background before the
     # radiod commands, connects to `radiod serve`, and ends when the server does. The first peer it reports
-    # reachable is pinged over awdl0. ':' may stand for a space, e.g. -c:44:-S:intersect:-v
+    # reachable is pinged over awdl0. ':' may stand for a space and '+' for '-' (a value starting with '-' would be
+    # taken for a PowerShell parameter), e.g. +c:44:+S:intersect:+v
     [string]$Awdl = '',
     [switch]$KeepGoing,
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
@@ -104,7 +105,7 @@ try {
     foreach ($c in $commandList) { if ($c -notmatch '^(bringup|sniff|txtest|acktest|serve) [A-Za-z0-9 ,@=_.-]+$') { throw "refusing radiod command '$c'" } }
     $Client = ($Client -replace ':', ' ').Trim()
     $clientTool = Join-Path $ToolsRoot 'build\radiod\radioctl.exe'
-    $Awdl = ($Awdl -replace ':', ' ').Trim()
+    $Awdl = ($Awdl -replace ':', ' ' -replace '\+', '-').Trim()
     $awdlTool = Join-Path $ToolsRoot 'build\awdld\awdld.exe'
     if ($Awdl) {
         if ($Awdl -notmatch '^[A-Za-z0-9 ._-]+$') { throw "refusing awdld arguments '$Awdl'" }

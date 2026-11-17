@@ -1026,7 +1026,7 @@ Wintun (`awdl0`) – needs the signed `wintun.dll` and elevation; OWL against a 
 
 - **Date:** 2026-11-17 (predictions written before the run)
 - **Milestone:** M5.4 (ADR-0003; M5 acceptance criterion of CLAUDE.md §7)
-- **Setup:** `radiod serve 44 @alt --max-seconds 120 --mac random`; `awdld -c 44 -S intersect -v` with the signed `wintun.dll` 0.14.1 (zip SHA-256 `07c25618…ef51`, Authenticode valid, WireGuard LLC) beside it; the Wintun driver 0.14.0.0 is already installed (by Tailscale), awdld creates its own adapter `awdl0` (tunnel type `mtdrop`, own GUID) and removes it on exit. iPhone 15 Pro, iOS 26.5.2, AirDrop "Everyone for 10 Minutes", share sheet open for the whole session. The session script pings the first peer awdld reports reachable (`ping -6 -n 20`).
+- **Setup:** `radiod serve 44 @alt --max-seconds 120 --mac random`; `awdld -c 44 -S intersect -v` (script: `-Awdl +c:44:+S:intersect:+v`) with the signed `wintun.dll` 0.14.1 (zip SHA-256 `07c25618…ef51`, Authenticode valid, WireGuard LLC) beside it; the Wintun driver 0.14.0.0 is already installed (by Tailscale), awdld creates its own adapter `awdl0` (tunnel type `mtdrop`, own GUID) and removes it on exit. iPhone 15 Pro, iOS 26.5.2, AirDrop "Everyone for 10 Minutes", share sheet open for the whole session. The session script pings the first peer awdld reports reachable (`ping -6 -n 20`).
 
 ### Why `-S intersect` and not the fork's default `verbatim`
 
