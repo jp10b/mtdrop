@@ -1,0 +1,119 @@
+using Mtdrop.Service.Windows;
+
+namespace Mtdrop.Service.Tests;
+
+public sealed class GiveBackTests : IDisposable
+{
+    private readonly Rig _rig = new();
+
+    public void Dispose() => _rig.Dispose();
+
+    [Fact]
+    public void Removes_our_package_and_waits_for_the_vendor_driver()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+
+        Assert.True(_rig.GiveBack().Run());
+        Assert.Equal(["driver:delete oem99.inf", "driver:scan", "wifi:restore"], _rig.Calls);
+        Assert.Equal(0, _rig.Lock.Held);
+    }
+
+    [Fact]
+    public void Installs_the_vendor_driver_from_the_backup_if_it_does_not_come_back()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Driver.VendorReturnsAfterDelete = false;
+        _rig.AddVendorBackup();
+
+        Assert.True(_rig.GiveBack().Run());
+        Assert.Contains("driver:install-vendor", _rig.Calls);
+        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
+    }
+
+    [Fact]
+    public void Reports_failure_without_a_backup()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Driver.VendorReturnsAfterDelete = false;
+
+        Assert.False(_rig.GiveBack().Run());
+        Assert.True(_rig.Log.Has("backup was not found"));
+    }
+
+    [Fact]
+    public void Reports_failure_when_the_backup_does_not_help()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Driver.VendorReturnsAfterDelete = false;
+        _rig.Driver.BackupInstallWorks = false;
+        _rig.AddVendorBackup();
+
+        Assert.False(_rig.GiveBack().Run());
+        Assert.True(_rig.Log.Has("give-back FAILED"));
+    }
+
+    [Fact]
+    public void Is_harmless_when_the_card_is_already_back()
+    {
+        Assert.True(_rig.GiveBack().Run());
+        Assert.DoesNotContain(_rig.Calls, c => c.StartsWith("driver:delete", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_card_on_our_package_is_not_vendor_bound_even_if_the_provider_says_MediaTek()
+    {
+        _rig.Driver.PackageInStore = true;
+        var card = new CardInfo("x", "MediaTek, Inc.", "oem99.inf", "1", true, 0);
+        Assert.False(_rig.GiveBack().IsVendorBound(card));
+        Assert.True(_rig.GiveBack().IsProxyBound(card));
+    }
+}
+
+public sealed class PlatformTests
+{
+    [Fact]
+    public void Finds_our_packages_in_pnputil_xml()
+    {
+        const string xml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <PnpUtil Version="10.0.26200" Command="/enum-drivers /format xml">
+                <Driver DriverName="oem3.inf"><OriginalName>acerairplanemodecontroller.inf</OriginalName></Driver>
+                <Driver DriverName="oem97.inf"><OriginalName>mtdrop_proxy.inf</OriginalName></Driver>
+                <Driver DriverName="oem10.inf"><OriginalName>mtkwl6ex.inf</OriginalName></Driver>
+                <Driver DriverName="oem98.inf"><OriginalName>MTDROP_PROXY.INF</OriginalName></Driver>
+            </PnpUtil>
+            """;
+        Assert.Equal(["oem97.inf", "oem98.inf"], DriverControl.ParseOurPackages(xml));
+    }
+
+    [Fact]
+    public void Pnputil_xml_with_a_doctype_is_not_resolved()
+    {
+        const string xml = """<?xml version="1.0"?><!DOCTYPE x SYSTEM "http://127.0.0.1:1/x.dtd"><PnpUtil/>""";
+        Assert.ThrowsAny<System.Xml.XmlException>(() => DriverControl.ParseOurPackages(xml));
+    }
+
+    [Fact]
+    public void Watchdog_task_xml_runs_the_service_exe_as_system_at_local_time()
+    {
+        string xml = WatchdogTask.TaskXml(new DateTime(2026, 11, 17, 22, 5, 9), @"C:\Program Files\mtdrop\mtdrop-service.exe");
+        var doc = new System.Xml.XmlDocument();
+        doc.LoadXml(xml.Replace("encoding=\"UTF-16\"", ""));
+        Assert.Contains("<StartBoundary>2026-11-17T22:05:09</StartBoundary>", xml);
+        Assert.Contains("<UserId>S-1-5-18</UserId>", xml);
+        Assert.Contains(@"<Command>C:\Program Files\mtdrop\mtdrop-service.exe</Command>", xml);
+        Assert.Contains("<Arguments>--give-back</Arguments>", xml);
+        Assert.Contains("<StartWhenAvailable>true</StartWhenAvailable>", xml);
+    }
+
+    [Fact]
+    public void Watchdog_task_xml_escapes_the_path()
+    {
+        string xml = WatchdogTask.TaskXml(DateTime.Now, @"C:\a&b<c>\mtdrop-service.exe");
+        Assert.Contains(@"C:\a&amp;b&lt;c&gt;\mtdrop-service.exe", xml);
+    }
+}
