@@ -848,3 +848,31 @@ Every run: exit code 0, orderly shutdown (DMA stopped, WFSYS reset, `PCIE_MAC_IN
 
 - Unicast TX with ACK request and a TX status record (TXS), F-010 follow-up: is a TXS delivered on a polled ring, and does it report the ACK from an access point? (H14/H15 of `docs/MT7921-BRINGUP.md`.)
 - Then M5: OWL core on Windows over radiod.
+
+---
+
+## F-014 – Unicast TX with ACK request and TX status report (`radiod acktest`)
+
+- **Date:** 2026-11-17 (predictions written before the run)
+- **Milestone:** M4 (F-010 / F-013 follow-up)
+- **Firmware:** linux-firmware MT7961 image (`@alt`). Channel 1, OFDM 6 Mbit/s, power capped at 14 dBm. No iPhone involved. iOS not relevant.
+
+### Why
+
+AWDL sends unicast data to a peer and needs to know whether it arrived. So far every frame we sent was broadcast (`NO_ACK`); whether the chip retries a unicast frame, and whether the firmware reports the outcome in a TX status record (TXS), is untested on hardware. The library implements both after mt76 (`TX_STATUS_HOST` with a PID >= 3, TXS0 bits 18:16 clear = ACKed; spec 12.7) and the fake chip behaves that way, which only shows the host side is consistent with our reading of mt76.
+
+### Method
+
+New command `radiod acktest 1 @alt` (default 5 frames per arm, 15 transmissions allowed per frame): listen 2 s for beacons, pick the BSSID with the best mean RSSI, then alternate one directed probe request per second between that access point (AP arm) and a random locally administered "ghost" address nobody owns (ghost arm). Every frame asks for an ACK and a TXS. Probe requests are management frames: fixed rate, management queue (ALTX), the vif's wcid (19 single / 18 pair); no association or keys are needed for an access point to ACK them. New library test `tx_directed_probe_ack_status_single_and_pair` checks the TXD fields and both outcomes against the fake chip.
+
+### Predictions (written before running)
+
+| quantity | prediction |
+|---|---|
+| `TX:` | PASS – the access point answers most directed probes with a probe response |
+| `TXS:` | DELIVERED for every frame (ASSUMPTION; whether as `PKT_TYPE_TXS` packets or `MCU_EVENT_TX_DONE` events is open – the summary counts both) |
+| AP arm | ACKed for >= 4 of 5 frames, transmissions 1 for most |
+| ghost arm | NOT ACKed 5 of 5, transmissions 15 each (`RETRIES: AS REQUESTED`) |
+| verdict | `UNICAST ACK: WORKING`; no hang, interrupt guard as in F-013 |
+
+What would falsify it: no TXS at all (then ACK outcome can only be read from the TX-free COUNT, and AWDL must not rely on TXS); a ghost frame reported ACKed (TXS bits misread); NOT ACKed for frames the access point answered; ghost transmissions other than 15 (firmware applies its own retry limit for frames without a station record).
