@@ -983,3 +983,21 @@ What would falsify it: `ACK: NOT WORKING` or own ≈ control (the firmware ACKs 
 ### Prediction for the repeat (channel 2, where 2 BSSIDs beacon; both commands, `-KeepGoing`)
 
 As above: `ACK: WORKING` for the random address in single and pair mode. With only 2 access points the verdict may be `INCONCLUSIVE - too little data` (< 5 pairs per arm from common transmitters); that would call for a run with `--count 20` or a busier place, not a conclusion.
+
+### Repeat on channel 2 (FACT, 2026-11-17 18:17, at home, `--count 20`, `-KeepGoing`)
+
+| | single vif, random `5a:bd:98:…` | pair, random `22:a6:8d:…` |
+|---|---|---|
+| beacons heard on channel 2 | 739 from 2 BSSIDs | 741 from 2 BSSIDs |
+| responses own / control | 39 / 106 | 39 / 117 |
+| (transmitter, SN) pairs own / control | 33 / 34 | 34 / 38 |
+| copies per pair own: 1 / 2 / 3 / 4 / 5+ | 31 / 1 / 0 / 0 / 1 | 33 / 0 / 0 / 0 / 1 |
+| copies per pair control: 1 / 2 / 3 / 4 / 5+ | 1 / 6 / 26 / 0 / 1 | 0 / 3 / 34 / 0 / 1 |
+| **mean copies own vs control** | **1.18 vs 3.12 (38 %)** | **1.15 vs 3.08 (37 %)** |
+| verdict | `ACK: WORKING` | `ACK: WORKING` |
+
+Both access points answered both arms. Interrupt guard as F-013; give-back normal, Wi-Fi connected; no hang.
+
+### Conclusion
+
+**The firmware ACKs a random locally administered address given to the vif through `DEV_INFO`**, in both vif setups, as clearly as the chip's own MAC (F-013: 48 % / 46 %; here 38 % / 37 %, on a quieter channel where the control arm shows the access points' full retry count of 3). ADR-0003 decision 7 holds: `awdld` uses a fresh random address per session, set with `serve --mac random`. M5.2 gate passed.
