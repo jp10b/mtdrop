@@ -1542,3 +1542,18 @@ Maintainer: the photo arrived on the iPhone; everything worked as expected.
 | 54 | faster than 24, but less than 4.5× of 12 – the 16 frames in flight and TCP losses from refusals cap it | maybe higher (54 Mbit/s needs a better link) | most |
 
 What falsifies the hypothesis: no clear change between 12 and 54 → air time is not the limit; then the refusals (16 in flight) or the slot overlap are, and the next step is a user-space TX backlog in `radiod` instead of refusing, or the sequence we advertise during a send (ADR-0006 A2/A3).
+
+### Result (2026-11-18, 20:02–20:07)
+
+Same photo, **5,428,586 bytes**, three sends from Explorer, all delivered (maintainer: arrived; `app.log`: `/Upload answered 200`):
+
+| `--data-rate` | upload (`/Ask` 200 → `/Upload` 200) | rate | not ACKed (radiod) | refused (16 in flight) |
+|---|---|---|---|---|
+| none (OWL 12) | 35.2 s | **154 kB/s** | 69 of 4037 (1.7 %) | 10 |
+| 24 | 29.0 s | **187 kB/s** (+21 %) | 113 of 4042 (2.8 %) | 76 |
+| 54 | 28.3 s | **192 kB/s** (+25 %) | 130 of 4092 (3.2 %) | 40 |
+
+- The option reached `radiod` in both runs (FACT: command line and start-up line in `radiod-live.log`). That the frames really went at 24/54 Mbit/s is **not shown** by these logs: the live log only records the first management frames. Indirect sign: more frames not ACKed at higher rates. `radiod` now prints a summary of unicast data frames by the rate in their TX status (`unicast data: … rates in TX status: …`), checked in `--loopback`; the next hardware run settles it.
+- The baseline is faster than in F-028/F-029 (154 vs 72–87 kB/s): a 5.4 MB file spends less of its time in TCP's start.
+- **Conclusion: air time is not the main limit** – 4.5× the rate gave +25 %. The falsifier of the hypothesis was hit. ASSUMPTION for the real limit: TCP's window over the round-trip time. Ping over `awdl0` measured RTT 46–793 ms, mean ~250 ms (F-021, F-023), because the phone is on channel 44 in only some slots of its sequence and every TCP ACK waits for one; a 48–64 KB window over ~300 ms gives 160–210 kB/s – the plateau measured here.
+- **Next (ADR-0006 A2/A3):** log the phone's advertised channel sequence while it receives and the RTT during a send; then raise the co-channel time during a send (the advertised sequence while we have data). The data rate stays at OWL's 12 Mbit/s by default until then; 24 is a candidate default once a repeat run confirms the gain.

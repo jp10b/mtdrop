@@ -45,6 +45,15 @@ struct outq {
 struct txmap {
     uint32_t lib_cookie, client_cookie;
     uint8_t used, channel;
+    uint8_t data;               /* unicast data frame: counted in the data rate summary */
+};
+
+/* Unicast data frames by the rate their TX status reports (F-030: which rate really went on air). */
+struct data_txs {
+    uint32_t by_rate_500k[256]; /* OFDM/CCK rate in 500 kb/s units, from TXS */
+    uint32_t other_mode;        /* HT/VHT/HE in TXS */
+    uint32_t no_txs;            /* completed without a TX status record */
+    uint32_t frames, transmissions;
 };
 
 struct server {
@@ -61,6 +70,7 @@ struct server {
     unsigned channel_logs;
     uint8_t data_rate;          /* 0 = as the client asks (OWL: OFDM 12); else MT792X_RATE_* for unicast data (M9, F-030) */
     uint8_t data_rate_500k;
+    struct data_txs dtx;
     int client_gone;
     int bye_reason;
 };
@@ -380,6 +390,16 @@ static int pump_tx_done(struct server *sv) {
         for (unsigned i = 0; i < TXMAP_SLOTS; i++) {
             struct txmap *e = &sv->map[i];
             if (!e->used || e->lib_cookie != d.cookie) continue;
+            if (e->data) {
+                sv->dtx.frames++;
+                sv->dtx.transmissions += d.tx_count;
+                if (!d.has_txs) sv->dtx.no_txs++;
+                else if (((d.txs_rate >> 6) & 0xfu) <= 1u) {
+                    uint8_t r500 = legacy_rate_500k((uint8_t)((d.txs_rate >> 6) & 0xfu), (uint8_t)(d.txs_rate & 0x3fu));
+                    sv->dtx.by_rate_500k[r500]++;
+                } else
+                    sv->dtx.other_mode++;
+            }
             send_tx_status(sv, e->client_cookie, rl_result_of(d.result), rl_ack_of(d.acked), d.tx_count, e->channel,
                            d.elapsed_us, 0);
             e->used = 0;
@@ -414,7 +434,8 @@ static void do_tx(struct server *sv, const uint8_t *p, size_t len) {
     q.rate = tx_rate_from_500k(rate500k, r_band());
     /* --data-rate (ADR-0006 A1): unicast data frames only (type 2, receiver address not group); management and
      * action frames keep the client's rate, so AWDL sync is unchanged. OFDM only: valid on both bands. */
-    if (sv->data_rate && flen >= 10 && ((frame[0] >> 2) & 3u) == 2u && !(frame[4] & 1u)) q.rate = sv->data_rate;
+    int unicast_data = flen >= 10 && ((frame[0] >> 2) & 3u) == 2u && !(frame[4] & 1u);
+    if (sv->data_rate && unicast_data) q.rate = sv->data_rate;
     q.want_ack = (frame[4] & 1u) ? 0u : 1u; /* group-addressed: no ACK */
     q.want_status = q.want_ack;
     q.tx_count = 0;                          /* mt76's 15 */
@@ -426,6 +447,7 @@ static void do_tx(struct server *sv, const uint8_t *p, size_t len) {
     }
     sv->st.v[RL_ST_TX_SUBMITTED]++;
     sv->map[slot].used = 1;
+    sv->map[slot].data = (uint8_t)unicast_data;
     sv->map[slot].lib_cookie = lib_cookie;
     sv->map[slot].client_cookie = cookie;
     sv->map[slot].channel = r_channel();
@@ -757,6 +779,12 @@ int serve(int argc, char **argv) {
             while (sv.q.count && qpc_us() < until && flush_out(&sv) == 0) spin_us(500);
         }
         print_stats("serve summary", &sv.st);
+        printf("unicast data: %u frame(s), %u transmission(s), %u without TX status; rates in TX status:", sv.dtx.frames,
+               sv.dtx.transmissions, sv.dtx.no_txs);
+        for (int r = 255; r > 0; r--)
+            if (sv.dtx.by_rate_500k[r]) printf(" %u%s Mb/s %u,", r / 2u, r % 2u ? ".5" : "", sv.dtx.by_rate_500k[r]);
+        if (sv.dtx.by_rate_500k[0]) printf(" unknown %u,", sv.dtx.by_rate_500k[0]);
+        printf(" HT/VHT %u\n", sv.dtx.other_mode);
         if (sv.bye_reason == RL_BYE_RADIO_ERROR) printf("RESULT: FAIL - radio error while serving\n");
         else if (sv.bye_reason == RL_BYE_PROTOCOL) printf("RESULT: FAIL - the client broke the protocol\n");
         else {
