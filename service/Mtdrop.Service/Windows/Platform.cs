@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
@@ -7,32 +8,91 @@ using System.Xml;
 
 namespace Mtdrop.Service.Windows;
 
-/// <summary>Saved Wi-Fi networks through netsh, as scripts/s3-bringup.ps1 and wifi-giveback.ps1 do.</summary>
-public sealed class Wifi(ServiceConfig config, IProcessRunner runner) : IWifi
+/// <summary>
+/// Saved Wi-Fi networks through the Native Wifi API. Windows keeps them per WLAN interface GUID and the adapter gets a
+/// new GUID every time the MediaTek driver binds again (FINDINGS F-025), so the give-back has to add them back.
+/// Files are numbered in preference order (no network names in file names); keys stay encrypted for this machine.
+/// </summary>
+public sealed class Wifi(ServiceConfig config, ILog log) : IWifi
 {
-    private static readonly string Netsh = Path.Combine(Environment.SystemDirectory, "netsh.exe");
+    private static readonly TimeSpan InterfaceWait = TimeSpan.FromSeconds(20);
 
     public int ExportProfiles()
     {
         Directory.CreateDirectory(config.ProfilesDir);
         foreach (string old in Directory.EnumerateFiles(config.ProfilesDir, "*.xml")) File.Delete(old);
-        runner.Run(Netsh, ["wlan", "export", "profile", $"folder={config.ProfilesDir}"], TimeSpan.FromSeconds(60));
-        return Directory.EnumerateFiles(config.ProfilesDir, "*.xml").Count();
+        try
+        {
+            using WlanClient wlan = WlanClient.Open();
+            Guid card = FindCard(wlan) ?? throw new IOException("the WLAN service does not list the MT7921 Wi-Fi interface");
+            IReadOnlyList<(string Name, uint Flags)> profiles = wlan.Profiles(card);
+            int saved = 0, skipped = 0, failed = 0;
+            foreach ((string name, uint listFlags) in profiles)
+            {
+                if ((listFlags & (WlanClient.ProfileGroupPolicy | WlanClient.ProfileUser)) != 0) { skipped++; continue; }
+                try
+                {
+                    (string xml, _) = wlan.Profile(card, name);
+                    File.WriteAllText(Path.Combine(config.ProfilesDir, $"{saved:D3}.xml"), xml, new UTF8Encoding(false));
+                    saved++;
+                }
+                catch (Win32Exception e)
+                {
+                    failed++;
+                    log.Warn($"wifi: could not read saved network #{saved + skipped + failed}: {e.Message}");
+                }
+            }
+            log.Info($"wifi: {profiles.Count} saved network(s) on the card, {saved} exported" +
+                     (skipped > 0 ? $", {skipped} skipped (group policy or per-user)" : "") + (failed > 0 ? $", {failed} failed" : ""));
+            if (saved == 0 && failed > 0) throw new IOException($"none of the {failed} saved Wi-Fi network(s) could be read");
+            return saved;
+        }
+        catch (Win32Exception e)
+        {
+            throw new IOException(e.Message, e);
+        }
     }
 
-    public int RestoreMissingProfiles()
+    public ProfileRestore RestoreMissingProfiles()
     {
-        if (!Directory.Exists(config.ProfilesDir)) return 0;
-        string known = runner.Run(Netsh, ["wlan", "show", "profiles"], TimeSpan.FromSeconds(30)).Output;
-        int missing = 0;
-        foreach (string file in Directory.EnumerateFiles(config.ProfilesDir, "*.xml"))
+        string[] files = Directory.Exists(config.ProfilesDir)
+            ? Directory.EnumerateFiles(config.ProfilesDir, "*.xml").Order(StringComparer.Ordinal).ToArray()
+            : [];
+        if (files.Length == 0) return new ProfileRestore(0, 0, 0, 0);
+        try
         {
-            string? name = ProfileName(file);
-            if (name is null || known.Contains(name, StringComparison.Ordinal)) continue;
-            missing++;
-            runner.Run(Netsh, ["wlan", "add", "profile", $"filename={file}", "user=all"], TimeSpan.FromSeconds(30));
+            using WlanClient wlan = WlanClient.Open();
+            Guid? card;
+            DateTime until = DateTime.UtcNow + InterfaceWait;
+            while ((card = FindCard(wlan)) is null && DateTime.UtcNow < until) Thread.Sleep(1000);
+            if (card is not Guid id)
+            {
+                log.Warn("wifi: the MT7921 Wi-Fi interface did not appear; saved networks not re-added");
+                return new ProfileRestore(files.Length, files.Length, 0, files.Length);
+            }
+            var known = wlan.Profiles(id).Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+            int missing = 0, restored = 0, failed = 0;
+            for (int i = 0; i < files.Length; i++)
+            {
+                string xml = File.ReadAllText(files[i]);
+                string? name = ProfileName(xml);
+                if (name is not null && known.Contains(name)) continue;
+                missing++;
+                string? error = name is null ? "unreadable profile file" : wlan.AddProfile(id, xml);
+                if (error is null) restored++;
+                else
+                {
+                    failed++;
+                    log.Warn($"wifi: could not re-add saved network #{i + 1}: {error}");
+                }
+            }
+            return new ProfileRestore(files.Length, missing, restored, failed);
         }
-        return missing;
+        catch (Win32Exception e)
+        {
+            log.Warn($"wifi: saved networks not re-added: {e.Message}");
+            return new ProfileRestore(files.Length, files.Length, 0, files.Length);
+        }
     }
 
     public bool AdapterConnected() => NetworkInterface.GetAllNetworkInterfaces().Any(n =>
@@ -40,12 +100,35 @@ public sealed class Wifi(ServiceConfig config, IProcessRunner runner) : IWifi
         n.Description.Contains("MT7921", StringComparison.OrdinalIgnoreCase) &&
         n.OperationalStatus == OperationalStatus.Up);
 
-    private static string? ProfileName(string file)
+    public string SavedNetworksSummary()
+    {
+        try
+        {
+            using WlanClient wlan = WlanClient.Open();
+            if (FindCard(wlan) is not Guid id) return "MT7921 interface not listed by the WLAN service";
+            IReadOnlyList<(string Name, uint Flags)> profiles = wlan.Profiles(id);
+            int readable = profiles.Count(p =>
+            {
+                try { return ProfileName(wlan.Profile(id, p.Name).Xml) == p.Name; }
+                catch (Win32Exception) { return false; }
+            });
+            return $"{profiles.Count} on the card, {readable} readable";
+        }
+        catch (Win32Exception e)
+        {
+            return $"unavailable: {e.Message}";
+        }
+    }
+
+    private static Guid? FindCard(WlanClient wlan) =>
+        wlan.Interfaces().FirstOrDefault(i => i.Description.Contains("MT7921", StringComparison.OrdinalIgnoreCase))?.Id;
+
+    private static string? ProfileName(string xml)
     {
         try
         {
             var doc = new XmlDocument { XmlResolver = null };
-            using (XmlReader reader = XmlReader.Create(file, DriverControl.SafeXml))
+            using (XmlReader reader = XmlReader.Create(new StringReader(xml), DriverControl.SafeXml))
                 doc.Load(reader);
             return doc.DocumentElement?.ChildNodes.OfType<XmlElement>().FirstOrDefault(e => e.LocalName == "name")?.InnerText;
         }

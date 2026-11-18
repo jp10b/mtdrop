@@ -83,9 +83,20 @@ public sealed class FakeDriver(List<string> calls) : IDriverControl
 
 public sealed class FakeWifi(List<string> calls) : IWifi
 {
-    public int ExportProfiles() { calls.Add("wifi:export"); return 3; }
-    public int RestoreMissingProfiles() { calls.Add("wifi:restore"); return 0; }
-    public bool AdapterConnected() => true;
+    public int Exported { get; set; } = 3;
+    public bool ExportFails { get; set; }
+    public bool Connected { get; set; } = true;
+
+    public int ExportProfiles()
+    {
+        calls.Add("wifi:export");
+        if (ExportFails) throw new IOException("WlanGetProfileList failed (test)");
+        return Exported;
+    }
+
+    public ProfileRestore RestoreMissingProfiles() { calls.Add("wifi:restore"); return new ProfileRestore(Exported, 0, 0, 0); }
+    public bool AdapterConnected() => Connected;
+    public string SavedNetworksSummary() => $"{Exported} on the card";
 }
 
 public sealed class FakeFirewall(List<string> calls) : IFirewall

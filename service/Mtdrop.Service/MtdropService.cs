@@ -15,7 +15,7 @@ public sealed record Host(
     public static Host Create(ServiceConfig config, ILog log)
     {
         var runner = new ProcessRunner(log);
-        return new Host(config, log, runner, new DriverControl(runner, log), new Wifi(config, runner), new Firewall(log),
+        return new Host(config, log, runner, new DriverControl(runner, log), new Wifi(config, log), new Firewall(log),
             new WatchdogTask(config, runner, log), new StateFile(config), new CardLock(), new NetworkProbe(), new SystemClock());
     }
 }

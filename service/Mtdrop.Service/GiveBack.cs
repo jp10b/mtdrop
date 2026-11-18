@@ -44,8 +44,11 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
         log.Info($"give-back: card driver back: {card}");
 
         clock.Sleep(TimeSpan.FromSeconds(3));
-        int missing = wifi.RestoreMissingProfiles();
-        log.Info(missing == 0 ? "give-back: saved Wi-Fi networks are all present" : $"give-back: re-added {missing} saved network(s)");
+        ProfileRestore profiles = wifi.RestoreMissingProfiles();
+        if (profiles.Saved == 0) log.Warn("give-back: no saved Wi-Fi networks were exported; Wi-Fi may need a manual connect");
+        else if (profiles.Missing == 0) log.Info($"give-back: all {profiles.Saved} saved Wi-Fi network(s) are present");
+        else log.Info($"give-back: re-added {profiles.Restored} of {profiles.Missing} missing saved network(s) ({profiles.Saved} exported)");
+        if (profiles.Failed > 0) log.Warn($"give-back: {profiles.Failed} saved network(s) could not be re-added");
         DateTime until = clock.UtcNow.AddSeconds(30);
         while (!wifi.AdapterConnected() && clock.UtcNow < until) clock.Sleep(TimeSpan.FromSeconds(2));
         log.Info(wifi.AdapterConnected() ? "give-back: Wi-Fi is connected" : "give-back: Wi-Fi adapter is back but not connected yet");

@@ -176,7 +176,14 @@ public sealed class Session(
             (int probe, string probeOut) = runner.Run(config.Radiod, ["dma-probe"], TimeSpan.FromSeconds(60));
             foreach (string line in probeOut.Split('\n', StringSplitOptions.RemoveEmptyEntries)) log.Info($"  dma-probe: {line.TrimEnd()}");
             if (probe != 0) throw new SessionException("not enough free memory for the radio - close large programs and try again");
-            log.Info($"session: saved Wi-Fi networks exported: {wifi.ExportProfiles()}");
+            // Every swap gives the adapter a new interface GUID without saved networks (F-025): without the export,
+            // Wi-Fi would not reconnect by itself afterwards. Nothing has changed on the machine yet.
+            int exported;
+            try { exported = wifi.ExportProfiles(); }
+            catch (IOException e) { throw new SessionException($"could not save the Wi-Fi networks ({e.Message}) - not switching the card"); }
+            log.Info($"session: saved Wi-Fi networks exported: {exported}");
+            if (exported == 0 && wifi.AdapterConnected())
+                throw new SessionException("Wi-Fi is connected but its saved network could not be exported - not switching the card, Wi-Fi would not come back by itself");
             ct.ThrowIfCancellationRequested();
 
             // ---- TakingCard: watchdog first, then the swap -------------------------------------------------

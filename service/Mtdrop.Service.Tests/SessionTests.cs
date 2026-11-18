@@ -99,6 +99,42 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
+    public async Task Connected_wifi_without_an_exported_network_changes_nothing()
+    {
+        _rig.Wifi.Exported = 0;
+        ControlResponse end = await RunToEnd();
+
+        Assert.Contains("could not be exported", end.Error);
+        Assert.DoesNotContain("watchdog:arm", _rig.Calls);
+        Assert.DoesNotContain("driver:bind", _rig.Calls);
+        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
+    }
+
+    [Fact]
+    public async Task Failed_export_changes_nothing()
+    {
+        _rig.Wifi.ExportFails = true;
+        ControlResponse end = await RunToEnd();
+
+        Assert.Contains("could not save the Wi-Fi networks", end.Error);
+        Assert.DoesNotContain("state:taken", _rig.Calls);
+        Assert.DoesNotContain("driver:bind", _rig.Calls);
+    }
+
+    [Fact]
+    public async Task Disconnected_wifi_without_saved_networks_may_receive()
+    {
+        _rig.Wifi.Exported = 0;
+        _rig.Wifi.Connected = false;
+        ControlResponse end = await RunToEnd();
+
+        Assert.Null(end.Error);
+        Assert.Contains("driver:bind", _rig.Calls);
+        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
+        Assert.True(_rig.Log.Has("no saved Wi-Fi networks were exported"));
+    }
+
+    [Fact]
     public async Task Refuses_when_the_card_is_not_on_the_vendor_driver()
     {
         _rig.Driver.Bound = FakeDriver.Binding.None;

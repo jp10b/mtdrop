@@ -76,18 +76,20 @@ try {
     if (-not (Test-VendorBound $d)) { throw 'the MediaTek driver is still not bound to the card' }
     Say ("card driver back: {0} / {1} / {2}" -f $d.DriverProviderName, $d.InfName, $d.DriverVersion)
 
-    # Saved networks are stored per adapter instance; a re-created adapter can come back without them.
-    $profiles = Join-Path $PrivateRoot 'wifi-profiles'
+    # Saved networks are stored per WLAN interface GUID, and the adapter comes back with a new one (F-025).
+    # Sources: the copy s3-bringup.ps1 made, and the copy the mtdrop service made before its session.
+    $sources = @((Join-Path $PrivateRoot 'wifi-profiles'), (Join-Path $env:ProgramData 'mtdrop\wifi-profiles')) | Where-Object { Test-Path $_ }
     Start-Sleep -Seconds 3
-    if (Test-Path $profiles) {
+    if ($sources) {
         $known = (& netsh.exe wlan show profiles 2>$null) -join "`n"
         $missing = 0
-        foreach ($f in Get-ChildItem $profiles -Filter '*.xml') {
+        foreach ($f in Get-ChildItem $sources -Filter '*.xml') {
             $name = ([xml](Get-Content $f.FullName -Raw)).WLANProfile.name
             if ($name -and $known.Contains($name)) { continue }
             $missing++
             & netsh.exe wlan add profile "filename=$($f.FullName)" user=all 2>&1 | Out-Null
             Say "re-added one saved network (netsh exit $LASTEXITCODE)"
+            if ($name) { $known += "`n$name" }      # the same network may be in both sources
         }
         if ($missing -eq 0) { Say 'saved Wi-Fi networks are all present' }
     }

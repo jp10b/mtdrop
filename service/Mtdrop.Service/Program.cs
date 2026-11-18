@@ -26,6 +26,7 @@ if (args.Contains("--check"))
     Console.WriteLine($"state file:       {(host.State.CardTaken ? "card TAKEN" : "clear")}");
     Console.WriteLine($"awdl0 up:         {host.Network.AwdlUp()}");
     Console.WriteLine($"Wi-Fi connected:  {host.Wifi.AdapterConnected()}");
+    Console.WriteLine($"saved networks:   {host.Wifi.SavedNetworksSummary()}");
     foreach (string f in config.RequiredFiles.Append(config.TrayApp))
         Console.WriteLine($"{(File.Exists(f) ? "ok     " : "MISSING")} {f}");
     return 0;

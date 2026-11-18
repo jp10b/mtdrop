@@ -35,15 +35,23 @@ public interface IDriverControl
 
 public interface IWifi
 {
-    /// <summary>Exports the saved Wi-Fi networks (keys stay encrypted for this machine). Returns how many.</summary>
+    /// <summary>Exports the saved Wi-Fi networks of the card (keys stay encrypted for this machine). Returns how many.</summary>
+    /// <exception cref="IOException">The networks could not be read.</exception>
     int ExportProfiles();
 
-    /// <summary>Re-adds exported networks the adapter came back without. Returns how many were missing.</summary>
-    int RestoreMissingProfiles();
+    /// <summary>Re-adds exported networks the adapter came back without (it comes back with a new interface GUID).</summary>
+    ProfileRestore RestoreMissingProfiles();
 
     /// <summary>The MT7921's network adapter is up (connected).</summary>
     bool AdapterConnected();
+
+    /// <summary>Read-only one-liner for --check: how many saved networks the card has now.</summary>
+    string SavedNetworksSummary();
 }
+
+/// <param name="Saved">Networks exported before the session.</param>
+/// <param name="Missing">Of those, not on the adapter after the give-back.</param>
+public sealed record ProfileRestore(int Saved, int Missing, int Restored, int Failed);
 
 public interface IFirewall
 {
