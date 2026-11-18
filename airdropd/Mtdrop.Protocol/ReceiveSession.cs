@@ -120,8 +120,10 @@ public sealed class ReceiveSession : IAsyncDisposable
         return new ReceiveSession(server, mdns, nic);
     }
 
-    private static string LoadOrCreateServiceId(string path)
+    /// <summary>The 12-hex id this machine announces as a receiver and uses as SenderID when sending.</summary>
+    public static string LoadOrCreateServiceId(string path)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         try
         {
             string existing = File.ReadAllText(path).Trim();

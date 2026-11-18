@@ -19,6 +19,8 @@ namespace Mtdrop.App;
 /// and the app only waits for awdl0.
 ///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive] [--manual]
 ///              [--decline-status 401] [--decline-keep-open]     (Decline experiments, docs/PROTOCOL.md §10 item 1)
+///   mtdrop.exe --send file       (also: tray menu "Send files..."; ADR-0005, M8: wakes nearby iPhones over Bluetooth,
+///                                 lists receivers on awdl0, sends after the user picked one)
 ///   mtdrop.exe --test-prompt     (developer: show one sample prompt and exit)
 ///   mtdrop.exe --test-notice     (developer: show the card used instead of toasts and exit when it closes)
 /// Log: %LOCALAPPDATA%\mtdrop\logs\app.log.
@@ -54,6 +56,12 @@ public partial class App : System.Windows.Application
     private bool _polling;
     private int _pollFailures;
     private string? _lastProblem;
+    /// <summary>Set while a send runs on an up radio session (ADR-0005); cancelled by Stop and by the window end.</summary>
+    private CancellationTokenSource? _sendCts;
+    private string? _sendStatus;
+
+    private static string DataDirectory =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mtdrop");
 
     private static string? Arg(string[] args, string name)
     {
@@ -107,6 +115,7 @@ public partial class App : System.Windows.Application
         menu.Items.Add(_status);
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(_toggle);
+        menu.Items.Add("Send files to an iPhone...", null, async (_, _) => await SendFilesAsync(null));
         menu.Items.Add("Open download folder", null, (_, _) => Shell.RevealInExplorer(_destination));
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add("Exit", null, async (_, _) => await ExitAsync());
@@ -117,6 +126,7 @@ public partial class App : System.Windows.Application
         UpdateTray();
 
         if (e.Args.Contains("--receive")) _ = ToggleAsync();
+        else if (Arg(e.Args, "--send") is { Length: > 0 } toSend) _ = SendFilesAsync([toSend]);
     }
 
     /// <summary>
@@ -167,10 +177,12 @@ public partial class App : System.Windows.Application
 
     private void UpdateTray()
     {
-        bool on = _session is not null;
+        bool sending = _sendCts is not null;
+        bool on = _session is not null || sending;
         bool waiting = _waiting is not null;
-        bool restoring = Restoring;
+        bool restoring = Restoring && !sending;
         string status =
+            sending ? _sendStatus ?? "Sending" :
             on ? "Receiving - visible to nearby iPhones" :
             waiting ? (_service?.Message is { Length: > 0 } m ? Capitalize(m) : $"Waiting for {_interface}") :
             restoring ? "Turning Wi-Fi back on" :
@@ -186,7 +198,7 @@ public partial class App : System.Windows.Application
             _loggedStatus = status;
             AppLog.Write($"tray: {(on ? "green" : waiting || restoring ? "amber" : "grey")} - {status}");
         }
-        _toggle.Text = restoring ? "Turning Wi-Fi back on..." : on || waiting ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
+        _toggle.Text = restoring ? "Turning Wi-Fi back on..." : sending ? "Cancel sending" : on || waiting ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
         _toggle.Enabled = !restoring;
     }
 
@@ -223,9 +235,9 @@ public partial class App : System.Windows.Application
 
     private async Task ToggleAsync()
     {
-        if (_session is not null || _waiting is not null)
+        if (_session is not null || _waiting is not null || _sendCts is not null)
         {
-            AppLog.Write("user: Stop receiving");
+            AppLog.Write(_sendCts is not null ? "user: Cancel sending" : "user: Stop receiving");
             await StopAsync();
             return;
         }
@@ -271,7 +283,7 @@ public partial class App : System.Windows.Application
                 Interface = _interface,
                 ComputerName = _shownName,
                 DestinationDirectory = _destination,
-                DataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mtdrop"),
+                DataDirectory = DataDirectory,
                 ConsentTimeout = ConsentLimit,
                 DeclineStatus = _declineStatus,
                 DeclineKeepsConnection = _declineKeepOpen,
@@ -434,13 +446,14 @@ public partial class App : System.Windows.Application
         await SendStopAsync();
     }
 
-    /// <summary>Stops waiting for awdl0 and the local receiver; the service session (if any) is left alone.</summary>
+    /// <summary>Stops waiting for awdl0, a running send and the local receiver; the service session (if any) is left alone.</summary>
     private async Task StopReceiverAsync()
     {
         CancellationTokenSource? waiting = _waiting;
         _waiting = null;
         waiting?.Cancel();
         waiting?.Dispose();
+        try { _sendCts?.Cancel(); } catch (ObjectDisposedException) { }     // SendFilesAsync disposes it
         _window.Stop();
         ReceiveSession? session = _session;
         _session = null;
@@ -449,6 +462,120 @@ public partial class App : System.Windows.Application
         if (session is not null) await session.DisposeAsync();
         Interlocked.Exchange(ref _activeTransfers, 0);
     }
+
+    /// <summary>
+    /// "Send files..." / --send (ADR-0005): the same radio session as receiving, then <see cref="SendFlow"/>. The whole
+    /// send, including the radio start, counts against the window; the session ends right after the send.
+    /// </summary>
+    private async Task SendFilesAsync(IReadOnlyList<string>? paths)
+    {
+        if (_session is not null || _waiting is not null || _sendCts is not null || _service is not null)
+        {
+            _prompts.ShowMessage("mtdrop is busy", "Stop receiving, or wait until Wi-Fi is back on, before sending.");
+            return;
+        }
+        if (paths is null)
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Title = "Choose files to send to an iPhone", CheckFileExists = true };
+            if (dialog.ShowDialog() != true) return;
+            paths = dialog.FileNames;
+        }
+        List<OutgoingFile> files;
+        try
+        {
+            files = paths.Select(OutgoingFile.FromPath).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            _prompts.ShowMessage("Cannot send", ex.Message);
+            return;
+        }
+        AppLog.Write($"user: send {files.Count} file(s), {files.Sum(f => f.Size)} bytes");
+        _lastProblem = null;
+        var window = new CancellationTokenSource(_duration);
+        _waiting = window;
+        DateTime started = DateTime.UtcNow;
+        UpdateTray();
+        if (!_manual && !await StartServiceSessionAsync(window))
+        {
+            if (ReferenceEquals(_waiting, window)) _waiting = null;
+            window.Dispose();
+            UpdateTray();
+            return;
+        }
+        InterfaceInfo? nic = await WaitForInterfaceAsync(_interface, window.Token);
+        if (!ReferenceEquals(_waiting, window)) return;     // stopped, exited or the service session ended meanwhile
+        _waiting = null;
+        if (nic is null)
+        {
+            window.Dispose();
+            UpdateTray();
+            _prompts.ShowMessage("Nothing sent", $"The radio did not come up within {_duration.TotalMinutes:0.#} min. Wi-Fi is being turned back on.");
+            if (!_manual) await SendStopAsync();
+            return;
+        }
+        AppLog.Write($"{_interface} ready (index {nic.Index}) {(DateTime.UtcNow - started).TotalSeconds:0.0} s after Send");
+        _sendCts = window;
+        _sendStatus = "Looking for iPhones nearby";
+        UpdateTray();
+
+        SendSummary? summary = null;
+        bool cancelled = false;
+        try
+        {
+            var flow = new SendFlow(nic, files, _shownName, DataDirectory, ConfirmReceiverAsync,
+                s => Dispatcher.InvokeAsync(() => { if (_sendCts is not null) { _sendStatus = s; UpdateTray(); } }),
+                AppLog.Write);
+            summary = await flow.RunAsync(window.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            cancelled = true;
+            AppLog.Write("send: cancelled, or the window ended before a receiver was chosen");
+        }
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException
+                                   or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+        {
+            AppLog.Write($"send failed: {ex.GetType().Name}: {ex.Message}");
+            summary = new SendSummary(null, new SendResult(SendOutcome.Failed, ex.Message));
+        }
+        finally
+        {
+            if (ReferenceEquals(_sendCts, window)) _sendCts = null;
+            _sendStatus = null;
+            window.Dispose();
+            UpdateTray();
+        }
+
+        // The receiver's name goes into the card's text only: ShowMessage logs the title.
+        string who = summary?.ReceiverName is { } n ? PromptWindow.Clean(n, 60) : "the iPhone";
+        switch (summary?.Result?.Outcome)
+        {
+            case SendOutcome.Delivered:
+                _prompts.ShowMessage("Sent", $"{files.Count} file(s) delivered to {who}.");
+                break;
+            case SendOutcome.Declined:
+                _prompts.ShowMessage("Declined", $"{Capitalize(who)} declined. Nothing was sent.");
+                break;
+            case SendOutcome.Failed:
+                _prompts.ShowMessage("Sending failed", $"To {who}: {summary.Result.Detail}");
+                break;
+            default:
+                if (!cancelled || DateTime.UtcNow - started >= _duration - TimeSpan.FromSeconds(1))     // not on a user cancel
+                    _prompts.ShowMessage("Nothing sent", "No iPhone was found or chosen in time. On the iPhone: AirDrop set to " +
+                                         "Everyone for 10 Minutes, screen on and unlocked, then try again.");
+                break;
+        }
+        if (!_manual) await SendStopAsync();
+    }
+
+    /// <summary>The user confirms every receiver: other people's iPhones nearby answer the Bluetooth wake too.</summary>
+    private Task<bool> ConfirmReceiverAsync(string name, string? model) =>
+        Dispatcher.InvokeAsync(() => System.Windows.MessageBox.Show(
+            $"Send to \"{PromptWindow.Clean(name, 60)}\"{(model is { Length: > 0 } ? $" ({PromptWindow.Clean(model, 30)})" : "")}?\n\n" +
+            "Only choose a device you know. If this is not the right one, choose No and mtdrop keeps looking.",
+            "mtdrop - send files", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No,
+            System.Windows.MessageBoxOptions.DefaultDesktopOnly) == MessageBoxResult.Yes).Task;
 
     private async Task ExitAsync()
     {

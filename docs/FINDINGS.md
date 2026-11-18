@@ -1447,3 +1447,22 @@ What would falsify M7 acceptance: any test needing `wifi-giveback.ps1` or a manu
 | T5 restart | **PASS** | `the radio stopped (exit code 0)` 19:05:38, shutdown notice 19:05:39 (inside the 3 s grace) → `system shutdown - the card stays on our driver` → after boot: recovery 19:08:10, connected 19:08:27 |
 
 **Conclusion: M7 accepted.** Every process kill, a restart and a lid close mid-session end with the MediaTek driver back and Wi-Fi connected without manual steps (ADR-0004 acceptance). Open, not blocking: why WLAN AutoConfig does not start an automatic connection after an abrupt `radiod` end (the nudge covers it); a restart mid-session leaves Wi-Fi off until the delayed service start (~2.5 min after boot here).
+
+## F-028 – M8.2/M8.3 first send PC → iPhone: Bluetooth wake, discovery over awdl0, one photo
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Design:** ADR-0005 (proposed). Code (M8.1): `AirDropClient`, `MdnsBrowser`/`AirDropServiceCache`, `CpioOdcWriter`, `DvzipWriter`, `ChunkedWriteStream` in `Mtdrop.Protocol` (protocol tests 95/95, including our sender → our receiver over TLS); tray app: `BleWake` (WinRT publisher, Apple type-0x05 advert with random hashes), `SendFlow`, menu "Send files to an iPhone..." and `--send <file>`.
+- **Machine fact (FACT, read-only WinRT query 2026-11-18):** Bluetooth LE supported, peripheral role supported, extended advertising supported, radio on.
+- **Setup:** one session from the tray menu (same service session as receiving, channel 44, `intersect`); iPhone 15 Pro, iOS 26.5.2, AirDrop "Everyone for 10 Minutes", **share sheet closed**, screen on and unlocked; one small photo (JPEG).
+
+### Predictions
+
+| step | prediction | what falsifies it |
+|---|---|---|
+| BLE | `app.log`: `ble: advertisement Started` after `awdl0` is up; no `Aborted` (Bluetooth is a separate USB function here) – ASSUMPTION | `Aborted` right after the swap → the swap does reset BT on Windows too |
+| announce | `send: receiver #1 announced` within 3–50 s of the advert (winawdl: 3, 9, 13, 50 s) | nothing within the 2-min window → check `awdld.log` for service response TLVs from the phone; if none, the wake did not work (try the 21Suspect payload) |
+| /Discover | answered with a name within a few seconds of the announce; confirm dialog shows the iPhone's name | TLS alert → the phone is in Contacts Only |
+| /Ask | the iPhone shows the accept prompt with our PC name; Accept → `/Ask answered 200` | 4xx without a prompt → the Ask body is missing something iOS 26 wants |
+| /Upload | `/Upload answered 200`, the photo in Photos on the iPhone | refusal at the headers → compare with mt7921 §33/§37 |
+| channel | ASSUMPTION: works on our fixed channel 44; the phone's sequence as a receiver is unknown | announce seen but /Discover or the upload stalls → the phone sits mostly on 149/6 (mt7921 §40) |
+| give-back | as in M7: Wi-Fi back by itself | — |

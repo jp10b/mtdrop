@@ -17,6 +17,7 @@ Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 
 ```
 mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual]
            [--decline-status 401] [--decline-keep-open]
+mtdrop.exe --send <file>
 mtdrop.exe --test-prompt
 mtdrop.exe --test-notice
 ```
@@ -24,6 +25,8 @@ mtdrop.exe --test-notice
 Log: `%LOCALAPPDATA%\mtdrop\logs\app.log` (one older file kept as `app.1.log`, rolled at 1 MB): start options, menu/icon changes, the service states it follows, when `awdl0` was ready, every `/Discover`, `/Ask` (file count and size, the decision and how long it took, the status sent back), `/Upload`, transfer results and notices. Sender names and file names are not written.
 
 `--decline-status` (400–599, default 401) and `--decline-keep-open` (answer without `Connection: close` and keep the connection) are for experiments: `401` + close makes the iPhone show "Declined" (F-026), `403` leaves it on "Waiting" (F-025).
+
+**Sending (M8, ADR-0005):** tray menu **Send files to an iPhone...** (or `--send <file>`) starts the same radio session as receiving, then switches on the Bluetooth LE advertisement that makes nearby iPhones announce themselves as AirDrop receivers (Apple type `0x05`, random hashes, no contact details), browses for `_airdrop._tcp` on `awdl0`, asks each receiver for its name and shows a **Yes/No dialog for every receiver** before anything is sent – other people's iPhones nearby wake up too. After Yes: `/Ask`, the iPhone asks its owner, then `/Upload`; the tray status shows the progress, a card shows the result, and the session ends. The iPhone must be set to Everyone for 10 Minutes, with the share sheet closed and the screen on. The receiver is not announced while sending. The log records counts, timings and outcomes, never receiver names.
 
 `--test-notice` (developer switch) shows the card used instead of toasts and exits when it closes.
 
