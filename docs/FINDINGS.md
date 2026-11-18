@@ -1623,4 +1623,22 @@ Same 5,428,586-byte photo, two sends (maintainer: both arrived):
 - **Backlog:** works as designed (no refusals), **but the send rate did not change** – refusals were not what limits it. The prediction (≥ 1.5×) is falsified.
 - **Quick give-back:** switching the driver on the running device (`UpdateDriverForPlugAndPlayDevices` with the vendor INF, no `/uninstall`) took 33 s once and **hung Windows the next time**. ASSUMPTION: without the device being removed and enumerated again, the MediaTek driver starts on a function in the state our session left (the old path's `/uninstall` removes the device, which goes through a fresh start), like the boot hangs in F-011. **Reverted at once:** the give-back always removes our package with `/uninstall` again; a test guards it (service tests 69/69). Not to be retried without a reset of the PCI function first.
 - **Receive ends after the transfer:** not tested yet (step 4 was not run after the hang).
-- TODO: the service log and `radiod-live.log` of send 2 (copied after the restart, before any new session) to see the last line before the hang.
+- **Last line before the hang (FACT, service log of send 2):** `give-back: switching the card back to oem12.inf` at 20:44:29 – Windows hung inside the driver switch. After the restart the **watchdog task** (`StartWhenAvailable`) ran the give-back at 20:47:46, before the delayed service start: the card was already on the MediaTek driver, our package was removed (`pnputil` exit 0), all 35 networks present, Wi-Fi connected 20:47:59; the service found nothing to do at 20:49:48. The M7 safety net worked after a real hang.
+
+## F-033 – M9: where does a send spend its time?
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Why:** three cheap levers (data rate F-030, phone on our channel F-031, no refusals F-032) left the send at ~142 kB/s (12 Mbit/s) / ~205 kB/s (54). The RTT median is 85–103 ms while the phone shares our channel 14 of 16 slots. OWL sends unicast **one frame at a time** (`state->next`): read one IPv6 packet from `awdl0`, wait for a shared slot if needed, write it to the radio pipe, ask for the next (`owl/daemon/core.c`). 4057 data frames in 38 s is ~107 frames/s, ~9 ms per frame.
+- **Instrumentation (no behaviour change):** `awdld`'s periodic `radio:` line adds `unicast N: deferred D for T ms, in radio write W ms; host empty E` – D/T = frames that had to wait for a shared slot and for how long in total, W = time spent writing frames to `radiod`, E = times `awdl0` had nothing queued when OWL asked for the next frame. `radiod`'s `unicast data:` summary adds the mean and max time from submit to TX status. awdld tests 7/7; both checked in `--loopback`.
+- **Method:** one send of the 5.4 MB photo at the default rate; one photo received (also checks that the receive session ends ~3 s after the transfer, F-032 change 3).
+
+### Predictions – which one holds decides the next step
+
+| if | then the limit is | next step |
+|---|---|---|
+| E is large (thousands) and T is small | Windows TCP sends too little: window over RTT | look at the RTT parts (radio time below, our RX path, the phone), TCP window settings on `awdl0` |
+| T is a large part of the 38 s | OWL's slot scheduling (guard intervals, slot edges) | look at `awdl_can_send_unicast_in` and the guard |
+| W is a large part | the pipe write to `radiod` blocks | batch or make the write asynchronous |
+| radio mean is many ms | firmware/air time per frame (retries) | look at the 33–40 % second transmissions |
+
+ASSUMPTION before the run: E large, T small – TCP is starved by the RTT.

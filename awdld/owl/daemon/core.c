@@ -74,6 +74,7 @@ static int poll_host_device(struct daemon_state *state) {
 		buf = buf_new_owned(ETHER_MAX_LEN);
 		int len = buf_len(buf);
 		if (host_recv(&state->io, (uint8_t *) buf_data(buf), &len) < 0) {
+			state->awdl_state.stats.host_empty++; /* [mtdrop] F-033 */
 			goto wire_error;
 		} else {
 			bool is_multicast;
@@ -223,13 +224,17 @@ void awdl_send_unicast(struct ev_loop *loop, ev_timer *timer, int revents) {
 		} else {
 			in = awdl_can_send_unicast_in(awdl_state, peer, now, AWDL_UNICAST_GUARD_TU);
 			if (in == 0) { /* send now */
+				uint64_t t0 = clock_time_us(); /* [mtdrop] F-033 */
 				awdl_send_data(state->next, &state->io, &state->awdl_state, &state->ieee80211_state);
+				state->awdl_state.stats.tx_unicast_send_us += clock_time_us() - t0;
 				buf_free(state->next);
 				state->next = NULL;
 				state->awdl_state.stats.tx_data_unicast++;
 			} else { /* try later */
 				if (in < 0) /* we are at the end of slot but within guard */
 					in = -in + usec_to_sec(ieee80211_tu_to_usec(AWDL_UNICAST_GUARD_TU));
+				state->awdl_state.stats.tx_unicast_deferred++; /* [mtdrop] F-033 */
+				state->awdl_state.stats.tx_unicast_deferred_us += sec_to_usec(in);
 			}
 		}
 	}

@@ -54,6 +54,8 @@ struct data_txs {
     uint32_t other_mode;        /* HT/VHT/HE in TXS */
     uint32_t no_txs;            /* completed without a TX status record */
     uint32_t frames, transmissions;
+    uint64_t elapsed_us_sum;    /* submit -> completion, as the library reports it (F-033) */
+    uint32_t elapsed_us_max;
 };
 
 #define BACKLOG_SLOTS 512u
@@ -412,6 +414,8 @@ static int pump_tx_done(struct server *sv) {
             if (e->data) {
                 sv->dtx.frames++;
                 sv->dtx.transmissions += d.tx_count;
+                sv->dtx.elapsed_us_sum += d.elapsed_us;
+                if (d.elapsed_us > sv->dtx.elapsed_us_max) sv->dtx.elapsed_us_max = d.elapsed_us;
                 if (!d.has_txs) sv->dtx.no_txs++;
                 else if (((d.txs_rate >> 6) & 0xfu) <= 1u) {
                     uint8_t r500 = legacy_rate_500k((uint8_t)((d.txs_rate >> 6) & 0xfu), (uint8_t)(d.txs_rate & 0x3fu));
@@ -872,7 +876,8 @@ int serve(int argc, char **argv) {
         for (int r = 255; r > 0; r--)
             if (sv.dtx.by_rate_500k[r]) printf(" %u%s Mb/s %u,", r / 2u, r % 2u ? ".5" : "", sv.dtx.by_rate_500k[r]);
         if (sv.dtx.by_rate_500k[0]) printf(" unknown %u,", sv.dtx.by_rate_500k[0]);
-        printf(" HT/VHT %u\n", sv.dtx.other_mode);
+        printf(" HT/VHT %u; in the radio (submit to TX status) mean %llu us, max %u us\n", sv.dtx.other_mode,
+               sv.dtx.frames ? (unsigned long long)(sv.dtx.elapsed_us_sum / sv.dtx.frames) : 0ull, sv.dtx.elapsed_us_max);
         printf("TX backlog: %s; %u frame(s) waited for room, %u dropped after %u ms, deepest %u\n",
                sv.no_backlog ? "off" : "on", sv.bl.queued, sv.bl.expired, BACKLOG_MAX_AGE_US / 1000u, sv.bl.max_depth);
         if (sv.bye_reason == RL_BYE_RADIO_ERROR) printf("RESULT: FAIL - radio error while serving\n");

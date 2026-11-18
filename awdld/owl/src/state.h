@@ -44,6 +44,11 @@ struct awdl_stats {
 	uint64_t rx_action;
 	uint64_t rx_data;
 	uint64_t rx_unknown;
+	/* [mtdrop] F-033: where a send spends its time */
+	uint64_t tx_unicast_deferred;    /* a unicast frame had to wait for a slot shared with its peer */
+	uint64_t tx_unicast_deferred_us; /* total wait asked for by awdl_can_send_unicast_in */
+	uint64_t tx_unicast_send_us;     /* total time inside awdl_send_data for unicast frames (radio pipe write) */
+	uint64_t host_empty;             /* the host adapter had nothing queued when we asked for the next frame */
 };
 
 /* Complete node state */

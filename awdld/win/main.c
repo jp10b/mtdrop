@@ -130,12 +130,15 @@ static void print_status(struct ev_loop *loop, ev_timer *timer, int revents) {
 	 * unless that bracket holds the tree's "(met N, ctr N)". */
 	log_info("radio: rx %llu (dropped %llu, delay us min %lld mean %lld max %lld over %llu), tx acked %llu, "
 		 "not acked %llu, refused %llu, channel %u (switches %llu, failed %llu) | peers %d | rx action %llu, "
-		 "data %llu%s | tx action %llu, data %llu | sync tree %s",
+		 "data %llu%s | tx action %llu, data %llu (unicast %llu: deferred %llu for %llu ms, in radio write %llu ms; "
+		 "host empty %llu) | sync tree %s",
 		 radio.rx_frames, radio.rx_dropped, delay_min, delay_mean, delay_max, delay_n, radio.tx_acked,
 		 radio.tx_not_acked, radio.tx_refused,
 		 radio_client_channel(winawdl_radio()), radio.channel_switches, radio.channel_failures,
 		 awdl_peers_length(state->awdl_state.peers.peers), stats->rx_action, stats->rx_data,
-		 joined, stats->tx_action, stats->tx_data, tree);
+		 joined, stats->tx_action, stats->tx_data, (unsigned long long) stats->tx_data_unicast,
+		 (unsigned long long) stats->tx_unicast_deferred, (unsigned long long) (stats->tx_unicast_deferred_us / 1000),
+		 (unsigned long long) (stats->tx_unicast_send_us / 1000), (unsigned long long) stats->host_empty, tree);
 }
 
 int main(int argc, char *argv[]) {
