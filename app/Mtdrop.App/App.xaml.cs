@@ -59,6 +59,8 @@ public partial class App : System.Windows.Application
     /// <summary>Set while a send runs on an up radio session (ADR-0005); cancelled by Stop and by the window end.</summary>
     private CancellationTokenSource? _sendCts;
     private string? _sendStatus;
+    /// <summary>The same status without the receiver's name, for the log.</summary>
+    private string? _sendStatusForLog;
 
     private static string DataDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mtdrop");
@@ -193,10 +195,11 @@ public partial class App : System.Windows.Application
         old?.Dispose();
         _tray.Text = Shorten($"mtdrop - {(on || waiting || restoring ? status : "not receiving")}", 127);
         _status.Text = Shorten(status, 120);
-        if (status != _loggedStatus)
+        string loggable = sending ? _sendStatusForLog ?? "Sending" : status;
+        if (loggable != _loggedStatus)
         {
-            _loggedStatus = status;
-            AppLog.Write($"tray: {(on ? "green" : waiting || restoring ? "amber" : "grey")} - {status}");
+            _loggedStatus = loggable;
+            AppLog.Write($"tray: {(on ? "green" : waiting || restoring ? "amber" : "grey")} - {loggable}");
         }
         _toggle.Text = restoring ? "Turning Wi-Fi back on..." : sending ? "Cancel sending" : on || waiting ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
         _toggle.Enabled = !restoring;
@@ -516,7 +519,7 @@ public partial class App : System.Windows.Application
         }
         AppLog.Write($"{_interface} ready (index {nic.Index}) {(DateTime.UtcNow - started).TotalSeconds:0.0} s after Send");
         _sendCts = window;
-        _sendStatus = "Looking for iPhones nearby";
+        _sendStatus = _sendStatusForLog = "Looking for iPhones nearby";
         UpdateTray();
 
         SendSummary? summary = null;
@@ -524,7 +527,13 @@ public partial class App : System.Windows.Application
         try
         {
             var flow = new SendFlow(nic, files, _shownName, DataDirectory, ConfirmReceiverAsync,
-                s => Dispatcher.InvokeAsync(() => { if (_sendCts is not null) { _sendStatus = s; UpdateTray(); } }),
+                (shown, logged) => Dispatcher.InvokeAsync(() =>
+                {
+                    if (_sendCts is null) return;
+                    _sendStatus = shown;
+                    _sendStatusForLog = logged;
+                    UpdateTray();
+                }),
                 AppLog.Write);
             summary = await flow.RunAsync(window.Token);
         }
@@ -542,7 +551,7 @@ public partial class App : System.Windows.Application
         finally
         {
             if (ReferenceEquals(_sendCts, window)) _sendCts = null;
-            _sendStatus = null;
+            _sendStatus = _sendStatusForLog = null;
             window.Dispose();
             UpdateTray();
         }

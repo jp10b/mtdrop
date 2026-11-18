@@ -1466,3 +1466,27 @@ What would falsify M7 acceptance: any test needing `wifi-giveback.ps1` or a manu
 | /Upload | `/Upload answered 200`, the photo in Photos on the iPhone | refusal at the headers → compare with mt7921 §33/§37 |
 | channel | ASSUMPTION: works on our fixed channel 44; the phone's sequence as a receiver is unknown | announce seen but /Discover or the upload stalls → the phone sits mostly on 149/6 (mt7921 §40) |
 | give-back | as in M7: Wi-Fi back by itself | — |
+
+### Result (2026-11-18, 19:28–19:29) – **the first send PC → iPhone works**
+
+`app.log` (receiver name not recorded here):
+
+| t (s after "Send") | event |
+|---|---|
+| 0 | user: send 1 file, 446,836 bytes (JPEG) |
+| 12.4 | `awdl0` ready (service session as for receiving) |
+| 12.8 | `ble: advertisement Started` – **no `Aborted`**: Bluetooth was usable right after the swap (FACT for this order: advert started after the swap; whether the swap would kill an advert started before it is not tested) |
+| 14.9 | `receiver #1 announced 2.3 s after the advert started` (TXT `flags=111611`) – through awdld's service bridge |
+| 15.9 | `/Discover` answered with a name (no `ReceiverModelName`) |
+| 17.8 | user confirmed the receiver in the dialog |
+| 20.2 | `/Ask answered 200` (the owner accepted on the iPhone) |
+| 20.2–26.4 | upload, `/Upload answered 200` – ~72 kB/s |
+| 26.4 | `Delivered after 13.8 s` (from the advert), advert stopped, "Sent" card |
+| 28.9 → 57.9 | service give-back, Wi-Fi connected by itself |
+
+Maintainer: the photo arrived on the iPhone; everything worked as expected.
+
+- **Predictions held:** BLE wake works from Windows (announce 2.3 s after the advert, faster than winawdl's 3–50 s), discovery through the service bridge works on our fixed channel 44, `/Ask` with `TransferID` + `/Upload` on the same connection is accepted by iOS 26.5.2 without an Apple ID or signed sender record (as mt7921 §37 and winawdl reported).
+- **Throughput** ~72 kB/s on the upload (vs ~1 MB/s in winawdl with rate control) – fine for photos, a M9 topic.
+- **Privacy bug found and fixed:** the tray status lines in `app.log` ("Waiting for … to accept", "Sending to …: N %") contained the receiver's name. The log now gets a second text without the name. The maintainer's local `app.log` from this run still contains it (local file, never committed).
+- Open for M8.4: Explorer context menu "Send to iPhone", several files, a receiver list instead of one Yes/No dialog per receiver.

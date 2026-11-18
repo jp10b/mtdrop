@@ -14,7 +14,8 @@ public sealed record SendSummary(string? ReceiverName, SendResult? Result);
 /// One send on a radio session that is already up (ADR-0005): Bluetooth wake, browse for <c>_airdrop._tcp</c> on
 /// awdl0, ask each receiver for its name (/Discover), let the user confirm the receiver, then /Ask + /Upload.
 /// The user always confirms the receiver: other people's iPhones nearby wake up too.
-/// Receiver names are never written to the log (they are often a person's name).
+/// Receiver names are never written to the log (they are often a person's name): <paramref name="status"/> gets the
+/// text for the tray and a second text without the name for the log.
 /// </summary>
 public sealed class SendFlow(
     InterfaceInfo nic,
@@ -22,7 +23,7 @@ public sealed class SendFlow(
     string senderName,
     string dataDirectory,
     Func<string, string?, Task<bool>> confirmReceiver,
-    Action<string> status,
+    Action<string, string> status,
     Action<string> log)
 {
     private static readonly TimeSpan Retry = TimeSpan.FromSeconds(3);
@@ -43,7 +44,7 @@ public sealed class SendFlow(
         ble.Start();
         await using var browser = new MdnsBrowser(nic.Index, log: m => log($"browse: {m}"));
         browser.Start();
-        status("Looking for iPhones nearby");
+        status("Looking for iPhones nearby", "Looking for iPhones nearby");
         log($"send: {files.Count} file(s), {files.Sum(f => f.Size)} bytes; browsing on {nic.Name} (index {nic.Index})");
 
         var nextTry = new Dictionary<string, TimeSpan>(StringComparer.OrdinalIgnoreCase);   // by service id
@@ -85,14 +86,14 @@ public sealed class SendFlow(
                     continue;
                 }
 
-                status($"Waiting for {who.Value.Name} to accept");
+                status($"Waiting for {who.Value.Name} to accept", "Waiting for the receiver to accept");
                 long sent = 0, total = Math.Max(1, files.Sum(f => f.Size));
                 int lastPercent = -1;
                 var progress = new ActionProgress(n =>
                 {
                     int percent = (int)(100 * Interlocked.Add(ref sent, n) / total);
                     if (percent == Interlocked.Exchange(ref lastPercent, percent)) return;
-                    status($"Sending to {who.Value.Name}: {percent} %");
+                    status($"Sending to {who.Value.Name}: {percent} %", $"Sending: {percent} %");
                 });
                 SendResult result = await client.SendAsync(e.EndPoint, files, progress, ct);
                 log($"send: {result.Outcome} after {clock.Elapsed.TotalSeconds:0.0} s ({result.Detail})");
