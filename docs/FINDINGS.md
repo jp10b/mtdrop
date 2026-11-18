@@ -1505,3 +1505,22 @@ Maintainer: the photo arrived on the iPhone; everything worked as expected.
 | list | the iPhone appears in the list within ~5 s after `awdl0` (F-028: 2.3 s after the advert) | — |
 | send | one /Ask for 2 files, the iPhone shows one prompt for 2 photos; `/Upload answered 200`; both photos in Photos | the iPhone takes only one, or refuses a 2-file archive (archive shape for several files is PROTOCOL §10 item 4) |
 | privacy | no receiver name in `app.log` | any line with it |
+
+### Result (2026-11-18, 19:43–19:44) – **M8 accepted**
+
+`app.log` (no receiver name in it – checked):
+
+| t (s after "Send to") | event |
+|---|---|
+| 0 | tray app started by Explorer's "Send to" with 2 files, 2,325,357 bytes (**it was not running**: the re-install had stopped it, so this start became the tray app itself; the pipe hand-over was **not** exercised) |
+| 11.0 | `awdl0` ready |
+| 11.3 | BLE advert started |
+| 12.8 | receiver announced (1.7 s after the advert) |
+| 13.8 | receiver listed in the window |
+| 16.6 | user clicked it |
+| 19.6 | `/Ask answered 200` (one prompt on the iPhone for both photos – maintainer) |
+| 46.5 | `/Upload answered 200` – 2.3 MB in 26.8 s, ~87 kB/s; both photos on the iPhone (maintainer) |
+| 47.4 → 74.4 | give-back, Wi-Fi back by itself |
+
+- **M8 acceptance met:** photos chosen in Explorer's context menu arrive on the iPhone; several files in one transfer work (archive with `.` + two members, PROTOCOL §10 item 4 answered for photos sent *to* iOS).
+- TODO-VERIFY: the hand-over to an already running tray app (named pipe) – next time "Send to" is used while the tray icon is up.
