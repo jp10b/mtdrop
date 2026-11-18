@@ -11,13 +11,21 @@ Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 
 - Each `/Ask` opens the app's own small always-on-top prompt window (not a toast: a consent decision must not depend on the notification system). It appears at the bottom-right of the primary screen's work area, does not take keyboard focus and is not in the taskbar. Several prompts stack upward and re-flow when one closes.
 - The prompt shows the sender name (plain text, one line, ellipsised, labelled "Sender name is not verified"), the file description, **Accept** / **Decline** and a countdown. Only a click on Accept accepts; Decline, closing the window, Escape, 60 s timeout, stopping the receive window or a cancelled request all decline.
 - There is no default button, so Enter/Space typed in another app cannot accept. Buttons ignore input (and look disabled) for 500 ms after the prompt appears or moves.
-- After a transfer: a toast with **Open folder**, or a notice that nothing was saved. Toasts are informational only; if they fail (unpackaged-app registration, Do Not Disturb) nothing else is affected.
+- After a transfer: a notice with **Open folder**, or a notice that nothing was saved. Notices are Windows toasts when toasts can be seen; when the user has switched notifications off (Settings > System > Notifications, `ToastEnabled = 0`, F-025) or for this app, or a toast call fails, the app shows its own card instead (same look and corner as the prompt, closes after 30 s, **Open folder** / **Close**). Notices are informational only and never block anything.
 - The receive window ends by itself; a running transfer is allowed to finish first.
 
 ```
 mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual]
+           [--decline-status 403] [--decline-keep-open]
 mtdrop.exe --test-prompt
+mtdrop.exe --test-notice
 ```
+
+Log: `%LOCALAPPDATA%\mtdrop\logs\app.log` (one older file kept as `app.1.log`, rolled at 1 MB): start options, menu/icon changes, the service states it follows, when `awdl0` was ready, every `/Discover`, `/Ask` (file count and size, the decision and how long it took, the status sent back), `/Upload`, transfer results and notices. Sender names and file names are not written.
+
+`--decline-status` (400–599, default 403) and `--decline-keep-open` (answer without `Connection: close` and keep the connection) are for the open question of what the iPhone needs to show a decline: with `403` + close it stays on "Waiting" (F-025; docs/PROTOCOL.md §10 item 1).
+
+`--test-notice` (developer switch) shows the card used instead of toasts and exits when it closes.
 
 `--test-prompt` (developer switch) shows one sample prompt ("Test Phone", `mtdrop-test.png`, 104177 bytes) without any tray icon or network session, writes `accepted` or `declined` to `%LOCALAPPDATA%\mtdrop\last-prompt.txt` and exits. Use it to check the window by hand.
 
@@ -27,7 +35,7 @@ mtdrop.exe --test-prompt
 
 Hand-started hardware session (M6 style, without the service): start `mtdrop.exe --manual --minutes 5` in your own desktop session, click **Start receiving** (it only waits for `awdl0`), then run the session script with `-Airdrop tray` (adds temporary firewall rules for `mtdrop.exe`; the script runs as SYSTEM, where prompts and toasts would be invisible, so it does not start the app itself).
 
-Result toasts use `Microsoft.Toolkit.Uwp.Notifications` (unpackaged desktop apps, no Windows App SDK runtime); every toast call is wrapped so a failure cannot crash or block the app.
+Toasts use `Microsoft.Toolkit.Uwp.Notifications` (unpackaged desktop apps, no Windows App SDK runtime); every toast call is wrapped so a failure cannot crash or block the app.
 
 Start with Windows: `scripts/install-service.ps1` adds a Start menu shortcut and (unless `-NoAutostart`) a per-user autostart entry.
 

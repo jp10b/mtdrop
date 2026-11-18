@@ -27,10 +27,12 @@ public sealed class EndToEndTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    private AirDropServer NewServer(TimeSpan? uploadIdle = null, TimeSpan? consentTimeout = null)
+    private AirDropServer NewServer(TimeSpan? uploadIdle = null, TimeSpan? consentTimeout = null, int declineStatus = 403, bool declineKeeps = false)
     {
         var server = new AirDropServer(new AirDropServerOptions
         {
+            DeclineStatus = declineStatus,
+            DeclineKeepsConnection = declineKeeps,
             ComputerName = "TEST-PC",
             DestinationDirectory = _dir,
             BindAddress = IPAddress.IPv6Loopback,
@@ -116,6 +118,22 @@ public sealed class EndToEndTests : IAsyncLifetime
         await using var c = await FakeSender.ConnectAsync(_server.Port);
         Response ask = await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0001.JPG", 100)));
         Assert.Equal(403, ask.Status);
+        Assert.Equal("close", ask.Headers.GetValueOrDefault("connection"), ignoreCase: true);
+        Assert.Empty(SavedFiles());
+    }
+
+    [Fact]
+    public async Task Decline_status_and_keep_open_are_configurable()
+    {
+        await _server.DisposeAsync();
+        _server = NewServer(declineStatus: 401, declineKeeps: true);
+        _consent = (_, _) => Task.FromResult(false);
+        await using var c = await FakeSender.ConnectAsync(_server.Port);
+        Response ask = await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0001.JPG", 100)));
+        Assert.Equal(401, ask.Status);
+        Assert.False(ask.Headers.ContainsKey("connection"));
+        // The connection stays usable: a second ask on it is answered too.
+        Assert.Equal(401, (await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0002.JPG", 100)))).Status);
         Assert.Empty(SavedFiles());
     }
 

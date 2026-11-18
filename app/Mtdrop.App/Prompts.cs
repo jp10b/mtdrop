@@ -2,14 +2,15 @@ using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Toolkit.Uwp.Notifications;
+using Microsoft.Win32;
 using Mtdrop.Protocol;
 
 namespace Mtdrop.App;
 
 /// <summary>
 /// The consent prompt is the app's own always-on-top window (<see cref="PromptWindow"/>), because a consent
-/// decision must not depend on the notification system. Toasts are used only for non-critical messages
-/// (saved / failed / info) and every toast call is allowed to fail silently.
+/// decision must not depend on the notification system. Non-critical messages (saved / failed / info) go to a
+/// Windows toast when toasts are visible, otherwise to the app's own <see cref="NoticeWindow"/> card.
 /// A prompt that is closed, ignored or times out counts as a decline.
 /// </summary>
 public sealed class Prompts
@@ -19,7 +20,7 @@ public sealed class Prompts
     private const double Gap = 8;
 
     /// <summary>Open prompt windows, oldest first (= lowest). Touched on the UI thread only.</summary>
-    private readonly List<PromptWindow> _open = [];
+    private readonly List<Window> _open = [];
 
     /// <summary>Hooks the "Open folder" button of the result toast. Optional: failure only loses that button.</summary>
     public static void InitToasts()
@@ -117,12 +118,12 @@ public sealed class Prompts
         Rect area = SystemParameters.WorkArea;      // primary screen without the taskbar, in DIPs
         double pad = PromptWindow.ShadowPad;
         double bottom = area.Bottom - Edge + pad;   // window bottom, so that the card's bottom is Edge above the work area edge
-        foreach (PromptWindow w in _open)
+        foreach (Window w in _open)
         {
             double height = w.ActualHeight, width = w.ActualWidth;
             if (height <= 0 || width <= 0) continue;    // not laid out yet; SizeChanged will call us again
             double top = Math.Max(bottom - height, area.Top - pad);
-            w.PlaceAt(area.Right - Edge + pad - width, top);
+            ((ICard)w).PlaceAt(area.Right - Edge + pad - width, top);
             bottom = top + 2 * pad - Gap;
         }
     }
@@ -138,40 +139,86 @@ public sealed class Prompts
 
     private void CloseAll()
     {
-        foreach (PromptWindow w in _open.ToArray()) w.Close();
+        foreach (PromptWindow w in _open.OfType<PromptWindow>().ToArray()) w.Close();     // notices stay
     }
 
-    // ---- Toasts: informational only, never allowed to throw. ----
+    // ---- Notices: informational only, never allowed to throw. A Windows toast when toasts can be seen, otherwise
+    // the app's own card (toasts switched off for the user, FINDINGS F-025, or the toast call failed). ----
 
-    private static void TryToast(Action show)
+    /// <summary>False when Windows would swallow our toasts: notifications off for the user or for this app.</summary>
+    private static bool ToastsVisible()
     {
-        try { show(); }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"toast failed: {ex.Message}"); }
+        try
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\PushNotifications");
+            if (key?.GetValue("ToastEnabled") is int enabled && enabled == 0) return false;
+            return ToastNotificationManagerCompat.CreateToastNotifier().Setting == global::Windows.UI.Notifications.NotificationSetting.Enabled;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
-    public static void ShowSaved(TransferResult result) => TryToast(() =>
+    private void Notify(string title, string detail, string? reveal, Action<ToastContentBuilder>? extend, string group)
+    {
+        if (ToastsVisible())
+        {
+            try
+            {
+                var builder = new ToastContentBuilder().AddText(title).AddText(detail);
+                extend?.Invoke(builder);
+                builder.Show(t => t.Group = group);
+                AppLog.Write($"notice (toast): {title}");
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"toast failed ({ex.GetType().Name}: {ex.Message}); showing the card instead");
+            }
+        }
+        AppLog.Write($"notice (card): {title}");
+        Dispatcher? ui = System.Windows.Application.Current?.Dispatcher;
+        _ = ui?.InvokeAsync(() =>
+        {
+            try
+            {
+                var w = new NoticeWindow(title, detail, reveal);
+                w.Closed += (_, _) =>
+                {
+                    _open.Remove(w);
+                    Reflow();
+                };
+                w.SizeChanged += (_, _) => Reflow();
+                _open.Add(w);
+                w.Show();
+                Reflow();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"notice card failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        });
+    }
+
+    public void ShowSaved(TransferResult result)
     {
         string first = result.SavedFiles[0];
         string text = result.SavedFiles.Count == 1
             ? Path.GetFileName(first)
             : $"{result.SavedFiles.Count} files";
-        var builder = new ToastContentBuilder()
-            .AddText($"Received from {result.Ask.SenderName}")
-            .AddText($"{text} saved to {Path.GetDirectoryName(first)}")
-            .AddArgument("action", "open").AddArgument("path", first)
-            .AddButton(new ToastButton().SetContent("Open folder").AddArgument("action", "open").AddArgument("path", first)
-                .SetBackgroundActivation());
-        builder.Show(t => t.Group = "result");
-    });
+        Notify($"Received from {result.Ask.SenderName}", $"{text} saved to {Path.GetDirectoryName(first)}", first,
+            b => b.AddArgument("action", "open").AddArgument("path", first)
+                .AddButton(new ToastButton().SetContent("Open folder").AddArgument("action", "open").AddArgument("path", first)
+                    .SetBackgroundActivation()),
+            "result");
+    }
 
-    public static void ShowFailed(TransferResult result) => TryToast(() =>
-        new ToastContentBuilder()
-            .AddText($"Transfer from {result.Ask.SenderName} did not complete")
-            .AddText("Nothing was saved. The sender may retry automatically.")
-            .Show(t => t.Group = "result"));
+    public void ShowFailed(TransferResult result) =>
+        Notify($"Transfer from {result.Ask.SenderName} did not complete", "Nothing was saved. The sender may retry automatically.",
+            null, null, "result");
 
-    public static void ShowMessage(string title, string detail) => TryToast(() =>
-        new ToastContentBuilder().AddText(title).AddText(detail).Show(t => t.Group = "info"));
+    public void ShowMessage(string title, string detail) => Notify(title, detail, null, null, "info");
 }
 
 public static class Shell

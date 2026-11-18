@@ -20,6 +20,10 @@ public sealed class ReceiveSessionOptions
     public required Func<AskRequest, CancellationToken, Task<bool>> Consent { get; init; }
     public int Port { get; init; } = 8771;
     public TimeSpan ConsentTimeout { get; init; } = TimeSpan.FromSeconds(60);
+    /// <summary>See <see cref="AirDropServerOptions.DeclineStatus"/>.</summary>
+    public int DeclineStatus { get; init; } = 403;
+    /// <summary>See <see cref="AirDropServerOptions.DeclineKeepsConnection"/>.</summary>
+    public bool DeclineKeepsConnection { get; init; }
     public Action<string>? Log { get; init; }
 }
 
@@ -92,6 +96,8 @@ public sealed class ReceiveSession : IAsyncDisposable
             RequiredScopeId = nic.IsLoopback ? null : nic.Index,
             Consent = o.Consent,
             ConsentTimeout = o.ConsentTimeout,
+            DeclineStatus = o.DeclineStatus,
+            DeclineKeepsConnection = o.DeclineKeepsConnection,
             Log = o.Log,
         }, certificate);
         server.Start();

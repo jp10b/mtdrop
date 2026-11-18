@@ -52,8 +52,14 @@ public sealed class AirDropServerOptions
     public int MaxControlBodyBytes { get; init; } = 4 * 1024 * 1024;
     public int MaxConnections { get; init; } = 16;
 
-    /// <summary>HTTP status for a declined /Ask. Open question, docs/PROTOCOL.md §10 item 1.</summary>
+    /// <summary>
+    /// HTTP status for a declined /Ask. Open question, docs/PROTOCOL.md §10 item 1: with 403 + Connection: close
+    /// the iPhone stays on "Waiting" (FINDINGS F-025).
+    /// </summary>
     public int DeclineStatus { get; init; } = 403;
+
+    /// <summary>Answer a declined /Ask without "Connection: close" and keep the connection open (experiment).</summary>
+    public bool DeclineKeepsConnection { get; init; }
 
     public Action<string>? Log { get; init; }
 }
@@ -224,6 +230,7 @@ public sealed class AirDropServer : IAsyncDisposable
                     ["ReceiverMediaCapabilities"] = Encoding.UTF8.GetBytes("{\"Version\": 1}"),
                 });
                 await HttpResponse.WriteAsync(tls, 200, "OK", body, close: false, ct).ConfigureAwait(false);
+                Log("/Discover answered 200");
                 return true;
             }
             case "/Ask":
@@ -308,11 +315,12 @@ public sealed class AirDropServer : IAsyncDisposable
         }
         catch (NotSupportedException e)
         {
-            Log($"declined: {e.Message}");
-            await HttpResponse.WriteAsync(tls, _o.DeclineStatus, "Declined", default, close: true, ct).ConfigureAwait(false);
-            return false;
+            Log($"/Ask declined without asking: {e.Message}");
+            return await DeclineAsync(tls, ct).ConfigureAwait(false);
         }
 
+        Log($"/Ask: {ask.Files.Count} file(s), {ask.TotalSize} bytes; asking the user");
+        long asked = Environment.TickCount64;
         bool accepted = false;
         using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
         {
@@ -320,11 +328,8 @@ public sealed class AirDropServer : IAsyncDisposable
             try { accepted = await _o.Consent(ask, cts.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { accepted = false; }
         }
-        if (!accepted)
-        {
-            await HttpResponse.WriteAsync(tls, _o.DeclineStatus, "Declined", default, close: true, ct).ConfigureAwait(false);
-            return false;
-        }
+        Log($"/Ask: user {(accepted ? "accepted" : "declined or did not answer")} after {(Environment.TickCount64 - asked) / 1000.0:0.0} s");
+        if (!accepted) return await DeclineAsync(tls, ct).ConfigureAwait(false);
         state.AcceptedAsk = ask;
         state.AcceptedAt = DateTime.UtcNow;
         byte[] reply = BinaryPlist.Write(new Dictionary<string, object?>
@@ -333,8 +338,33 @@ public sealed class AirDropServer : IAsyncDisposable
             ["ReceiverModelName"] = _o.ModelName,
         });
         await HttpResponse.WriteAsync(tls, 200, "OK", reply, close: false, ct).ConfigureAwait(false);
+        Log("/Ask answered 200");
         return true;
     }
+
+    /// <returns>Whether the connection stays open (see <see cref="AirDropServerOptions.DeclineKeepsConnection"/>).</returns>
+    private async Task<bool> DeclineAsync(Stream tls, CancellationToken ct)
+    {
+        bool keep = _o.DeclineKeepsConnection;
+        await HttpResponse.WriteAsync(tls, _o.DeclineStatus, ReasonPhrase(_o.DeclineStatus), default, close: !keep, ct).ConfigureAwait(false);
+        Log($"/Ask answered {_o.DeclineStatus} {ReasonPhrase(_o.DeclineStatus)}{(keep ? ", connection kept open" : ", Connection: close")}");
+        return keep;
+    }
+
+    private static string ReasonPhrase(int status) => status switch
+    {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        406 => "Not Acceptable",
+        409 => "Conflict",
+        410 => "Gone",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Declined",
+    };
 
     private async Task HandleUploadAsync(HttpRequestHead head, ConnectionReader reader, Stream tls,
         ConnectionState state, CancellationToken ct)
@@ -369,6 +399,7 @@ public sealed class AirDropServer : IAsyncDisposable
             MaxTotalBytes = announced > 0 ? announced + 16L * 1024 * 1024 : new UploadLimits().MaxTotalBytes,
         };
         if (head.ExpectsContinue) await HttpResponse.WriteContinueAsync(tls, ct).ConfigureAwait(false);
+        Log("/Upload: receiving");
         reader.IdleTimeout = _o.UploadIdleTimeout;
         try
         {

@@ -7,42 +7,6 @@
         ResizeMode="NoResize" ShowInTaskbar="False" ShowActivated="False" Topmost="True"
         WindowStartupLocation="Manual" UseLayoutRounding="True"
         FontFamily="Segoe UI" FontSize="13">
-    <Window.Resources>
-        <!-- Brushes (CardBrush, TextBrush, ...) are filled in by the code-behind according to the system theme. -->
-        <Style x:Key="PromptButton" TargetType="Button">
-            <Setter Property="Background" Value="{DynamicResource ButtonBrush}"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-            <Setter Property="MinWidth" Value="84"/>
-            <Setter Property="IsDefault" Value="False"/>
-            <Setter Property="IsCancel" Value="False"/>
-            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="Transparent"
-                                BorderThickness="2" CornerRadius="4" Padding="14,5">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
-                            </Trigger>
-                            <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource TextBrush}"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key="AcceptButton" TargetType="Button" BasedOn="{StaticResource PromptButton}">
-            <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
-            <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
-        </Style>
-    </Window.Resources>
 
     <!-- The 12 px margin leaves room for the shadow; keep it in sync with PromptWindow.ShadowPad. -->
     <Border Margin="12" CornerRadius="8" Padding="16,14,16,14" BorderThickness="1"
