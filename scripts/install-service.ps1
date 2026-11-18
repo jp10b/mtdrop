@@ -77,7 +77,24 @@ function Get-ProxyPackages {
 function Stop-TrayApps {
     Get-Process -Name 'mtdrop' -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { Stop-Process -Id $_.Id -Force; Say "  stopped the tray app (pid $($_.Id))" }
+        ForEach-Object { Stop-Process -Id $_.Id -Force; [void]$_.WaitForExit(10000); Say "  stopped the tray app (pid $($_.Id))" }
+}
+# Stop-Process and a service reporting 'Stopped' return before the process has released its image files, so
+# deleting the install folder right after can hit a locked file. Wait for every process running from it.
+function Wait-InstallDirFree {
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { try { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } |
+        ForEach-Object { Say "  waiting for $($_.Name) (pid $($_.Id)) to exit"; if (-not $_.WaitForExit(15000)) { throw "$($_.Name) (pid $($_.Id)) still runs from $InstallDir" } }
+}
+function Remove-InstallDir {
+    for ($try = 1; ; $try++) {
+        try { Remove-Item $InstallDir -Recurse -Force; return }
+        catch {
+            if ($try -ge 5) { throw "could not delete the old $InstallDir ($($_.Exception.Message)); close anything that uses it and run -Apply again" }
+            Say "  old files still locked ($($_.Exception.Message)), retrying"
+            Start-Sleep -Seconds 2
+        }
+    }
 }
 function Stop-MtdropService {
     $s = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -142,7 +159,7 @@ if (-not $Uninstall) {
     }
     Step "Copy mtdrop-service.exe, radiod.exe, awdld.exe, wintun.dll, the tray app (app\) and the MT7961 firmware (firmware\) to $InstallDir (replacing an older copy)" `
          'install-service.ps1 -Uninstall -Apply deletes the folder' {
-        if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
+        if (Test-Path $InstallDir) { Wait-InstallDirFree; Remove-InstallDir }
         New-Item -ItemType Directory -Force -Path $InstallDir, "$InstallDir\app", "$InstallDir\driver", "$InstallDir\firmware" | Out-Null
         Copy-Item (Join-Path $src.service '*') $InstallDir -Recurse
         Copy-Item (Join-Path $src.app '*') "$InstallDir\app" -Recurse
