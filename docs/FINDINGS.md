@@ -1322,3 +1322,36 @@ Offline (FACT, 2026-11-17): with an existing adapter the app listens on 8771 wit
 | second session, Decline | same start; the iPhone shows the transfer declined; nothing new in Downloads; Wi-Fi back again |
 
 What would falsify M7.3: anything needing a manual step (script, elevation) to receive, or Wi-Fi not back without `wifi-giveback.ps1`.
+
+### Raw result (2026-11-18, maintainer at the PC, logs copied to the private folder)
+
+Times from the service log (`C:\ProgramData\mtdrop\logs\service.log`), the receiver's saved file and the maintainer's report.
+
+| | session 1 (Accept) | session 2 (Decline) |
+|---|---|---|
+| Start clicked → `Preparing` | 11:07:57 | 11:11:54 |
+| dma-probe | PASS, 512 runs of 4 KiB | PASS, 512 runs of 4 KiB |
+| saved Wi-Fi networks exported | **0** | 1 |
+| proxy on the card (`oem121.inf`) | 11:08:01 (+4 s) | 11:11:58 (+4 s) |
+| radiod + awdld started, firewall rules | 11:08:04 | 11:12:00 |
+| service state `Receiving` | **11:08:07 (+10 s)** | **11:12:04 (+10 s)** |
+| transfer | photo (3.19 MB) saved to Downloads 11:08:29, **+32 s after Start** | Decline clicked; nothing saved |
+| end | 11:09:57 service deadline (`time window ended`) | 11:13:55 app's stop (`stopped on request`) |
+| proxy package removed / MediaTek back | 11:10:14 / 11:10:19 (+22 s) | 11:14:11 / 11:14:15 (+20 s) |
+| profiles after give-back | "all present" (nothing was exported) | **re-added 1** |
+| Wi-Fi connected | **not within 30 s** (11:10:54 "back but not connected yet") | 11:14:24 (+29 s after the end) |
+| watchdog task removed, Idle | 11:10:55 | 11:14:25 |
+
+- Afterwards (FACT, `--check` at ~11:20): MediaTek 3.5.0.1349 (`oem12.inf`), no proxy packages, state clear, `awdl0` down, Wi-Fi connected; service Running; no task under `\mtdrop\`; no `mtdrop-receiver-*` firewall rules.
+- awdld (session 2): 5 AWDL peers at start, sync master followed within 1 s, iPhone data frames from +4 s after awdld started (59 joined by +8 s), unicast ACKed 66 / not 9 over the first 40 s.
+- **Decline:** the iPhone stayed on **"Waiting"** after Decline (maintainer). Our answer to `/Ask` was `403` with `Connection: close` (`AirDropServer.DeclineStatus`).
+- **Green icon:** the maintainer reports ~1–2 min from the click to the green icon. That does not fit session 1: the receiver (which only runs once the icon is green) had saved the photo 32 s after the click, and the service reported `Receiving` at +10 s in both sessions. TODO-VERIFY: what was timed (the tray app writes no log yet, so its side cannot be checked).
+- Toast with **Open folder** after Accept: not reported (TODO-VERIFY).
+- Profile export as SYSTEM gave 0 and 1 files, while the same `netsh wlan export profile folder=…` run unelevated as the maintainer exports 31 files and prints one "The filename, directory name, or volume label syntax is incorrect." line (netsh exit code 1). The service does not log netsh's output or exit code, so the cause is unknown. Whether Wi-Fi came back by itself after session 1 or was reconnected by hand: TODO-VERIFY.
+
+### Conclusion (preliminary)
+
+- **M7.3 core: PASS.** Two sessions from one click each, no script and no elevation; the service took the card, ran the radio, ended on time (its own deadline in session 1, the app's stop in session 2), gave the card back through the C# give-back and cleaned up the task and firewall rules. The second session ran straight after the first give-back. Wi-Fi was off ~2.5 min per session; the radio was up 10 s after the click.
+- **Decline is not usable yet:** `403` leaves the iPhone on "Waiting" (now FACT on our phone, as `mt/docs/FINDINGS.md` reported). Next: try `401` (winawdl's untested choice) and other answers; make the status selectable without a rebuild.
+- **Wi-Fi profile export as SYSTEM is unreliable** (0 / 1 files). Harmless when the swap keeps the profiles, but it is the safety net for when it does not. Next: log netsh's exit code and output (SSIDs stay in the private log), find why SYSTEM exports fewer.
+- **The tray app needs its own log** (state changes, `/Ask`, decision, answer, timings) so the next session can settle the green-icon timing and the Decline behaviour from data instead of memory.
