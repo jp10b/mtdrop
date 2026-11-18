@@ -302,7 +302,7 @@ Per file:
 Response:
 
 - **Accept:** `200` with `ReceiverComputerName` and `ReceiverModelName`. FACT (capture): sufficient. winawdl also repeats `ReceiverMediaCapabilities`.
-- **Decline:** unsettled. Four projects answer `403`, winawdl `401`; the one on-device note about `403` says the phone stayed on "Waiting" (`mt/docs/FINDINGS.md:3347`). FACT on our phone (F-025, iOS 26.5.2): `403` with `Connection: close` leaves the iPhone on "Waiting". **TODO-VERIFY** `401` and other answers; the tray app takes `--decline-status <code>` and `--decline-keep-open` for this.
+- **Decline:** answer **`401`** with `Connection: close`. FACT on our phone (iOS 26.5.2): `401` → the iPhone shows "Declined" (F-026); `403` → it stays on "Waiting" (F-025). Four projects answer `403`, winawdl `401`; the one on-device note about `403` also says "Waiting" (`mt/docs/FINDINGS.md:3347`). The tray app keeps `--decline-status <code>` and `--decline-keep-open` for experiments.
 - **How long may we take?** FACT (capture): 1.5 s and 3.2 s worked. REPORTED: 15 s worked (`wa/DESIGN-NOTES.md:608-611`). Upper bound TODO-VERIFY. While waiting, watch the connection: if the sender closes it, the user cancelled → dismiss the prompt (`wa/airdrop/receiver.py:138-151`).
 - Link shares end here: there is no `/Upload` (REPORTED). Not in scope for v0.1; answer as decline or ignore safely.
 
@@ -434,7 +434,7 @@ All REPORTED unless marked; none verified by us yet.
 
 | # | Question | Blocks | How to answer |
 |---|---|---|---|
-| 1 | What does the phone show for a `403` / `401` decline? | M2 toast, M6 | First end-to-end run on any working link |
+| 1 | ~~What does the phone show for a `403` / `401` decline?~~ Answered: `401` → "Declined", `403` → "Waiting" (F-025, F-026) | M2 toast, M6 | done |
 | 2 | How long does the phone wait for the `/Ask` answer? | M2 toast timeout | Delay the answer in steps |
 | 3 | Is the 0-chunk withheld for video / Live Photo / multiple files? | M2 completeness rule (already handles both) | Send those from the phone |
 | 4 | Archive shape for multiple files, HEIC originals, Live Photos, videos | M2 extraction | Same |

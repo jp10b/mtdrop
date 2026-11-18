@@ -27,7 +27,7 @@ public sealed class EndToEndTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    private AirDropServer NewServer(TimeSpan? uploadIdle = null, TimeSpan? consentTimeout = null, int declineStatus = 403, bool declineKeeps = false)
+    private AirDropServer NewServer(TimeSpan? uploadIdle = null, TimeSpan? consentTimeout = null, int declineStatus = 401, bool declineKeeps = false)
     {
         var server = new AirDropServer(new AirDropServerOptions
         {
@@ -117,7 +117,7 @@ public sealed class EndToEndTests : IAsyncLifetime
         _consent = (_, _) => Task.FromResult(false);
         await using var c = await FakeSender.ConnectAsync(_server.Port);
         Response ask = await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0001.JPG", 100)));
-        Assert.Equal(403, ask.Status);
+        Assert.Equal(401, ask.Status);
         Assert.Equal("close", ask.Headers.GetValueOrDefault("connection"), ignoreCase: true);
         Assert.Empty(SavedFiles());
     }
@@ -126,14 +126,14 @@ public sealed class EndToEndTests : IAsyncLifetime
     public async Task Decline_status_and_keep_open_are_configurable()
     {
         await _server.DisposeAsync();
-        _server = NewServer(declineStatus: 401, declineKeeps: true);
+        _server = NewServer(declineStatus: 403, declineKeeps: true);
         _consent = (_, _) => Task.FromResult(false);
         await using var c = await FakeSender.ConnectAsync(_server.Port);
         Response ask = await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0001.JPG", 100)));
-        Assert.Equal(401, ask.Status);
+        Assert.Equal(403, ask.Status);
         Assert.False(ask.Headers.ContainsKey("connection"));
         // The connection stays usable: a second ask on it is answered too.
-        Assert.Equal(401, (await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0002.JPG", 100)))).Status);
+        Assert.Equal(403, (await c.RoundTripAsync(Wire.AskRequest(NewId(), ("IMG_0002.JPG", 100)))).Status);
         Assert.Empty(SavedFiles());
     }
 
@@ -144,7 +144,7 @@ public sealed class EndToEndTests : IAsyncLifetime
         _server = NewServer(consentTimeout: TimeSpan.FromMilliseconds(300));
         _consent = async (_, ct) => { await Task.Delay(Timeout.Infinite, ct); return true; };
         await using var c = await FakeSender.ConnectAsync(_server.Port);
-        Assert.Equal(403, (await c.RoundTripAsync(Wire.AskRequest(NewId(), ("a.jpg", 10)))).Status);
+        Assert.Equal(401, (await c.RoundTripAsync(Wire.AskRequest(NewId(), ("a.jpg", 10)))).Status);
     }
 
     [Fact]
@@ -292,7 +292,7 @@ public sealed class EndToEndTests : IAsyncLifetime
             ["SenderComputerName"] = "Test Phone",
         });
         await using (var c = await FakeSender.ConnectAsync(_server.Port))
-            Assert.Equal(403, (await c.RoundTripAsync(Wire.Request("/Ask", "", "keep-alive", Wire.Chunked(link)))).Status);
+            Assert.Equal(401, (await c.RoundTripAsync(Wire.Request("/Ask", "", "keep-alive", Wire.Chunked(link)))).Status);
         Assert.Empty(_asks);
 
         string id = NewId();

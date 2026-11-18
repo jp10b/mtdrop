@@ -21,7 +21,7 @@ public sealed class ReceiveSessionOptions
     public int Port { get; init; } = 8771;
     public TimeSpan ConsentTimeout { get; init; } = TimeSpan.FromSeconds(60);
     /// <summary>See <see cref="AirDropServerOptions.DeclineStatus"/>.</summary>
-    public int DeclineStatus { get; init; } = 403;
+    public int DeclineStatus { get; init; } = 401;
     /// <summary>See <see cref="AirDropServerOptions.DeclineKeepsConnection"/>.</summary>
     public bool DeclineKeepsConnection { get; init; }
     public Action<string>? Log { get; init; }

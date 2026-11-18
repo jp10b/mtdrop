@@ -18,7 +18,7 @@ namespace Mtdrop.App;
 /// same time window. With --manual the radio session is started by hand instead (scripts/s3-bringup.ps1 -Airdrop tray)
 /// and the app only waits for awdl0.
 ///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive] [--manual]
-///              [--decline-status 403] [--decline-keep-open]     (Decline experiments, docs/PROTOCOL.md §10 item 1)
+///              [--decline-status 401] [--decline-keep-open]     (Decline experiments, docs/PROTOCOL.md §10 item 1)
 ///   mtdrop.exe --test-prompt     (developer: show one sample prompt and exit)
 ///   mtdrop.exe --test-notice     (developer: show the card used instead of toasts and exit when it closes)
 /// Log: %LOCALAPPDATA%\mtdrop\logs\app.log.
@@ -45,7 +45,7 @@ public partial class App : System.Windows.Application
     private TimeSpan _duration = TimeSpan.FromMinutes(2);
     private string _shownName = Environment.MachineName;
     private bool _manual;
-    private int _declineStatus = 403;
+    private int _declineStatus = 401;
     private bool _declineKeepOpen;
     private string? _loggedStatus;
     private SessionState? _loggedServiceState;

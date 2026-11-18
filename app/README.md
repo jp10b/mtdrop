@@ -16,14 +16,14 @@ Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 
 
 ```
 mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual]
-           [--decline-status 403] [--decline-keep-open]
+           [--decline-status 401] [--decline-keep-open]
 mtdrop.exe --test-prompt
 mtdrop.exe --test-notice
 ```
 
 Log: `%LOCALAPPDATA%\mtdrop\logs\app.log` (one older file kept as `app.1.log`, rolled at 1 MB): start options, menu/icon changes, the service states it follows, when `awdl0` was ready, every `/Discover`, `/Ask` (file count and size, the decision and how long it took, the status sent back), `/Upload`, transfer results and notices. Sender names and file names are not written.
 
-`--decline-status` (400–599, default 403) and `--decline-keep-open` (answer without `Connection: close` and keep the connection) are for the open question of what the iPhone needs to show a decline: with `403` + close it stays on "Waiting" (F-025; docs/PROTOCOL.md §10 item 1).
+`--decline-status` (400–599, default 401) and `--decline-keep-open` (answer without `Connection: close` and keep the connection) are for experiments: `401` + close makes the iPhone show "Declined" (F-026), `403` leaves it on "Waiting" (F-025).
 
 `--test-notice` (developer switch) shows the card used instead of toasts and exits when it closes.
 

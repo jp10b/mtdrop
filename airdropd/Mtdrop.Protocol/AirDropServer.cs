@@ -53,10 +53,10 @@ public sealed class AirDropServerOptions
     public int MaxConnections { get; init; } = 16;
 
     /// <summary>
-    /// HTTP status for a declined /Ask. Open question, docs/PROTOCOL.md §10 item 1: with 403 + Connection: close
-    /// the iPhone stays on "Waiting" (FINDINGS F-025).
+    /// HTTP status for a declined /Ask. FACT (iOS 26.5.2): 401 + Connection: close makes the iPhone show "Declined"
+    /// (FINDINGS F-026); 403 leaves it on "Waiting" (F-025).
     /// </summary>
-    public int DeclineStatus { get; init; } = 403;
+    public int DeclineStatus { get; init; } = 401;
 
     /// <summary>Answer a declined /Ask without "Connection: close" and keep the connection open (experiment).</summary>
     public bool DeclineKeepsConnection { get; init; }

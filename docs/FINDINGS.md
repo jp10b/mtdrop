@@ -1376,3 +1376,17 @@ Times from the service log (`C:\ProgramData\mtdrop\logs\service.log`), the recei
 | give-back | `re-added N of N missing saved network(s)` with N ≈ 35 (fewer if Windows copies them first, as seen at 11:16:25 in F-025); `Wi-Fi is connected` within 30 s; **no manual connect** |
 
 What would falsify the fix: Wi-Fi needing a manual connect again, or the export failing/refusing while Wi-Fi is connected.
+
+### Result (2026-11-18, 18:15–18:18)
+
+- **Install (FACT):** the first `-Apply` stopped the service and the tray app but left the old files in place with the service stopped (the old app then showed no green icon and wrote no `app.log`). Probable cause (ASSUMPTION, the installer output was not kept): `Stop-Process` / a service reporting `Stopped` return before the process releases its image files, so the immediate `Remove-Item` of the install folder failed on a locked file. Fixed in the installer (wait for processes running from the folder, retry the delete); the second `-Apply` succeeded.
+- **Green (FACT, `app.log`):** Start 18:15:57.9 → service `Receiving` 18:16:08.3 → `awdl0 ready (index 58) 10.9 s after Start` → tray green 18:16:08.9; `/Discover` answered 1 s later. The "1–2 min to green" from F-025 is not reproduced; the app log now makes it measurable.
+- **Decline with 401 (FACT):** `/Ask: 1 file(s), 446836 bytes` 18:16:18.8, user declined after 3.5 s, `/Ask answered 401 Unauthorized, Connection: close`. **The iPhone showed "Declined"** (maintainer). With `403` it stayed on "Waiting" (F-025). → 401 is the decline status iOS 26.5.2 understands; `--decline-keep-open` was not needed.
+- **Accept / notice card:** not tested – no second send in this session. TODO-VERIFY in the next session.
+- **Give-back (FACT):** window ended 18:17:58.1, service `RestoringWifi` 18:17:58.9 → `Idle` 18:18:25.0 (26 s). **Wi-Fi reconnected by itself** (maintainer; `netsh` afterwards: connected, channel 2). Service log with the export / re-add counts: TODO (to be copied to the private folder).
+
+### Conclusion
+
+- The WLAN API export + re-add fixes the "no saved networks after the swap" problem from F-025 (falsifier not hit: no manual connect).
+- Decline must answer **401**, not 403: make 401 the default (`AirDropServer.DeclineStatus`, `ReceiveSession`, tray app); `--decline-status` stays for experiments.
+- Open: Accept with the own notice card + "Open folder"; export/re-add counts from the service log.
