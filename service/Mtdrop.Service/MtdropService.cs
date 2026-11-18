@@ -28,6 +28,7 @@ public sealed class MtdropService : ServiceBase
 {
     private static readonly TimeSpan StopBudget = TimeSpan.FromMinutes(2);
     private readonly ILog _log;
+    private readonly ServiceConfig _config;
     private readonly Session _session;
     private readonly ControlServer _server;
     private readonly CancellationTokenSource _cts = new();
@@ -39,6 +40,7 @@ public sealed class MtdropService : ServiceBase
         CanStop = true;
         CanShutdown = true;
         _log = log;
+        _config = config;
         _session = Host.Create(config, log).NewSession();
         _server = new ControlServer(_session, log);
     }
@@ -56,6 +58,7 @@ public sealed class MtdropService : ServiceBase
     private void Begin()
     {
         _log.Info($"=== mtdrop service starting (pid {Environment.ProcessId}) ===");
+        SecureDataDir(_config, _log);
         _ = _session.RecoverAsync();
         _serving = Task.Run(() => _server.RunAsync(_cts.Token));
     }
@@ -69,6 +72,16 @@ public sealed class MtdropService : ServiceBase
         _session.ShutdownAsync(StopBudget).GetAwaiter().GetResult();
         _serving.Wait(TimeSpan.FromSeconds(5));
         _log.Info("mtdrop service stopped");
+    }
+
+    /// <summary>Re-applies the data directory's SYSTEM/Administrators-only ACL (see <see cref="DataDirAcl"/>).</summary>
+    public static void SecureDataDir(ServiceConfig config, ILog log)
+    {
+        try { DataDirAcl.Apply(config.DataDir); }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException or InvalidOperationException)
+        {
+            log.Warn($"could not secure {config.DataDir}: {e.Message}");
+        }
     }
 
     protected override void Dispose(bool disposing)

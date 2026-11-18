@@ -116,4 +116,16 @@ public sealed class PlatformTests
         string xml = WatchdogTask.TaskXml(DateTime.Now, @"C:\a&b<c>\mtdrop-service.exe");
         Assert.Contains(@"C:\a&amp;b&lt;c&gt;\mtdrop-service.exe", xml);
     }
+
+    [Fact]
+    public void Data_dir_acl_is_system_and_admins_only_and_not_inherited()
+    {
+        System.Security.AccessControl.DirectorySecurity s = DataDirAcl.Security();
+        Assert.True(s.AreAccessRulesProtected);
+        Assert.Equal("S-1-5-32-544", s.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Value);
+        var rules = s.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+            .Cast<System.Security.AccessControl.FileSystemAccessRule>().ToList();
+        Assert.Equal(["S-1-5-18", "S-1-5-32-544"], rules.Select(r => r.IdentityReference.Value).Order());
+        Assert.All(rules, r => Assert.Equal(System.Security.AccessControl.AccessControlType.Allow, r.AccessControlType));
+    }
 }

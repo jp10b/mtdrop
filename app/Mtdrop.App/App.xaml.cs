@@ -1,10 +1,11 @@
-using System.IO;
-﻿using System.Drawing;
+using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Net;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Toolkit.Uwp.Notifications;
+using Mtdrop.Control;
 using Mtdrop.Protocol;
 using WinForms = System.Windows.Forms;
 
@@ -12,20 +13,26 @@ namespace Mtdrop.App;
 
 /// <summary>
 /// Tray application: "Receive" toggle with a time window, Accept/Decline prompt window, saved-file toasts.
-/// The AWDL adapter (awdl0) exists only while the radio session runs, so "Start receiving" first waits for it
-/// (amber icon), within the same time window, and then announces the PC on it.
-///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive]
+/// "Start receiving" asks the mtdrop service (ADR-0004) to run a radio session over the control pipe, follows its
+/// state, waits for the AWDL adapter (awdl0) it brings up and then announces the PC on it. The wait counts against the
+/// same time window. With --manual the radio session is started by hand instead (scripts/s3-bringup.ps1 -Airdrop tray)
+/// and the app only waits for awdl0.
+///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive] [--manual]
 ///   mtdrop.exe --test-prompt     (developer: show one sample prompt and exit)
 /// </summary>
 public partial class App : System.Windows.Application
 {
     /// <summary>How long a consent prompt waits before it declines by itself (also the server-side limit).</summary>
     private static readonly TimeSpan ConsentLimit = TimeSpan.FromSeconds(60);
+    /// <summary>Status requests that may fail in a row before the app stops following the service session.</summary>
+    private const int PollFailureLimit = 3;
 
     private readonly Prompts _prompts = new();
     private readonly DispatcherTimer _window = new();
+    private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromSeconds(1) };
     private WinForms.NotifyIcon _tray = null!;
     private WinForms.ToolStripMenuItem _toggle = null!;
+    private WinForms.ToolStripMenuItem _status = null!;
     private Mutex? _single;
     private ReceiveSession? _session;
     private CancellationTokenSource? _waiting;
@@ -34,6 +41,12 @@ public partial class App : System.Windows.Application
     private string _destination = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     private TimeSpan _duration = TimeSpan.FromMinutes(2);
     private string _shownName = Environment.MachineName;
+    private bool _manual;
+    /// <summary>Last status of the service session this app started; null when none is being followed.</summary>
+    private ControlResponse? _service;
+    private bool _polling;
+    private int _pollFailures;
+    private string? _lastProblem;
 
     private static string? Arg(string[] args, string name)
     {
@@ -59,11 +72,17 @@ public partial class App : System.Windows.Application
         _interface = Arg(e.Args, "--interface") ?? _interface;
         _destination = Arg(e.Args, "--dir") ?? _destination;
         _shownName = Arg(e.Args, "--name") is { Length: > 0 } name ? name : _shownName;
+        _manual = e.Args.Contains("--manual");
         if (double.TryParse(Arg(e.Args, "--minutes"), System.Globalization.CultureInfo.InvariantCulture, out double minutes) && minutes is > 0 and <= 60)
             _duration = TimeSpan.FromMinutes(minutes);
+        if (!_manual && _duration > TimeSpan.FromMinutes(ControlProtocol.MaxMinutes))
+            _duration = TimeSpan.FromMinutes(ControlProtocol.MaxMinutes);     // the service's limit (ADR-0004)
 
+        _status = new WinForms.ToolStripMenuItem("Not receiving") { Enabled = false };
         _toggle = new WinForms.ToolStripMenuItem("Start receiving", null, async (_, _) => await ToggleAsync());
         var menu = new WinForms.ContextMenuStrip();
+        menu.Items.Add(_status);
+        menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add(_toggle);
         menu.Items.Add("Open download folder", null, (_, _) => Shell.RevealInExplorer(_destination));
         menu.Items.Add(new WinForms.ToolStripSeparator());
@@ -71,6 +90,7 @@ public partial class App : System.Windows.Application
         _tray = new WinForms.NotifyIcon { ContextMenuStrip = menu, Visible = true };
         _tray.DoubleClick += async (_, _) => await ToggleAsync();
         _window.Tick += async (_, _) => await OnWindowElapsedAsync();
+        _poll.Tick += async (_, _) => await PollServiceAsync();
         UpdateTray();
 
         if (e.Args.Contains("--receive")) _ = ToggleAsync();
@@ -119,16 +139,30 @@ public partial class App : System.Windows.Application
         return Icon.FromHandle(bmp.GetHicon());
     }
 
+    /// <summary>The service is ending a session (or has not reported Idle yet after Stop): Wi-Fi is on its way back.</summary>
+    private bool Restoring => _service is not null && _session is null && _waiting is null;
+
     private void UpdateTray()
     {
         bool on = _session is not null;
         bool waiting = _waiting is not null;
+        bool restoring = Restoring;
+        string status =
+            on ? "Receiving - visible to nearby iPhones" :
+            waiting ? (_service?.Message is { Length: > 0 } m ? Capitalize(m) : $"Waiting for {_interface}") :
+            restoring ? "Turning Wi-Fi back on" :
+            _lastProblem is not null ? $"Last session: {_lastProblem}" :
+            "Not receiving";
         Icon? old = _tray.Icon;
-        _tray.Icon = MakeIcon(on ? Color.FromArgb(0, 150, 136) : waiting ? Color.FromArgb(230, 150, 0) : Color.FromArgb(130, 130, 130));
+        _tray.Icon = MakeIcon(on ? Color.FromArgb(0, 150, 136) : waiting || restoring ? Color.FromArgb(230, 150, 0) : Color.FromArgb(130, 130, 130));
         old?.Dispose();
-        _tray.Text = on ? "mtdrop - receiving" : waiting ? $"mtdrop - waiting for {Shorten(_interface, 40)}" : "mtdrop - not receiving";
-        _toggle.Text = on || waiting ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
+        _tray.Text = Shorten($"mtdrop - {(on || waiting || restoring ? status : "not receiving")}", 127);
+        _status.Text = Shorten(status, 120);
+        _toggle.Text = restoring ? "Turning Wi-Fi back on..." : on || waiting ? "Stop receiving" : $"Start receiving ({_duration.TotalMinutes:0.#} min)";
+        _toggle.Enabled = !restoring;
     }
+
+    private static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
 
     /// <summary>NotifyIcon.Text is limited to 127 characters.</summary>
     private static string Shorten(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
@@ -166,21 +200,35 @@ public partial class App : System.Windows.Application
             await StopAsync();
             return;
         }
+        if (_service is not null) return;      // the previous session is still giving the Wi-Fi card back
+        _lastProblem = null;
         // The wait for the adapter counts against the receive window: the PC is never visible longer than chosen.
         var waiting = new CancellationTokenSource(_duration);
         _waiting = waiting;
         DateTime started = DateTime.UtcNow;
         UpdateTray();
+        if (!_manual && !await StartServiceSessionAsync(waiting))
+        {
+            if (ReferenceEquals(_waiting, waiting))
+            {
+                _waiting = null;
+                waiting.Dispose();
+            }
+            UpdateTray();
+            return;
+        }
         InterfaceInfo? nic = await WaitForInterfaceAsync(_interface, waiting.Token);
-        if (!ReferenceEquals(_waiting, waiting)) return;   // stopped (or exited) while waiting
+        if (!ReferenceEquals(_waiting, waiting)) return;   // stopped, exited or the service session ended meanwhile
         _waiting = null;
         waiting.Dispose();
         TimeSpan left = _duration - (DateTime.UtcNow - started);
         if (nic is null || left <= TimeSpan.Zero)
         {
             UpdateTray();
-            Prompts.ShowMessage("Not receiving",
-                $"The network adapter '{_interface}' did not appear within {_duration.TotalMinutes:0.#} min. Is the radio session running?");
+            Prompts.ShowMessage("Not receiving", _manual
+                ? $"The network adapter '{_interface}' did not appear within {_duration.TotalMinutes:0.#} min. Is the radio session running?"
+                : $"The radio did not come up within {_duration.TotalMinutes:0.#} min. The service is turning Wi-Fi back on.");
+            if (!_manual) await SendStopAsync();
             return;
         }
         try
@@ -203,6 +251,8 @@ public partial class App : System.Windows.Application
         catch (Exception ex) when (ex is InvalidOperationException or System.Net.Sockets.SocketException or IOException)
         {
             Prompts.ShowMessage("Cannot start receiving", ex.Message);
+            if (!_manual) await SendStopAsync();
+            UpdateTray();
             return;
         }
         _session.TransferFinished += r =>
@@ -216,17 +266,124 @@ public partial class App : System.Windows.Application
         UpdateTray();
     }
 
+    /// <summary>Asks the service for a radio session. False (with a notice) if it is not available or refuses.</summary>
+    private async Task<bool> StartServiceSessionAsync(CancellationTokenSource waiting)
+    {
+        int minutes = (int)Math.Clamp(Math.Ceiling(_duration.TotalMinutes), ControlProtocol.MinMinutes, ControlProtocol.MaxMinutes);
+        ControlResponse r;
+        try
+        {
+            r = await ControlClient.StartAsync(minutes);
+        }
+        catch (ServiceUnavailableException ex)
+        {
+            _lastProblem = "service not available";
+            Prompts.ShowMessage("mtdrop service not available",
+                $"{ex.Message} Install it with scripts\\install-service.ps1 (as administrator), or use --manual for a session started by hand.");
+            return false;
+        }
+        catch (IOException ex)
+        {
+            _lastProblem = ex.Message;
+            Prompts.ShowMessage("Cannot start receiving", ex.Message);
+            return false;
+        }
+        if (!r.Ok)
+        {
+            _lastProblem = r.Error ?? "the service refused";
+            Prompts.ShowMessage("Cannot start receiving", _lastProblem);
+            return false;
+        }
+        _service = r;
+        _pollFailures = 0;
+        _poll.Start();
+        if (!ReferenceEquals(_waiting, waiting))
+        {
+            await SendStopAsync();          // Stop was clicked while the request was on its way
+            return false;
+        }
+        UpdateTray();
+        return true;
+    }
+
+    /// <summary>Follows the service session once a second; ends the local receiver when the radio goes away.</summary>
+    private async Task PollServiceAsync()
+    {
+        if (_polling || _service is null) return;
+        _polling = true;
+        try
+        {
+            ControlResponse r;
+            try
+            {
+                r = await ControlClient.StatusAsync();
+            }
+            catch (Exception ex) when (ex is ServiceUnavailableException or IOException or TimeoutException)
+            {
+                if (++_pollFailures < PollFailureLimit) return;
+                await StopReceiverAsync();
+                EndFollowing("The mtdrop service stopped answering. Its watchdog gives the Wi-Fi card back within a few minutes; " +
+                             "if Wi-Fi stays off, run scripts\\wifi-giveback.ps1 as administrator.");
+                return;
+            }
+            _pollFailures = 0;
+            _service = r;
+            if (r.State is SessionState.RestoringWifi or SessionState.Idle)
+                await StopReceiverAsync();          // awdl0 goes away with the radio
+            if (r.State == SessionState.Idle)
+                EndFollowing(r.Error);
+            UpdateTray();
+        }
+        finally
+        {
+            _polling = false;
+        }
+    }
+
+    private void EndFollowing(string? error)
+    {
+        _poll.Stop();
+        _service = null;
+        _lastProblem = error;
+        UpdateTray();
+        if (error is not null) Prompts.ShowMessage("Receiving ended", error);
+    }
+
+    private async Task SendStopAsync()
+    {
+        if (_service is null) return;
+        try
+        {
+            ControlResponse r = await ControlClient.StopAsync();
+            _service = r;
+        }
+        catch (Exception ex) when (ex is ServiceUnavailableException or IOException or TimeoutException)
+        {
+            // The poll notices; the service and its watchdog give the card back on their own.
+        }
+        UpdateTray();
+    }
+
     private async Task OnWindowElapsedAsync()
     {
-        if (Volatile.Read(ref _activeTransfers) > 0)
+        if (Volatile.Read(ref _activeTransfers) > 0 && (_manual || _service?.State == SessionState.Receiving))
         {
-            _window.Interval = TimeSpan.FromSeconds(10);    // let the running transfer finish
+            // Let the running transfer finish. With the service, its own deadline (same window) still ends the radio.
+            _window.Interval = TimeSpan.FromSeconds(10);
             return;
         }
         await StopAsync();
     }
 
+    /// <summary>User stop or end of the window: stop receiving and ask the service to end the radio session.</summary>
     private async Task StopAsync()
+    {
+        await StopReceiverAsync();
+        await SendStopAsync();
+    }
+
+    /// <summary>Stops waiting for awdl0 and the local receiver; the service session (if any) is left alone.</summary>
+    private async Task StopReceiverAsync()
     {
         CancellationTokenSource? waiting = _waiting;
         _waiting = null;
@@ -243,7 +400,8 @@ public partial class App : System.Windows.Application
 
     private async Task ExitAsync()
     {
-        await StopAsync();
+        await StopAsync();          // the service gives the card back by itself; no need to wait for it
+        _poll.Stop();
         _tray.Visible = false;
         _tray.Dispose();
         try { ToastNotificationManagerCompat.History.Clear(); } catch (Exception) { /* nothing to clear */ }

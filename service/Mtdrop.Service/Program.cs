@@ -35,6 +35,7 @@ if (args.Contains("--give-back"))
 {
     var log = new FileLog(Path.Combine(config.LogDir, "service.log"), echo: true);
     log.Info("=== give-back (watchdog task or manual) ===");
+    MtdropService.SecureDataDir(config, log);
     Host host = Host.Create(config, log);
     host.Runner.KillStrays([config.Radiod, config.Awdld]);
     host.Firewall.RemoveReceiverRules();

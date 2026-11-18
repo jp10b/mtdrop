@@ -45,8 +45,8 @@ param(
     # -Airdrop on. Needs -Awdl. Adds a temporary inbound firewall rule for airdropd (TCP 8771, UDP 5353), removed in
     # the finally block whatever happens.
     # -Airdrop tray: the tray app (<ToolsRoot>\build\app\mtdrop.exe) receives instead. It must already run in the
-    # maintainer's desktop session (this script runs as SYSTEM, where no prompt or toast can be seen) with
-    # "Start receiving" clicked; it waits for awdl0. Only the temporary firewall rules are added, for mtdrop.exe.
+    # maintainer's desktop session as `mtdrop.exe --manual` (this script runs as SYSTEM, where no prompt or toast can be
+    # seen) with "Start receiving" clicked; it waits for awdl0. Without --manual the app asks the mtdrop service instead. Only the temporary firewall rules are added, for mtdrop.exe.
     [string]$Airdrop = '',
     [switch]$KeepGoing,
     [string]$PrivateRoot = 'C:\Users\desktop\mtdrop-private',
@@ -269,7 +269,7 @@ public static extern bool UpdateDriverForPlugAndPlayDevicesW(System.IntPtr paren
     if ($airdropTray) {
         $tray = @(Get-Process -Name 'mtdrop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $airdropTool })
         if ($tray.Count) { Say "tray app running (pid $($tray[0].Id)); it receives on awdl0 once awdld creates it" }
-        else { Say "WARNING: $airdropTool is not running - start it in your session and click Start receiving" }
+        else { Say "WARNING: $airdropTool is not running - start it in your session with --manual and click Start receiving" }
     }
     elseif ($airdropOn) {
         Remove-Item $airdropLog, "$airdropLog.err" -ErrorAction SilentlyContinue

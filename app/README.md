@@ -3,7 +3,10 @@
 Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 (F-024).
 
 - Tray icon with **Start receiving (2 min)** / **Stop receiving**, **Open download folder**, **Exit**. Double-click toggles.
-- **Start receiving** first waits for the AWDL adapter (`awdl0`, created by `awdld` while the radio session runs): amber icon, "waiting for awdl0". The wait counts against the receive window. Once the adapter has an IPv6 link-local address the icon turns green and the PC is announced on it. If it never appears, a notice says so.
+- **Start receiving** asks the mtdrop service (`service/`, ADR-0004) for a radio session over the control pipe `\.\pipe\mtdrop-control` (`start {minutes}`, 1–10 min), then follows it once a second (`status`). The first menu line shows what the service is doing ("switching the Wi-Fi card to mtdrop", "starting the radio", ...); the icon is amber meanwhile.
+- The app then waits for the AWDL adapter (`awdl0`, created by `awdld`). The wait counts against the receive window. Once the adapter has an IPv6 link-local address the icon turns green and the PC is announced on it.
+- **Stop receiving**, the end of the window or **Exit** send `stop`; while the service gives the card back the menu shows "Turning Wi-Fi back on..." and Start is disabled. When the service session ends (deadline, error, radio stopped) the receiver stops too; an error is shown as a notice and stays in the first menu line.
+- If the service is not installed or not running, a notice says so (install: `scripts/install-service.ps1`).
 - While receiving it hosts `Mtdrop.Protocol.ReceiveSession` in-process (unelevated).
 - Each `/Ask` opens the app's own small always-on-top prompt window (not a toast: a consent decision must not depend on the notification system). It appears at the bottom-right of the primary screen's work area, does not take keyboard focus and is not in the taskbar. Several prompts stack upward and re-flow when one closes.
 - The prompt shows the sender name (plain text, one line, ellipsised, labelled "Sender name is not verified"), the file description, **Accept** / **Decline** and a countdown. Only a click on Accept accepts; Decline, closing the window, Escape, 60 s timeout, stopping the receive window or a cancelled request all decline.
@@ -12,7 +15,7 @@ Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 
 - The receive window ends by itself; a running transfer is allowed to finish first.
 
 ```
-mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive]
+mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual]
 mtdrop.exe --test-prompt
 ```
 
@@ -20,8 +23,12 @@ mtdrop.exe --test-prompt
 
 `--interface` defaults to `awdl0`. For a local demo without the radio use any adapter with an IPv6 link-local address and `tools/demo/fake_sender.py` on the same interface. `--name` sets the name shown in the iPhone's share sheet (default: the computer name), e.g. for a recording that should not show the real one.
 
-Hardware session (M6, until the elevated service of M7 exists): start `mtdrop.exe --minutes 5` in your own desktop session, click **Start receiving**, then run the session script with `-Airdrop tray` (adds temporary firewall rules for `mtdrop.exe`; the script runs as SYSTEM, where prompts and toasts would be invisible, so it does not start the app itself).
+`--minutes` is capped at 10 with the service (its limit). With the service the radio ends at the service's deadline, so a transfer still running then is cut off.
+
+Hand-started hardware session (M6 style, without the service): start `mtdrop.exe --manual --minutes 5` in your own desktop session, click **Start receiving** (it only waits for `awdl0`), then run the session script with `-Airdrop tray` (adds temporary firewall rules for `mtdrop.exe`; the script runs as SYSTEM, where prompts and toasts would be invisible, so it does not start the app itself).
 
 Result toasts use `Microsoft.Toolkit.Uwp.Notifications` (unpackaged desktop apps, no Windows App SDK runtime); every toast call is wrapped so a failure cannot crash or block the app.
 
-Not done: settings UI, history, start with Windows, talking to the elevated service (M7), cancelling the prompt when the sender gives up.
+Start with Windows: `scripts/install-service.ps1` adds a Start menu shortcut and (unless `-NoAutostart`) a per-user autostart entry.
+
+Not done: settings UI, history, extending the window for a running transfer, cancelling the prompt when the sender gives up.

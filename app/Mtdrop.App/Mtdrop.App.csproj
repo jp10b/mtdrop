@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\airdropd\Mtdrop.Protocol\Mtdrop.Protocol.csproj" />
+    <ProjectReference Include="..\..\service\Mtdrop.Control\Mtdrop.Control.csproj" />
   </ItemGroup>
 
   <ItemGroup>

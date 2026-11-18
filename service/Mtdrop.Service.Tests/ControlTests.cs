@@ -104,13 +104,13 @@ public sealed class ControlServerTests : IDisposable
     }
 
     [Fact]
-    public void Start_command_reaches_the_session()
+    public async Task Start_command_reaches_the_session()
     {
         var server = new ControlServer(_rig.Session, _rig.Log);
         ControlResponse r = server.Handle(new ControlRequest("start", 2), null);
         Assert.True(r.Ok);
         Assert.Equal(SessionState.Preparing, r.State);
         _rig.Session.Stop();
-        _rig.Session.Completion.Wait(TimeSpan.FromSeconds(20));
+        await _rig.Session.Completion.WaitAsync(TimeSpan.FromSeconds(20));
     }
 }

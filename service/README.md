@@ -25,6 +25,18 @@ mtdrop-service.exe --give-back   give the card back once (what the watchdog task
 mtdrop-service.exe --console     run the service in a console for debugging (elevated, Ctrl+C stops)
 ```
 
-Layout once installed (M7.2, `scripts/install-service.ps1`): `C:\Program Files\mtdrop\` (binaries, `driver\`, `firmware\`, `app\`), `C:\ProgramData\mtdrop\` (`logs\`, `wifi-profiles\`, `vendor-driver-backup\`, `state\`).
+## Install
+
+`scripts/install-service.ps1` (M7.2). Without `-Apply` it checks its inputs and prints every change with its undo; nothing is touched. Build the inputs first (unelevated):
+
+```
+dotnet publish service\Mtdrop.Service -c Release -o D:\mtdrop-tools\build\service
+dotnet publish app\Mtdrop.App -c Release -o D:\mtdrop-tools\build\app
+.\scripts\install-service.ps1                 # plan
+.\scripts\install-service.ps1 -Apply          # elevated: install or update
+.\scripts\install-service.ps1 -Uninstall      # plan of the removal; -Uninstall -Apply removes (-RemoveData: also ProgramData)
+```
+
+Layout: `C:\Program Files\mtdrop\` (service, `radiod.exe`, `awdld.exe` + `wintun.dll`, `driver\` with the proxy package signed once at install by a local certificate `CN=mtdrop local driver signing (service)`, `firmware\`, `app\`) and `C:\ProgramData\mtdrop\` (`logs\`, `wifi-profiles\`, `vendor-driver-backup\`, `state\`). The data directory is SYSTEM and Administrators only, not inherited from ProgramData (where every user may create files): the service hands files from it to `schtasks`, `netsh` and `pnputil` as SYSTEM. The service re-applies that ACL at every start. The install does not touch the Wi-Fi card; the service only checks it at start.
 
 `scripts/wifi-giveback.ps1` stays the manual fallback until the C# give-back has passed hardware sessions (M7.3, M7.4).
