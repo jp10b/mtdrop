@@ -376,6 +376,15 @@ int radio_client_set_bssid_filter(struct radio_client *c, const uint8_t bssid[6]
 	return write_msg(c, RL_SET_BSSID_FILTER, bssid, 6, NULL, 0);
 }
 
+unsigned radio_client_in_flight(struct radio_client *c) {
+	unsigned long long done, sent;
+	AcquireSRWLockShared(&c->stats_lock);
+	sent = c->stats.tx_sent;
+	done = c->stats.tx_acked + c->stats.tx_not_acked + c->stats.tx_no_ack_requested + c->stats.tx_refused + c->stats.tx_lost;
+	ReleaseSRWLockShared(&c->stats_lock);
+	return sent > done ? (unsigned) (sent - done) : 0u;
+}
+
 void radio_client_get_stats(struct radio_client *c, struct radio_client_stats *out) {
 	AcquireSRWLockShared(&c->stats_lock);
 	*out = c->stats;

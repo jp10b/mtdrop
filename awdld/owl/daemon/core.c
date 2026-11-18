@@ -201,6 +201,61 @@ void awdl_send_mif(struct ev_loop *loop, ev_timer *timer, int revents) {
 	ev_timer_rearm(loop, timer, usec_to_sec(next_aw + ieee80211_tu_to_usec(eaw_len / 2)));
 }
 
+/* [mtdrop] F-034: slot-aware hand-over.
+ *
+ * OWL checks that the peer shares our channel only when it hands a frame to the radio. A slot is 64 TU (~65 ms),
+ * and the radio (radiod's backlog + 16 frames in the firmware) can hold tens of ms of frames: frames handed over
+ * near the end of a shared run went on air after the phone had left, were retried up to 15 times and given up
+ * (F-033: 16 % of data frames, 75 ms mean in the radio, 3.3 transmissions per frame). So hand over a frame only
+ * if the radio holds few frames and all of them can go before the shared run of slots ends. */
+#define MTDROP_TX_MAX_IN_FLIGHT 8u
+#define MTDROP_TX_FRAME_US 1500u      /* 1.5 kB at 12 Mbit/s with preamble, SIFS and ACK, rounded up */
+unsigned awdl_radio_in_flight(void);  /* win/io_win.c */
+
+static uint64_t shared_time_left_us(const struct awdl_state *state, const struct awdl_peer *peer, uint64_t now) {
+	uint64_t eaw = ieee80211_tu_to_usec(64);
+	uint64_t next_aw = awdl_sync_next_aw_us(now, &state->sync);
+	uint64_t left = next_aw;
+	for (int k = 1; k < AWDL_CHANSEQ_LENGTH; k++) {
+		if (!awdl_same_channel_as_peer(state, now + next_aw + (uint64_t) (k - 1) * eaw + eaw / 2, peer))
+			break;
+		left += eaw;
+	}
+	return left;
+}
+
+/* 0 = hand it over now, else seconds to wait. */
+static double hold_for_radio(struct awdl_state *state, const struct awdl_peer *peer, uint64_t now) {
+	static uint64_t busy_since; /* first hold because the radio was full, 0 = none */
+	static int warned;
+	uint64_t guard = ieee80211_tu_to_usec(AWDL_UNICAST_GUARD_TU);
+	uint64_t left = shared_time_left_us(state, peer, now);
+	unsigned queued = awdl_radio_in_flight();
+	if (queued < MTDROP_TX_MAX_IN_FLIGHT && (uint64_t) (queued + 1u) * MTDROP_TX_FRAME_US + guard <= left) {
+		busy_since = 0;
+		return 0;
+	}
+	/* Shared run nearly over: wait until it has ended (the slot gate then waits for the next one). */
+	if (left <= (uint64_t) MTDROP_TX_FRAME_US + guard) {
+		state->stats.tx_unicast_held++;
+		return usec_to_sec(left + 500u);
+	}
+	/* The radio is busy: look again in a millisecond, when TX statuses have come back. Safety net: if the count
+	 * of frames in flight never drops (a TX status lost on the way), do not hold data back for ever. */
+	if (!busy_since)
+		busy_since = now;
+	if (now - busy_since > 250000u) {
+		if (!warned) {
+			log_warn("unicast hand-over: the radio reported %u frame(s) in flight for 250 ms; sending anyway", queued);
+			warned = 1;
+		}
+		busy_since = 0;
+		return 0;
+	}
+	state->stats.tx_unicast_held++;
+	return usec_to_sec(1000u);
+}
+
 void awdl_send_unicast(struct ev_loop *loop, ev_timer *timer, int revents) {
 	(void) revents;
 	struct daemon_state *state = timer->data;
@@ -223,6 +278,8 @@ void awdl_send_unicast(struct ev_loop *loop, ev_timer *timer, int revents) {
 			state->next = NULL;
 		} else {
 			in = awdl_can_send_unicast_in(awdl_state, peer, now, AWDL_UNICAST_GUARD_TU);
+			if (in == 0)
+				in = hold_for_radio(awdl_state, peer, now); /* [mtdrop] F-034 */
 			if (in == 0) { /* send now */
 				uint64_t t0 = clock_time_us(); /* [mtdrop] F-033 */
 				awdl_send_data(state->next, &state->io, &state->awdl_state, &state->ieee80211_state);

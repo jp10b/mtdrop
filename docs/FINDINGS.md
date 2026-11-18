@@ -1642,3 +1642,39 @@ Same 5,428,586-byte photo, two sends (maintainer: both arrived):
 | radio mean is many ms | firmware/air time per frame (retries) | look at the 33–40 % second transmissions |
 
 ASSUMPTION before the run: E large, T small – TCP is starved by the RTT.
+
+### Result (2026-11-18, 21:00–21:04)
+
+Send of the 5.4 MB photo at the default rate: upload 55.6 s, **98 kB/s** (slower than F-032's 142 – the phone used a sequence with fewer shared slots this time: `44×5, 0,0,0, 6, 44×4, 0,0,0` 12 times, `…36,36…` 6 times, 14/16 on 44 only 7 times). RTT median 75 ms.
+
+| counter (end of the send) | value | reading |
+|---|---|---|
+| unicast frames handed to the radio | 4690 | |
+| `host empty` | 3783 | awdld was waiting for TCP most of the time (TCP-bound, as assumed) |
+| deferred for a shared slot | 204 frames, 7.1 s in total | the gate works, waits are rare |
+| time writing to radiod | 75 ms in total | negligible |
+| **time in the radio, submit → TX status** | **mean 74.7 ms, max 367 ms** | the RTT is made here |
+| **transmissions per data frame** | 15431 / 4697 = **3.3** | |
+| **data frames given up (not ACKed)** | **738 of 4697 = 16 %** | each one a lost TCP segment |
+| refused | 0 (backlog: 82 waited, deepest 11) | |
+
+**Conclusion (FACT for the counters, ASSUMPTION for the mechanism):** OWL checks that the phone shares our channel only when it hands a frame to the radio. A slot is 64 TU (~65 ms); with up to 16 frames in the firmware queue plus the backlog, frames handed over near the end of a shared run go on air after the phone has left for 0/6/36: the firmware retries them up to 15 times and gives up. That makes the 75 ms in the radio (the RTT) and the 16 % losses, and TCP keeps a small window – the `host empty` count. The fix belongs to the hand-over: do not hand the radio more than fits before the shared run ends.
+
+**Receive ends after the transfer (F-032 change 3): PASS** – transfer done 21:03:42, `ending the session early` 21:03:45, Wi-Fi back (service Idle) 21:04:21. The give-back itself still takes ~36 s.
+
+## F-034 – M9: slot-aware hand-over of unicast frames
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Change (`owl/daemon/core.c`, marked `[mtdrop] F-034`):** after OWL's own slot gate says "now", a frame is handed to the radio only if the radio holds fewer than 8 frames (`radio_client_in_flight`: sent minus TX statuses back) **and** all of them, at 1.5 ms each plus the 3 TU guard, fit before the run of slots shared with the peer ends (current slot remainder + following shared slots). Otherwise it waits 1 ms (radio busy) or until the shared run is over (then OWL's gate waits for the next one). Safety net: after 250 ms of continuous "radio busy" the frame goes anyway, with one warning. New counter `held` in the `radio:` line. awdld builds without warnings; tests 7/7. No offline test of the timing (needs the phone).
+- **Method:** as F-033: one send of the 5.4 MB photo at the default rate; then (optional) the same at `radio-data-rate` 54.
+
+### Predictions
+
+| | F-033 | prediction | falsified by |
+|---|---|---|---|
+| data frames given up (not ACKed) | 16 % | **< 3 %** | still > 10 % |
+| transmissions per data frame | 3.3 | **< 1.5** | still > 2.5 |
+| time in the radio, mean | 75 ms | **< 15 ms** | still > 40 ms |
+| RTT median | 75 ms | **< 40 ms** | unchanged |
+| send rate (12 Mbit/s) | 98–142 kB/s | **≥ 250 kB/s** (TCP's window opens once losses and RTT drop) | below 150 kB/s → the limit is elsewhere (the phone's ACK timing, Windows TCP on `awdl0`) |
+| `held` | – | thousands (it holds often, for 1 ms each) | – |

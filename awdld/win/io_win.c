@@ -36,6 +36,12 @@ static struct pcap wlan;
 /* NULL when the adapter could not be created; data frames are then dropped. */
 static struct host_if *host;
 
+/* [mtdrop] F-034: OWL's unicast hand-over asks how much the radio still holds (owl/daemon/core.c). */
+unsigned awdl_radio_in_flight(void) {
+	struct radio_client *r = winawdl_radio();
+	return r ? radio_client_in_flight(r) : 0u;
+}
+
 struct radio_client *winawdl_radio(void) {
 	return wlan.radio;
 }

@@ -47,3 +47,5 @@ int radio_client_set_channel(struct radio_client *client, uint8_t channel);
 int radio_client_set_bssid_filter(struct radio_client *client, const uint8_t bssid[6]);
 
 void radio_client_get_stats(struct radio_client *client, struct radio_client_stats *out);
+/* Frames sent to radiod whose TX status has not come back yet (queued there or in the firmware). */
+unsigned radio_client_in_flight(struct radio_client *client);
