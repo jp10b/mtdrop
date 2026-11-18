@@ -1,6 +1,6 @@
 # ADR-0005: Sending PC → iPhone from the tray app, woken over Bluetooth LE, on the existing receive session
 
-- **Status:** Proposed (2026-11-18)
+- **Status:** Accepted (2026-11-18, maintainer; first send worked, F-028)
 - **Deciders:** maintainer
 - **Inputs:** CLAUDE.md §3 (BLE), §7 (M8); ADR-0001 (C# for `airdropd`/`app`); ADR-0003 (`awdld` with winawdl's Windows layer); ADR-0004 (service sessions); `docs/PROTOCOL.md` §9; prior art: `jedbillyb/airdrop-mt7921` `docs/FINDINGS.md` §19, §22, §27, §33, §36, §37, §40 (GPL-3.0); `raph559/winawdl` `DESIGN-NOTES.md` "Sending", `airdrop/sender.py`, `scripts/airdrop-beacon.ps1` (MIT), `awdl/win/service_bridge.c` (GPL-3.0+, already in our `awdld`); `21Suspect/AirDrop-for-Windows` `app/OpenDrop.cs` (GPL-3.0)
 
