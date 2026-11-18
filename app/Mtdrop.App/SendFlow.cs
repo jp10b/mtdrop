@@ -120,9 +120,42 @@ public sealed class SendFlow(
             if (percent == Interlocked.Exchange(ref lastPercent, percent)) return;
             status($"Sending to {target.Name}: {percent} %", $"Sending: {percent} %");
         });
+        using var probeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task<string> rtt = ProbeRttAsync(target.Endpoint.EndPoint.Address, probeStop.Token);
         SendResult result = await client.SendAsync(target.Endpoint.EndPoint, files, progress, ct);
-        log($"send: {result.Outcome} after {clock.Elapsed.TotalSeconds:0.0} s ({result.Detail})");
+        probeStop.Cancel();
+        log($"send: {result.Outcome} after {clock.Elapsed.TotalSeconds:0.0} s ({result.Detail}); {await rtt}");
         return new SendSummary(target.Name, result);
+    }
+
+    /// <summary>
+    /// Pings the receiver once a second during /Ask and /Upload (F-031): the round trip over AWDL bounds TCP when the
+    /// phone shares our channel only part of its sequence (F-030). One small echo per second; summary for the log.
+    /// </summary>
+    private static async Task<string> ProbeRttAsync(System.Net.IPAddress address, CancellationToken ct)
+    {
+        var times = new List<long>();
+        int lost = 0;
+        using var ping = new System.Net.NetworkInformation.Ping();
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    var reply = await ping.SendPingAsync(address, TimeSpan.FromSeconds(2), null, null, ct);
+                    if (reply.Status == System.Net.NetworkInformation.IPStatus.Success) times.Add(reply.RoundtripTime);
+                    else lost++;
+                }
+                catch (System.Net.NetworkInformation.PingException) { lost++; }
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            }
+        }
+        catch (OperationCanceledException) { }
+        if (times.Count == 0) return $"RTT: no replies ({lost} lost)";
+        times.Sort();
+        return $"RTT during the transfer: {times.Count} replies, {lost} lost, min {times[0]} ms, median {times[times.Count / 2]} ms, " +
+               $"max {times[^1]} ms";
     }
 
     private sealed class ActionProgress(Action<long> report) : IProgress<long>

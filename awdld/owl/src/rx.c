@@ -104,7 +104,9 @@ int awdl_handle_chanseq_tlv(struct awdl_peer *src, const struct buf *val,
 		READ_BYTES_COPY(val, offset, list[i].val, size);
 
 	if (memcmp(src->sequence, list, sizeof(list))) {
-		log_debug("peer %s (%s) changed channel sequence to %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+		/* [mtdrop] INFO instead of DEBUG (F-031): the phone's sequence while it sends or receives is what bounds
+		 * the time it shares our channel; logged only when it changes. */
+		log_info("peer %s (%s) changed channel sequence to %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
 		          ether_ntoa(&src->addr), src->name,
 		          awdl_chan_num(list[0], encoding), awdl_chan_num(list[1], encoding),
 		          awdl_chan_num(list[2], encoding), awdl_chan_num(list[3], encoding),

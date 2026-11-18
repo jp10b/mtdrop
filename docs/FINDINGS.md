@@ -1557,3 +1557,21 @@ Same photo, **5,428,586 bytes**, three sends from Explorer, all delivered (maint
 - The baseline is faster than in F-028/F-029 (154 vs 72–87 kB/s): a 5.4 MB file spends less of its time in TCP's start.
 - **Conclusion: air time is not the main limit** – 4.5× the rate gave +25 %. The falsifier of the hypothesis was hit. ASSUMPTION for the real limit: TCP's window over the round-trip time. Ping over `awdl0` measured RTT 46–793 ms, mean ~250 ms (F-021, F-023), because the phone is on channel 44 in only some slots of its sequence and every TCP ACK waits for one; a 48–64 KB window over ~300 ms gives 160–210 kB/s – the plateau measured here.
 - **Next (ADR-0006 A2/A3):** log the phone's advertised channel sequence while it receives and the RTT during a send; then raise the co-channel time during a send (the advertised sequence while we have data). The data rate stays at OWL's 12 Mbit/s by default until then; 24 is a candidate default once a repeat run confirms the gain.
+
+## F-031 – M9 A2: how much does the phone share our channel while it receives, and what is the RTT during a send?
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Question:** F-030 suggests TCP is bounded by the round trip over AWDL, not by air time. That needs two numbers: the phone's own channel sequence while it receives (how many of its 16 slots are on our channel 44) and the RTT during an upload.
+- **Instrumentation added:** `awdld` logs at INFO every change of a peer's channel sequence (OWL's DEBUG line, `owl/src/rx.c`) and, when it adopts a new sequence, the one we advertise (`intersect`, `owl/daemon/core.c`); awdld's 7 tests pass. The tray app pings the receiver once a second during `/Ask` + `/Upload` and logs `RTT during the transfer: n replies, lost, min/median/max` with the result line. `radiod` summary: unicast data frames by the rate in their TX status (F-030).
+- **Method:** the same 5.4 MB photo as in F-030, two sends: default rate, then `radio-data-rate` 54 (to see the rate on air in the new summary). Logs copied after each.
+
+### Predictions
+
+| quantity | prediction |
+|---|---|
+| phone's sequence while receiving | a few slots on 44 (F-018: 2 of 16 with `intersect`), the rest on 149/6 – ASSUMPTION; if it **widens towards 44 while data flows**, the RTT should drop during the upload |
+| RTT during the upload | median 100–400 ms (ping over awdl0: 46–793 ms, F-021/F-023) |
+| TCP bound | (5.4 MB / upload time) ≈ window / median RTT for a window of 32–64 KB |
+| TX status rates | default: almost all `12 Mb/s`; with 54: almost all `54 Mb/s` (if the firmware keeps the fixed rate) |
+
+If the phone keeps only 1–2 slots on 44 during the upload, the lever is the channel: either follow its main channel (hopping, large change) or make it come to 44 (the sequence we advertise while sending, ADR-0006 A3).

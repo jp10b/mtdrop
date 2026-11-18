@@ -385,6 +385,19 @@ static struct awdl_peer *awdl_chanseq_source(struct awdl_state *awdl) {
  * adopted along with it -- decoding those bytes with a different encoding
  * yields plausible-looking but wrong channel numbers.
  */
+/* [mtdrop] "44,44,0,..." for a 16-slot sequence (F-031). */
+static const char *chanseq_str(const struct awdl_chan *seq, enum awdl_chan_encoding enc, char *buf, size_t len) {
+	size_t pos = 0;
+	buf[0] = 0;
+	for (int i = 0; i < AWDL_CHANSEQ_LENGTH && pos < len; i++) {
+		int n = snprintf(buf + pos, len - pos, i ? ",%u" : "%u", (unsigned) awdl_chan_num(seq[i], enc));
+		if (n < 0)
+			break;
+		pos += (size_t) n;
+	}
+	return buf;
+}
+
 static void awdl_adopt_chanseq(struct daemon_state *state) {
 	struct awdl_state *awdl = &state->awdl_state;
 	struct awdl_peer *src;
@@ -554,9 +567,11 @@ static void awdl_adopt_chanseq(struct daemon_state *state) {
 		memcpy(awdl->channel.sequence, seq, sizeof(seq));
 		awdl->channel.sequence_from_peer = 1;
 		awdl->channel.seq_src = src->addr;
-		if (awdl->channel.strategy != AWDL_CHANSEQ_PIN)
-			log_info("following channel sequence of sync master %s (%s), enc %d",
-			         ether_ntoa(&src->addr), src->name, enc);
+		if (awdl->channel.strategy != AWDL_CHANSEQ_PIN) {
+			char ours_str[96];
+			log_info("following channel sequence of sync master %s (%s), enc %d; we advertise %s",
+			         ether_ntoa(&src->addr), src->name, enc, chanseq_str(seq, enc, ours_str, sizeof(ours_str)));
+		}
 	}
 }
 
