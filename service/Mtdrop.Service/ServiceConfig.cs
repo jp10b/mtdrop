@@ -32,10 +32,13 @@ public sealed record ServiceConfig
     public string VendorBackupDir => Path.Combine(DataDir, "vendor-driver-backup");
     public string StateFile => Path.Combine(DataDir, "state", "card-taken");
     /// <summary>
-    /// Experiment setting (ADR-0006 A1, F-030): one OFDM rate in Mbit/s for unicast data, passed to radiod as
-    /// --data-rate. Absent = OWL's 12 Mbit/s. In the data directory, so only SYSTEM and Administrators can set it.
+    /// Setting (ADR-0006 A1, F-030): one OFDM rate in Mbit/s for unicast data, passed to radiod as --data-rate.
+    /// Absent = <see cref="DefaultDataRate"/>. In the data directory, so only SYSTEM and Administrators can set it.
     /// </summary>
     public string DataRateFile => Path.Combine(DataDir, "settings", "radio-data-rate");
+
+    /// <summary>54 Mbit/s: 35–45 % faster sends than OWL's 12 in F-030, F-031, F-032 and F-034, 2–3 % frames lost.</summary>
+    public const int DefaultDataRate = 54;
 
     public static readonly IReadOnlySet<int> OfdmRates = new HashSet<int> { 6, 9, 12, 18, 24, 36, 48, 54 };
 

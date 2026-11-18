@@ -225,13 +225,11 @@ public sealed class Session(
             List<string> radiodArgs =
                 ["--live-log", Path.Combine(config.LogDir, "radiod-live.log"), "serve", $"{ServiceConfig.Channel}",
                  config.FirmwarePatch, config.FirmwareRam, "--max-seconds", $"{seconds}", "--mac", "random", "--wait-client", "60"];
-            int? dataRate = config.ReadDataRate(out string? badRate);
+            int? setting = config.ReadDataRate(out string? badRate);
             if (badRate is not null) log.Warn($"session: ignoring {config.DataRateFile}: {badRate}");
-            if (dataRate is int mbps)
-            {
-                radiodArgs.AddRange(["--data-rate", $"{mbps}"]);
-                log.Info($"session: experiment setting: unicast data at {mbps} Mbit/s");
-            }
+            int mbps = setting ?? ServiceConfig.DefaultDataRate;
+            radiodArgs.AddRange(["--data-rate", $"{mbps}"]);
+            log.Info($"session: unicast data at {mbps} Mbit/s{(setting is null ? " (default)" : " (setting)")}");
             radiod = runner.Start(config.Radiod, radiodArgs, Path.Combine(config.LogDir, "radiod.log"), config.InstallDir);
             awdld = runner.Start(config.Awdld, ["-c", $"{ServiceConfig.Channel}", "-S", "intersect"],
                 Path.Combine(config.LogDir, "awdld.log"), config.InstallDir);

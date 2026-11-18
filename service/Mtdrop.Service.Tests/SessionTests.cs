@@ -67,7 +67,8 @@ public sealed class SessionTests : IDisposable
         Assert.Equal(_rig.Config.Radiod, exe);
         // 120 s window - 2 s settle + 30 s margin
         Assert.Equal(["--live-log", Path.Combine(_rig.Config.LogDir, "radiod-live.log"), "serve", "44",
-            _rig.Config.FirmwarePatch, _rig.Config.FirmwareRam, "--max-seconds", "148", "--mac", "random", "--wait-client", "60"], args);
+            _rig.Config.FirmwarePatch, _rig.Config.FirmwareRam, "--max-seconds", "148", "--mac", "random", "--wait-client", "60",
+            "--data-rate", "54"], args);
         Assert.Equal(_rig.Config.Awdld, _rig.Runner.Started[1].Exe);
         Assert.Equal(["-c", "44", "-S", "intersect"], _rig.Runner.Started[1].Args);
         Assert.True(_rig.Runner.Children["awdld"].Killed);
@@ -76,21 +77,20 @@ public sealed class SessionTests : IDisposable
     }
 
     [Theory]
-    [InlineData("54", true)]
-    [InlineData(" 24\r\n", true)]
-    [InlineData("55", false)]
-    [InlineData("54 --max-seconds 900", false)]
-    public async Task Data_rate_setting_is_passed_to_radiod_only_when_valid(string content, bool passed)
+    [InlineData("12", "12")]
+    [InlineData(" 24\r\n", "24")]
+    [InlineData("55", "54")]                      // invalid: ignored, default
+    [InlineData("54 --max-seconds 900", "54")]    // cannot smuggle options
+    public async Task Data_rate_setting_overrides_the_default_only_when_valid(string content, string expected)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_rig.Config.DataRateFile)!);
         File.WriteAllText(_rig.Config.DataRateFile, content);
         await RunToEnd(2);
 
         IReadOnlyList<string> args = _rig.Runner.Started[0].Args;
-        Assert.Equal(passed, args.Contains("--data-rate"));
-        if (passed) Assert.Equal(content.Trim(), args[args.ToList().IndexOf("--data-rate") + 1]);
-        else Assert.True(_rig.Log.Has("ignoring"));
-        Assert.Equal(passed ? 14 : 12, args.Count);
+        Assert.Equal(expected, args[args.ToList().IndexOf("--data-rate") + 1]);
+        Assert.Equal(14, args.Count);
+        Assert.Equal(expected != content.Trim(), _rig.Log.Has("ignoring"));
     }
 
     [Fact]
