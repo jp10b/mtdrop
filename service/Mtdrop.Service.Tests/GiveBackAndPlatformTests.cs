@@ -20,6 +20,45 @@ public sealed class GiveBackTests : IDisposable
     }
 
     [Fact]
+    public void Quick_give_back_switches_to_the_vendor_package_and_removes_ours_afterwards()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Driver.VendorInStore = true;
+
+        Assert.True(_rig.GiveBack().Run());
+        Assert.Equal(["driver:bind-vendor oem10.inf", "wifi:restore", "driver:remove oem99.inf"], _rig.Calls);
+        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
+        Assert.False(_rig.Driver.PackageInStore);
+        Assert.Equal(0, _rig.Lock.Held);
+    }
+
+    [Fact]
+    public void Quick_give_back_falls_back_to_removing_our_package()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Driver.VendorInStore = true;
+        _rig.Driver.VendorBindWorks = false;
+
+        Assert.True(_rig.GiveBack().Run());
+        Assert.Equal(["driver:bind-vendor oem10.inf", "driver:delete oem99.inf", "driver:scan", "wifi:restore"], _rig.Calls);
+        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
+        Assert.True(_rig.Log.Has("quick switch did not bring"));
+    }
+
+    [Fact]
+    public void Parses_vendor_packages_from_pnputil_xml()
+    {
+        const string xml = """
+            <PnpUtil><Driver DriverName="oem12.inf"><OriginalName>mtkwl6ex.inf</OriginalName></Driver>
+            <Driver DriverName="oem121.inf"><OriginalName>mtdrop_proxy.inf</OriginalName></Driver></PnpUtil>
+            """;
+        Assert.Equal(["oem12.inf"], Mtdrop.Service.Windows.DriverControl.ParsePackages(xml, ServiceConfig.VendorInfName));
+        Assert.Equal(["oem121.inf"], Mtdrop.Service.Windows.DriverControl.ParseOurPackages(xml));
+    }
+
+    [Fact]
     public void Nudges_a_connect_when_wifi_does_not_reconnect_by_itself()
     {
         _rig.Driver.Bound = FakeDriver.Binding.Proxy;

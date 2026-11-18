@@ -24,8 +24,20 @@ public interface IDriverControl
     /// <summary>Forces the proxy onto the card (UpdateDriverForPlugAndPlayDevices). Throws on failure or if a restart is needed.</summary>
     void BindProxy(string inf);
 
-    /// <summary>pnputil /delete-driver &lt;published&gt; /uninstall /force; returns pnputil's exit code.</summary>
-    int DeletePackage(string published);
+    /// <summary>Published names of the MediaTek packages (mtkwl6ex.inf) in the driver store.</summary>
+    IReadOnlyList<string> VendorPackages();
+
+    /// <summary>
+    /// Puts a MediaTek package that is already in the driver store back on the card (UpdateDriverForPlugAndPlayDevices,
+    /// as <see cref="BindProxy"/> does the other way). False if Windows refused or wants a restart.
+    /// </summary>
+    bool BindVendor(string published);
+
+    /// <summary>
+    /// pnputil /delete-driver &lt;published&gt; /force, with /uninstall when <paramref name="uninstall"/> (removes the
+    /// package from devices using it, which reinstalls the card: ~15 s, F-026); returns pnputil's exit code.
+    /// </summary>
+    int DeletePackage(string published, bool uninstall);
 
     void ScanDevices();
 

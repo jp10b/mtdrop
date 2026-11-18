@@ -23,6 +23,7 @@ if (args.Contains("--check"))
     string packages = string.Join(", ", host.Driver.OurPackages());
     Console.WriteLine($"proxy packages:   {(packages.Length > 0 ? packages : "none")}");
     Console.WriteLine($"on vendor driver: {host.GiveBack.IsVendorBound(card)}");
+    Console.WriteLine($"vendor packages:  {string.Join(", ", host.Driver.VendorPackages())} (quick give-back target)");
     Console.WriteLine($"state file:       {(host.State.CardTaken ? "card TAKEN" : "clear")}");
     Console.WriteLine($"awdl0 up:         {host.Network.AwdlUp()}");
     Console.WriteLine($"Wi-Fi connected:  {host.Wifi.AdapterConnected()}");

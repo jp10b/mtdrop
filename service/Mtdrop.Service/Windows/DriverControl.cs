@@ -28,22 +28,28 @@ public sealed partial class DriverControl(IProcessRunner runner, ILog log) : IDr
             started, (int)problem);
     }
 
-    public IReadOnlyList<string> OurPackages()
+    public IReadOnlyList<string> OurPackages() => ParsePackages(EnumDrivers(), ServiceConfig.ProxyInfName);
+
+    public IReadOnlyList<string> VendorPackages() => ParsePackages(EnumDrivers(), ServiceConfig.VendorInfName);
+
+    private string EnumDrivers()
     {
         (int code, string xml) = runner.Run(PnpUtil, ["/enum-drivers", "/format", "xml"], PnpTimeout);
         if (code != 0) throw new InvalidOperationException($"pnputil /enum-drivers failed ({code})");
-        return ParseOurPackages(xml);
+        return xml;
     }
 
     /// <summary>Published names of driver store packages whose original INF is ours (pnputil's XML: Driver@DriverName, OriginalName).</summary>
-    public static IReadOnlyList<string> ParseOurPackages(string xml)
+    public static IReadOnlyList<string> ParseOurPackages(string xml) => ParsePackages(xml, ServiceConfig.ProxyInfName);
+
+    public static IReadOnlyList<string> ParsePackages(string xml, string originalName)
     {
         var doc = new XmlDocument { XmlResolver = null };
         using (XmlReader reader = XmlReader.Create(new StringReader(xml), SafeXml))
             doc.Load(reader);
         var result = new List<string>();
         foreach (XmlElement d in doc.SelectNodes("//Driver")!.OfType<XmlElement>())
-            if (string.Equals(d["OriginalName"]?.InnerText.Trim(), ServiceConfig.ProxyInfName, StringComparison.OrdinalIgnoreCase) &&
+            if (string.Equals(d["OriginalName"]?.InnerText.Trim(), originalName, StringComparison.OrdinalIgnoreCase) &&
                 d.GetAttribute("DriverName") is { Length: > 0 } name)
                 result.Add(name);
         return result;
@@ -70,8 +76,24 @@ public sealed partial class DriverControl(IProcessRunner runner, ILog log) : IDr
         if (reboot) throw new SessionException("Windows asks for a restart to switch the driver; not continuing");
     }
 
-    public int DeletePackage(string published) =>
-        runner.Run(PnpUtil, ["/delete-driver", published, "/uninstall", "/force"], PnpTimeout).ExitCode;
+    public bool BindVendor(string published)
+    {
+        // A published name (oemNN.inf) lives in %windir%\INF; only names pnputil listed for mtkwl6ex.inf get here.
+        if (!System.Text.RegularExpressions.Regex.IsMatch(published, @"^oem\d{1,5}\.inf$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            return false;
+        string inf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", published);
+        if (!UpdateDriverForPlugAndPlayDevicesW(IntPtr.Zero, ServiceConfig.HardwareId, inf, INSTALLFLAG_FORCE, out bool reboot))
+        {
+            log.Warn($"give-back: Windows refused {published} ({new Win32Exception(Marshal.GetLastWin32Error()).Message})");
+            return false;
+        }
+        if (reboot) log.Warn($"give-back: Windows asks for a restart after switching to {published}");
+        return !reboot;
+    }
+
+    public int DeletePackage(string published, bool uninstall) =>
+        runner.Run(PnpUtil, uninstall ? ["/delete-driver", published, "/uninstall", "/force"] : ["/delete-driver", published, "/force"],
+            PnpTimeout).ExitCode;
 
     public void ScanDevices() => runner.Run(PnpUtil, ["/scan-devices"], PnpTimeout);
 

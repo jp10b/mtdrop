@@ -13,14 +13,31 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
         CardInfo? card = driver.FindCard();
         log.Info($"give-back: card driver now: {card?.ToString() ?? "card not found"}");
 
-        foreach (string package in driver.OurPackages())
+        // Fast path (M9 B1, F-032): switch the card straight back to the MediaTek package already in the driver store,
+        // the way the session switched it to ours (~3 s), and remove our package only once Wi-Fi is back. The old
+        // path - delete our package with /uninstall, which reinstalls the card (~15 s) - stays as the fallback.
+        bool fast = false;
+        if (IsProxyBound(card) && driver.VendorPackages() is [string vendor, ..])
         {
-            int code = driver.DeletePackage(package);
-            log.Info($"give-back: removed proxy package {package} (pnputil exit {code})");
-            if (code == 3010) log.Warn("give-back: Windows asks for a restart to finish removing the proxy driver");
+            log.Info($"give-back: switching the card back to {vendor}");
+            if (driver.BindVendor(vendor))
+            {
+                card = WaitForVendor();
+                fast = IsVendorBound(card);
+            }
+            if (!fast) log.Warn("give-back: the quick switch did not bring the MediaTek driver back; removing our package instead");
         }
-        driver.ScanDevices();
-        card = WaitForVendor();
+        if (!fast)
+        {
+            foreach (string package in driver.OurPackages())
+            {
+                int code = driver.DeletePackage(package, uninstall: true);
+                log.Info($"give-back: removed proxy package {package} (pnputil exit {code})");
+                if (code == 3010) log.Warn("give-back: Windows asks for a restart to finish removing the proxy driver");
+            }
+            driver.ScanDevices();
+            card = WaitForVendor();
+        }
 
         if (!IsVendorBound(card))
         {
@@ -57,6 +74,12 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
             WaitConnected(TimeSpan.FromSeconds(25));
         }
         log.Info(wifi.AdapterConnected() ? "give-back: Wi-Fi is connected" : "give-back: Wi-Fi adapter is back but not connected yet");
+        // Our package is no longer on any device: remove it from the store without touching the card.
+        foreach (string package in driver.OurPackages())
+        {
+            int code = driver.DeletePackage(package, uninstall: false);
+            log.Info($"give-back: removed proxy package {package} from the driver store (pnputil exit {code})");
+        }
         return true;
     }
 

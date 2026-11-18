@@ -12,10 +12,10 @@ Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 
 - The prompt shows the sender name (plain text, one line, ellipsised, labelled "Sender name is not verified"), the file description, **Accept** / **Decline** and a countdown. Only a click on Accept accepts; Decline, closing the window, Escape, 60 s timeout, stopping the receive window or a cancelled request all decline.
 - There is no default button, so Enter/Space typed in another app cannot accept. Buttons ignore input (and look disabled) for 500 ms after the prompt appears or moves.
 - After a transfer: a notice with **Open folder**, or a notice that nothing was saved. Notices are Windows toasts when toasts can be seen; when the user has switched notifications off (Settings > System > Notifications, `ToastEnabled = 0`, F-025) or for this app, or a toast call fails, the app shows its own card instead (same look and corner as the prompt, closes after 30 s, **Open folder** / **Close**). Notices are informational only and never block anything.
-- The receive window ends by itself; a running transfer is allowed to finish first.
+- The receive session ends 3 s after a received transfer, so Wi-Fi comes back at once (`--keep-receiving` keeps the PC visible for the whole window instead); otherwise the window ends by itself, and a running transfer is allowed to finish first.
 
 ```
-mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual]
+mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual] [--keep-receiving]
            [--decline-status 401] [--decline-keep-open]
 mtdrop.exe --send <file>...
 mtdrop.exe --test-prompt

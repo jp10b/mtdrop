@@ -17,7 +17,7 @@ namespace Mtdrop.App;
 /// state, waits for the AWDL adapter (awdl0) it brings up and then announces the PC on it. The wait counts against the
 /// same time window. With --manual the radio session is started by hand instead (scripts/s3-bringup.ps1 -Airdrop tray)
 /// and the app only waits for awdl0.
-///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive] [--manual]
+///   mtdrop.exe [--interface awdl0] [--dir folder] [--minutes 2] [--name shown-name] [--receive] [--manual] [--keep-receiving]
 ///              [--decline-status 401] [--decline-keep-open]     (Decline experiments, docs/PROTOCOL.md §10 item 1)
 ///   mtdrop.exe --send file...    (also: tray menu "Send files...", Explorer "Send to > iPhone (mtdrop)"; ADR-0005, M8:
 ///                                 wakes nearby iPhones over Bluetooth, lists receivers on awdl0, sends to the one picked;
@@ -50,6 +50,8 @@ public partial class App : System.Windows.Application
     private bool _manual;
     private int _declineStatus = 401;
     private bool _declineKeepOpen;
+    /// <summary>--keep-receiving: stay visible for the whole window instead of ending after the first received transfer.</summary>
+    private bool _keepReceiving;
     private string? _loggedStatus;
     private SessionState? _loggedServiceState;
     /// <summary>Last status of the service session this app started; null when none is being followed.</summary>
@@ -142,6 +144,7 @@ public partial class App : System.Windows.Application
         if (int.TryParse(Arg(e.Args, "--decline-status"), out int status) && status is >= 400 and <= 599)
             _declineStatus = status;
         _declineKeepOpen = e.Args.Contains("--decline-keep-open");
+        _keepReceiving = e.Args.Contains("--keep-receiving");
         AppLog.Write($"=== mtdrop tray app started (pid {Environment.ProcessId}, {(_manual ? "manual" : "service")} mode, " +
                      $"window {_duration.TotalMinutes:0.#} min, decline {_declineStatus}{(_declineKeepOpen ? " keep-open" : "")}) ===");
 
@@ -356,6 +359,8 @@ public partial class App : System.Windows.Application
             AppLog.Write(r.Succeeded ? $"transfer done: {r.SavedFiles.Count} file(s) saved" : $"transfer failed: {r.Error}");
             if (r.Succeeded) _prompts.ShowSaved(r);
             else _prompts.ShowFailed(r);
+            // M9 (maintainer, 2026-11-18): Wi-Fi back as soon as the photo is in, not at the end of the window.
+            if (r.Succeeded && !_keepReceiving) _ = Dispatcher.InvokeAsync(EndAfterTransferAsync);
         };
         _window.Interval = left;
         _window.Start();
@@ -469,6 +474,16 @@ public partial class App : System.Windows.Application
             // The poll notices; the service and its watchdog give the card back on their own.
         }
         UpdateTray();
+    }
+
+    /// <summary>After a received transfer: a short pause for a second one already on its way, then end the session.</summary>
+    private async Task EndAfterTransferAsync()
+    {
+        ReceiveSession? session = _session;
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        if (_session is null || !ReferenceEquals(_session, session) || Volatile.Read(ref _activeTransfers) > 0) return;
+        AppLog.Write("receive: transfer done; ending the session early so Wi-Fi comes back");
+        await StopAsync();
     }
 
     private async Task OnWindowElapsedAsync()

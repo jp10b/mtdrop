@@ -1575,3 +1575,37 @@ Same photo, **5,428,586 bytes**, three sends from Explorer, all delivered (maint
 | TX status rates | default: almost all `12 Mb/s`; with 54: almost all `54 Mb/s` (if the firmware keeps the fixed rate) |
 
 If the phone keeps only 1–2 slots on 44 during the upload, the lever is the channel: either follow its main channel (hopping, large change) or make it come to 44 (the sequence we advertise while sending, ADR-0006 A3).
+
+### Result (2026-11-18, 20:21–20:24)
+
+Same 5,428,586-byte photo, two sends (maintainer: both arrived):
+
+| | default (12) | `--data-rate 54` |
+|---|---|---|
+| upload | 37.4 s, **145 kB/s** | 24.7 s, **220 kB/s** |
+| RTT during the transfer (ping) | 30 replies, 2 lost, min 7, **median 91**, max 508 ms | 22 replies, 1 lost, min 29, **median 80**, max 168 ms |
+| TX status rates of unicast data (new summary) | 12 Mb/s: 4061 of 4061 | **54 Mb/s: 4090 of 4090** – the override works on air |
+| transmissions per data frame | 5687 / 4061 = **1.40** | 5865 / 4090 = **1.43** |
+| refused by radiod (16 in flight) | 67 | 144 |
+
+**The phone's sequence while it receives (FACT, `awdld.log`):** it starts at `6,0,44,0,0,0,0,0,6,0,44,0,…` (2 of 16 slots on 44) and within ~3 s **widens to 14 of 16 slots on 44** (`44,44,44,44,44,44,44,44,6,44,44,44,44,44,44,44`), alternating with 10/16 during the upload; we advertise the same (`intersect`). The prediction "a few slots on 44" was **wrong**: the receiving phone comes to our channel.
+
+**Conclusion:** shared air time is not the limit either. With the phone on 44 most of the time the link could carry far more than 145–220 kB/s. What is left is on our side: (1) frames refused at 16 in flight – each one a lost TCP segment, so TCP keeps a small window (220 kB/s × 80 ms ≈ 18 KB in flight); (2) 40 % of data frames need a second transmission; (3) a median RTT of 80–90 ms on a channel the phone shares 14/16 of the time.
+
+## F-032 – M9: no refused frames (TX backlog), and Wi-Fi back sooner
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Changes:**
+  1. **TX backlog in `radiod`** (ADR-0006 A2): a frame the library cannot take (16 in flight) waits in an ordered queue (512 frames, dropped after 500 ms) instead of being refused; `--no-tx-backlog` restores the old behaviour. Loopback (`radioctl --tx-burst 300`, 64 frames in flight in loopback): **300 done, 0 refused** (deepest queue 236); without the backlog 64 done, **236 refused**. New summary line `TX backlog: …`.
+  2. **Quick give-back** (ADR-0006 B1): the service switches the card straight back to the MediaTek package already in the driver store (`UpdateDriverForPlugAndPlayDevices` with `%windir%\INF\oem12.inf`, as the session's own switch, ~3 s) and removes our package from the store only after Wi-Fi is back, without `/uninstall`. The old path (delete with `/uninstall`, ~15 s) stays as the fallback. Service tests 70/70; `--check` (read-only) lists `vendor packages: oem12.inf`.
+  3. **Receive ends after the transfer** (maintainer's wish): 3 s after a received transfer, if nothing else is arriving, the tray app ends the session; `--keep-receiving` keeps the old behaviour.
+- **Method:** the same 5.4 MB photo sent twice (default rate, then 54), then one photo received from the iPhone; logs copied after each.
+
+### Predictions
+
+| | prediction | falsified by |
+|---|---|---|
+| refused | 0 in both sends; `TX backlog: n waited` > 0 | refusals > 0 |
+| send rate | clearly faster than F-031 at the same data rate (TCP window no longer collapses): ≥ 1.5× (≥ 220 kB/s at 12, ≥ 330 kB/s at 54) | no change → losses were not the limit; next: the 40 % second transmissions |
+| give-back | `give-back: switching the card back to oem12.inf`, MediaTek driver back within ~5 s, `Wi-Fi is connected` ~10–15 s after the stop (F-026/F-027: 26–30 s); then `removed proxy package … from the driver store` | the quick switch fails and the fallback runs |
+| receive | the session ends ~3 s after the "Received" card; Wi-Fi back ~15 s later | the session runs to the end of the window |

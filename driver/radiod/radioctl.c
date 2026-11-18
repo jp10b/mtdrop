@@ -157,6 +157,7 @@ int main(int argc, char **argv) {
     struct rl_hello hello;
     unsigned actions = 0, act_by_sub[256], data = 0, other = 0, on_channel = 0, off_channel = 0, n_ta = 0, msgs = 0;
     unsigned tx_sent = 0, tx_status = 0, tx_ok = 0, tx_bad = 0;
+    unsigned burst = 0, burst_sent = 0, burst_done = 0, burst_refused = 0, burst_other = 0;
     uint8_t ta[MAX_TA][6], ghost[6];
     int sig_min = 0, sig_max = -128, have_sig = 0, rc = 1;
     struct rl_stats stats;
@@ -168,9 +169,10 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--connect-timeout") == 0 && i + 1 < argc) connect_timeout = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--channel") == 0 && i + 1 < argc) channel = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--tx-test") == 0) tx_test = 1;
+        else if (strcmp(argv[i], "--tx-burst") == 0 && i + 1 < argc) burst = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--no-filter") == 0) no_filter = 1;
         else {
-            printf("usage: radioctl [--seconds N (1..600)] [--channel C] [--tx-test] [--connect-timeout S] [--no-filter]\n");
+            printf("usage: radioctl [--seconds N (1..600)] [--channel C] [--tx-test] [--tx-burst N] [--connect-timeout S] [--no-filter]\n");
             return 2;
         }
     }
@@ -213,7 +215,11 @@ int main(int argc, char **argv) {
         uint8_t c = (uint8_t)channel;
         send_msg(RL_SET_CHANNEL, &c, 1);
     }
-    if (tx_test && random_laa(ghost) != 0) {
+    if (burst > 1000u) {
+        printf("RESULT: FAIL - --tx-burst is limited to 1000 frames\n");
+        return 2;
+    }
+    if ((tx_test || burst) && random_laa(ghost) != 0) {
         printf("RESULT: FAIL - rand_s failed\n");
         return 1;
     }
@@ -243,6 +249,29 @@ int main(int argc, char **argv) {
                    0x1000u + tx_sent);
             tx_sent++;
             next_tx += 1000u;
+        }
+        if (burst && !burst_sent && now >= t0 + 2000u) {
+            /* --tx-burst: N unicast data frames to the ghost address at once (more than the radio can hold in
+             * flight), to exercise radiod's TX backlog; every frame must come back DONE, none REFUSED. */
+            static const uint8_t awdl_bssid[6] = {0x00, 0x25, 0x00, 0xff, 0x94, 0x73};
+            for (unsigned k = 0; k < burst; k++) {
+                uint8_t f[124], pl[256];
+                memset(f, 0, sizeof(f));
+                f[0] = 0x08;                                   /* data */
+                memcpy(f + 4, ghost, 6);
+                memcpy(f + 10, hello.addr, 6);
+                memcpy(f + 16, awdl_bssid, 6);
+                f[22] = (uint8_t)(k << 4);
+                f[23] = (uint8_t)(k >> 4);
+                size_t m = rl_build_tx(pl, sizeof(pl), 0x2000u + k, f, sizeof(f), 24 /* 12 Mb/s */);
+                if (!m || send_msg(RL_TX, pl, m) != 0) {
+                    gone = 1;
+                    break;
+                }
+                burst_sent++;
+            }
+            printf("burst: %u data frames sent\n", burst_sent);
+            if (gone) break;
         }
         int n = recv_msg(50);
         if (n < 0) {
@@ -293,6 +322,12 @@ int main(int argc, char **argv) {
         } else if (h.type == RL_TX_STATUS) {
             struct rl_tx_status s;
             if (rl_get_tx_status(p, h.length, &s) != 0) continue;
+            if (s.cookie >= 0x2000u) {
+                if (s.result == RL_TXR_REFUSED) burst_refused++;
+                else if (s.result == RL_TXR_DONE) burst_done++;
+                else burst_other++;
+                continue;
+            }
             unsigned idx = s.cookie - 0x1000u;
             int ghost_frame = idx >= 3;
             int ok = ghost_frame ? (s.result == RL_TXR_DONE && s.acked == RL_ACK_NO)
@@ -317,6 +352,7 @@ int main(int argc, char **argv) {
             printf("message type %u (%u bytes)\n", h.type, h.length);
         }
     }
+    if (burst) printf("burst: %u sent, %u done, %u refused, %u other\n", burst_sent, burst_done, burst_refused, burst_other);
     if (!gone && send_msg(RL_STATS_REQ, NULL, 0) == 0) {
         uint64_t until = now_ms() + 2000u;
         while (now_ms() < until) {

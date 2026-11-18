@@ -56,6 +56,23 @@ struct data_txs {
     uint32_t frames, transmissions;
 };
 
+#define BACKLOG_SLOTS 512u
+#define BACKLOG_MAX_AGE_US 500000u     /* older than this, TCP has retransmitted anyway */
+
+struct backlog_ent {
+    uint32_t cookie;
+    uint16_t len;
+    uint8_t rate, data;
+    uint64_t queued_us;
+    uint8_t frame[MT792X_TX_MAX_FRAME];
+};
+
+struct backlog {
+    struct backlog_ent *e;
+    unsigned head, count;
+    uint32_t queued, expired, max_depth;
+};
+
 struct server {
     HANDLE pipe;
     struct outq q;
@@ -71,6 +88,8 @@ struct server {
     uint8_t data_rate;          /* 0 = as the client asks (OWL: OFDM 12); else MT792X_RATE_* for unicast data (M9, F-030) */
     uint8_t data_rate_500k;
     struct data_txs dtx;
+    struct backlog bl;
+    int no_backlog;             /* --no-tx-backlog: refuse when the library is full (behaviour before F-032) */
     int client_gone;
     int bye_reason;
 };
@@ -409,20 +428,21 @@ static int pump_tx_done(struct server *sv) {
     return r < 0 ? r : n;
 }
 
-static void do_tx(struct server *sv, const uint8_t *p, size_t len) {
-    uint32_t cookie = 0, lib_cookie = 0;
-    const uint8_t *frame;
-    size_t flen;
-    uint8_t rate500k;
+/* Frames the library could not take yet (16 in flight, F-030/F-031): kept in order and submitted as slots free up,
+ * instead of being refused - a refused data frame is a lost TCP segment for the sender. ADR-0006 A2. */
+static int backlog_init(struct backlog *b) {
+    memset(b, 0, sizeof(*b));
+    b->e = calloc(BACKLOG_SLOTS, sizeof(*b->e));
+    return b->e ? 0 : -1;
+}
+
+/* 0 = submitted, MT792X_E_TX_BUSY = no room now, other = refused (status sent). */
+static int submit_tx(struct server *sv, uint32_t cookie, const uint8_t *frame, size_t flen, uint8_t rate, int unicast_data) {
+    uint32_t lib_cookie = 0;
     struct mt792x_tx_req q;
     unsigned slot = TXMAP_SLOTS;
     int err;
 
-    if (rl_parse_tx(p, len, &cookie, &frame, &flen, &rate500k) != 0 || flen > MT792X_TX_MAX_FRAME) {
-        sv->st.v[RL_ST_TX_REFUSED]++;
-        send_tx_status(sv, cookie, RL_TXR_REFUSED, RL_ACK_UNKNOWN, 0, r_channel(), 0, MT792X_E_TX_FRAME);
-        return;
-    }
     for (unsigned i = 0; i < TXMAP_SLOTS; i++)
         if (!sv->map[i].used) {
             slot = i;
@@ -431,26 +451,91 @@ static void do_tx(struct server *sv, const uint8_t *p, size_t len) {
     memset(&q, 0, sizeof(q));
     q.frame = frame;
     q.len = (uint32_t)flen;
-    q.rate = tx_rate_from_500k(rate500k, r_band());
-    /* --data-rate (ADR-0006 A1): unicast data frames only (type 2, receiver address not group); management and
-     * action frames keep the client's rate, so AWDL sync is unchanged. OFDM only: valid on both bands. */
-    int unicast_data = flen >= 10 && ((frame[0] >> 2) & 3u) == 2u && !(frame[4] & 1u);
-    if (sv->data_rate && unicast_data) q.rate = sv->data_rate;
+    q.rate = rate;
     q.want_ack = (frame[4] & 1u) ? 0u : 1u; /* group-addressed: no ACK */
     q.want_status = q.want_ack;
     q.tx_count = 0;                          /* mt76's 15 */
     err = slot == TXMAP_SLOTS ? MT792X_E_TX_BUSY : r_tx_frame(&q, &lib_cookie);
+    if (err == MT792X_E_TX_BUSY) return err;
     if (err) {
         sv->st.v[RL_ST_TX_REFUSED]++;
         send_tx_status(sv, cookie, RL_TXR_REFUSED, RL_ACK_UNKNOWN, 0, r_channel(), 0, err);
-        return;
+        return err;
     }
     sv->st.v[RL_ST_TX_SUBMITTED]++;
     sv->map[slot].used = 1;
     sv->map[slot].data = (uint8_t)unicast_data;
     sv->map[slot].lib_cookie = lib_cookie;
     sv->map[slot].client_cookie = cookie;
-    sv->map[slot].channel = r_channel();
+    return 0;
+}
+
+static void refuse_busy(struct server *sv, uint32_t cookie) {
+    sv->st.v[RL_ST_TX_REFUSED]++;
+    send_tx_status(sv, cookie, RL_TXR_REFUSED, RL_ACK_UNKNOWN, 0, r_channel(), 0, MT792X_E_TX_BUSY);
+}
+
+/* Submits queued frames in order while the library has room; drops (refuses) ones that waited too long. */
+static int drain_backlog(struct server *sv) {
+    struct backlog *b = &sv->bl;
+    uint64_t now = qpc_us();
+    int n = 0;
+    while (b->count) {
+        struct backlog_ent *e = &b->e[b->head];
+        int err;
+        if (now - e->queued_us > BACKLOG_MAX_AGE_US) {
+            refuse_busy(sv, e->cookie);
+            b->expired++;
+        } else {
+            err = submit_tx(sv, e->cookie, e->frame, e->len, e->rate, e->data);
+            if (err == MT792X_E_TX_BUSY) break;
+            if (!err) n++;
+        }
+        b->head = (b->head + 1u) % BACKLOG_SLOTS;
+        b->count--;
+    }
+    return n;
+}
+
+static void do_tx(struct server *sv, const uint8_t *p, size_t len) {
+    uint32_t cookie = 0;
+    const uint8_t *frame;
+    size_t flen;
+    uint8_t rate500k, rate;
+    int err, unicast_data;
+
+    if (rl_parse_tx(p, len, &cookie, &frame, &flen, &rate500k) != 0 || flen > MT792X_TX_MAX_FRAME) {
+        sv->st.v[RL_ST_TX_REFUSED]++;
+        send_tx_status(sv, cookie, RL_TXR_REFUSED, RL_ACK_UNKNOWN, 0, r_channel(), 0, MT792X_E_TX_FRAME);
+        return;
+    }
+    rate = tx_rate_from_500k(rate500k, r_band());
+    /* --data-rate (ADR-0006 A1): unicast data frames only (type 2, receiver address not group); management and
+     * action frames keep the client's rate, so AWDL sync is unchanged. OFDM only: valid on both bands. */
+    unicast_data = flen >= 10 && ((frame[0] >> 2) & 3u) == 2u && !(frame[4] & 1u);
+    if (sv->data_rate && unicast_data) rate = sv->data_rate;
+
+    /* Keep the order: while frames wait, new ones queue behind them. */
+    if (sv->bl.count) drain_backlog(sv);
+    err = sv->bl.count ? MT792X_E_TX_BUSY : submit_tx(sv, cookie, frame, flen, rate, unicast_data);
+    if (err != MT792X_E_TX_BUSY) return;
+    if (sv->no_backlog || sv->bl.count == BACKLOG_SLOTS) {
+        refuse_busy(sv, cookie);
+        return;
+    }
+    {
+        struct backlog *b = &sv->bl;
+        struct backlog_ent *e = &b->e[(b->head + b->count) % BACKLOG_SLOTS];
+        e->cookie = cookie;
+        e->len = (uint16_t)flen;
+        e->rate = rate;
+        e->data = (uint8_t)unicast_data;
+        e->queued_us = qpc_us();
+        memcpy(e->frame, frame, flen);
+        b->count++;
+        b->queued++;
+        if (b->count > b->max_depth) b->max_depth = b->count;
+    }
 }
 
 static void do_set_channel(struct server *sv, uint8_t ch) {
@@ -633,6 +718,7 @@ int serve(int argc, char **argv) {
         else if (strcmp(argv[i], "--no-filter") == 0) sv.filter_on = 0;
         else if (strcmp(argv[i], "--loopback") == 0) loopback = 1;
         else if (strcmp(argv[i], "--data-fw-rate-ac") == 0) cli.extra.tx_data_altx = cli.extra.tx_data_fixed_rate = 0;
+        else if (strcmp(argv[i], "--no-tx-backlog") == 0) sv.no_backlog = 1;
         else if (strcmp(argv[i], "--data-rate") == 0 && i + 1 < argc) {
             long mbps = strtol(argv[++i], NULL, 10);
             uint8_t r500 = (uint8_t)(mbps * 2);
@@ -656,9 +742,10 @@ int serve(int argc, char **argv) {
         printf("RESULT: FAIL - --wait-client must be 1..300\n");
         return 2;
     }
-    if (outq_init(&sv.q) != 0) {
+    if (outq_init(&sv.q) != 0 || backlog_init(&sv.bl) != 0) {
         printf("RESULT: FAIL - out of memory\n");
         outq_free(&sv.q);
+        free(sv.bl.e);
         return 2;
     }
     sv.rov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
@@ -759,6 +846,7 @@ int serve(int argc, char **argv) {
                 break;
             }
             busy |= r > 0;
+            if (sv.bl.count) busy |= drain_backlog(&sv) > 0;
             if (flush_out(&sv) != 0) {
                 sv.client_gone = 1;
                 printf("serve: client disconnected (write failed)\n");
@@ -785,6 +873,8 @@ int serve(int argc, char **argv) {
             if (sv.dtx.by_rate_500k[r]) printf(" %u%s Mb/s %u,", r / 2u, r % 2u ? ".5" : "", sv.dtx.by_rate_500k[r]);
         if (sv.dtx.by_rate_500k[0]) printf(" unknown %u,", sv.dtx.by_rate_500k[0]);
         printf(" HT/VHT %u\n", sv.dtx.other_mode);
+        printf("TX backlog: %s; %u frame(s) waited for room, %u dropped after %u ms, deepest %u\n",
+               sv.no_backlog ? "off" : "on", sv.bl.queued, sv.bl.expired, BACKLOG_MAX_AGE_US / 1000u, sv.bl.max_depth);
         if (sv.bye_reason == RL_BYE_RADIO_ERROR) printf("RESULT: FAIL - radio error while serving\n");
         else if (sv.bye_reason == RL_BYE_PROTOCOL) printf("RESULT: FAIL - the client broke the protocol\n");
         else {
