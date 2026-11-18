@@ -1437,3 +1437,13 @@ What would falsify M7 acceptance: any test needing `wifi-giveback.ps1` or a manu
 - **Shutdown grace:** when a child ends by itself, the session waits 3 s before the give-back so a shutdown notice arriving in that moment still selects the boot-recovery path.
 - `--check` now also prints the radio state and the last scan (entries, saved networks in range). Unelevated on the maintainer's machine: radio software On, hardware On, 4 entries, 1 saved in range, connected (the struct offsets of `WLAN_AVAILABLE_NETWORK` read correctly).
 - Service tests 63/63. Re-test T3 and T4 (and T5 once) after the re-install.
+
+### Re-test after the fixes (2026-11-18, 19:02–19:08)
+
+| # | result | evidence (service log) |
+|---|---|---|
+| T3 kill radiod | **PASS** | `the radio stopped (exit code 1)` 19:02:37 → vendor back 19:03:00 → 35/35 re-added 19:03:03 → `Wi-Fi did not connect by itself; radio software On, hardware On; 6 scan entries, 2 saved network(s) in range; asked to connect to saved network #16 of 35` 19:03:20 → connected 19:03:25. The nudge was needed again: the missing automatic connect after an abrupt `radiod` end is reproducible. |
+| T4 kill service | **PASS** | restart 19:04:03, `recovery: the card was left on our driver` → vendor back 19:04:21 → connected 19:04:29 by itself (no nudge needed this time) |
+| T5 restart | **PASS** | `the radio stopped (exit code 0)` 19:05:38, shutdown notice 19:05:39 (inside the 3 s grace) → `system shutdown - the card stays on our driver` → after boot: recovery 19:08:10, connected 19:08:27 |
+
+**Conclusion: M7 accepted.** Every process kill, a restart and a lid close mid-session end with the MediaTek driver back and Wi-Fi connected without manual steps (ADR-0004 acceptance). Open, not blocking: why WLAN AutoConfig does not start an automatic connection after an abrupt `radiod` end (the nudge covers it); a restart mid-session leaves Wi-Fi off until the delayed service start (~2.5 min after boot here).
