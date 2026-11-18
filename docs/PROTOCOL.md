@@ -302,7 +302,7 @@ Per file:
 Response:
 
 - **Accept:** `200` with `ReceiverComputerName` and `ReceiverModelName`. FACT (capture): sufficient. winawdl also repeats `ReceiverMediaCapabilities`.
-- **Decline:** unsettled. Four projects answer `403`, winawdl `401`; the one on-device note about `403` says the phone stayed on "Waiting" (`mt/docs/FINDINGS.md:3347`). FACT on our phone (F-025, iOS 26.5.2): `403` with `Connection: close` leaves the iPhone on "Waiting". **TODO-VERIFY** `401` and other answers.
+- **Decline:** unsettled. Four projects answer `403`, winawdl `401`; the one on-device note about `403` says the phone stayed on "Waiting" (`mt/docs/FINDINGS.md:3347`). FACT on our phone (F-025, iOS 26.5.2): `403` with `Connection: close` leaves the iPhone on "Waiting". **TODO-VERIFY** `401` and other answers; the tray app takes `--decline-status <code>` and `--decline-keep-open` for this.
 - **How long may we take?** FACT (capture): 1.5 s and 3.2 s worked. REPORTED: 15 s worked (`wa/DESIGN-NOTES.md:608-611`). Upper bound TODO-VERIFY. While waiting, watch the connection: if the sender closes it, the user cancelled → dismiss the prompt (`wa/airdrop/receiver.py:138-151`).
 - Link shares end here: there is no `/Upload` (REPORTED). Not in scope for v0.1; answer as decline or ignore safely.
 

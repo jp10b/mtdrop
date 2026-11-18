@@ -1357,3 +1357,22 @@ Times from the service log (`C:\ProgramData\mtdrop\logs\service.log`), the recei
 - **Wi-Fi does not come back without the profile re-add**, because every swap gives the adapter a new interface GUID with no saved networks. The SYSTEM export gave 0 files in session 1 although that interface had ~35 profiles (cause unknown; netsh output is not logged), so Wi-Fi stayed off until a manual connect. This fails the "Wi-Fi back automatically" criterion. Next: read and write profiles through the WLAN API (`WlanGetProfileList` / `WlanGetProfile` / `WlanSetProfile`) instead of `netsh` files, log counts and errors, and refuse to take the card when no profile could be saved while the adapter is connected.
 - **Toasts are off in Windows** on this machine: the app must not rely on them. Next: show the saved-file message in the app's own card when toasts are disabled.
 - **The tray app needs its own log** (state changes, `/Ask`, decision, answer, timings) so the next session can settle the green-icon timing and the Decline behaviour from data instead of memory.
+
+## F-026 – M7.3 follow-up: Wi-Fi networks through the WLAN API, notice card, Decline with 401
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Change under test (code, F-025 conclusion):** the service exports the card's saved networks through the Native Wifi API (`WlanGetProfileList` / `WlanGetProfile`, keys stay encrypted) as numbered files and re-adds the missing ones with `WlanSetProfile` after the give-back; it refuses to take the card when Wi-Fi is connected but nothing could be exported. The tray app writes `%LOCALAPPDATA%\mtdrop\logs\app.log`, shows its own card when Windows toasts are off, and takes `--decline-status` / `--decline-keep-open`.
+- **Offline checks (FACT):** service tests 58/58, protocol tests 77/77; `mtdrop-service.exe --check` unelevated reads "35 on the card, 35 readable" through the new API; `mtdrop.exe --test-notice` and `--test-prompt` open and close their windows without errors.
+- **Setup:** re-install with `scripts/install-service.ps1 -Apply`; tray app started by hand as `mtdrop.exe --decline-status 401`. One 2-minute session: first send → **Decline**, second send in the same session → **Accept**. Same iPhone, iOS 26.5.2, "Everyone for 10 Minutes", same network as F-025.
+
+### Predictions
+
+| step | prediction |
+|---|---|
+| export | service log: `wifi: ~35 saved network(s) on the card, ~35 exported` |
+| green | `app.log`: `awdl0 ready … s after Start` ≤ 20 s |
+| Decline (401) | `app.log`: `/Ask answered 401 Unauthorized, Connection: close`; iPhone: **unknown** – either "Declined" (then 401 is the answer) or "Waiting" again (then try `--decline-keep-open`, then other codes) |
+| Accept | photo in Downloads; the app's own card "Received from …" with **Open folder** (toasts are off), which opens Explorer on the file |
+| give-back | `re-added N of N missing saved network(s)` with N ≈ 35 (fewer if Windows copies them first, as seen at 11:16:25 in F-025); `Wi-Fi is connected` within 30 s; **no manual connect** |
+
+What would falsify the fix: Wi-Fi needing a manual connect again, or the export failing/refusing while Wi-Fi is connected.
