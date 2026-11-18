@@ -7,6 +7,6 @@
 | [0003](0003-awdld-on-windows.md) | awdld on Windows: process split, radio link, toolchain, reuse | Accepted 2026-11-17 |
 | [0004](0004-service-and-watchdog.md) | Receive sessions run by an elevated service, with a watchdog that always restores Wi-Fi | Accepted 2026-11-17 |
 | [0005](0005-sending.md) | Sending PC → iPhone from the tray app, woken over Bluetooth LE, on the existing receive session | Accepted 2026-11-18 |
-| [0006](0006-m9-priorities.md) | M9 – what to improve first, and what this architecture cannot do | Proposed 2026-11-18 |
+| [0006](0006-m9-priorities.md) | M9 – what to improve first, and what this architecture cannot do | Accepted 2026-11-18 |
 
 Format: context → options with pros and cons → decision → consequences → open points. An accepted ADR is not edited; it is superseded by a new one.

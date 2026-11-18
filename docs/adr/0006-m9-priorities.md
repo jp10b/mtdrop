@@ -1,6 +1,6 @@
 # ADR-0006: M9 – what to improve first, and what this architecture cannot do
 
-- **Status:** Proposed (2026-11-18)
+- **Status:** Accepted (2026-11-18, maintainer)
 - **Deciders:** maintainer
 - **Inputs:** CLAUDE.md §7 (M9 list), §2 (constraints); ADR-0002 (UMDF proxy replaces the vendor driver while we own the chip); ADR-0004 (service sessions); `docs/FINDINGS.md` F-023 (receive 350–590 kB/s), F-025–F-027 (session timing, give-back ~26 s), F-028/F-029 (send 72–87 kB/s); `jedbillyb/airdrop-mt7921` FINDINGS §24, §38–§41 (coexistence on Linux); winawdl DESIGN-NOTES "Sending" (rate ladder: 0.5 → 2.2 MB/s)
 
