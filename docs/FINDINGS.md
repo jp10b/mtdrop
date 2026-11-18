@@ -1678,3 +1678,20 @@ Send of the 5.4 MB photo at the default rate: upload 55.6 s, **98 kB/s** (slower
 | RTT median | 75 ms | **< 40 ms** | unchanged |
 | send rate (12 Mbit/s) | 98–142 kB/s | **≥ 250 kB/s** (TCP's window opens once losses and RTT drop) | below 150 kB/s → the limit is elsewhere (the phone's ACK timing, Windows TCP on `awdl0`) |
 | `held` | – | thousands (it holds often, for 1 ms each) | – |
+
+### Result (2026-11-18, 21:18–21:21)
+
+| | F-033 (no gate) | **12 Mbit/s** | **54 Mbit/s** |
+|---|---|---|---|
+| upload of 5,428,586 bytes | 55.6 s, 98 kB/s | 41.0 s, **132 kB/s** | 28.5 s, **190 kB/s** |
+| data frames given up (not ACKed) | 16 % | **79 of 4168 = 1.9 %** | **112 of 4088 = 2.7 %** |
+| transmissions per data frame | 3.3 | **1.33** | 1.39 |
+| time in the radio, mean / max | 75 / 367 ms | **51 / 161 ms** | 38 / 167 ms |
+| RTT median (ping) | 75 ms | 102 ms | 80 ms |
+| `host empty` | 3783 | **230** | 125 |
+| held / deferred (total wait) | – / 7 s | 22828 / 27.5 s | 17778 / 20.9 s |
+| safety net ("sending anyway") | – | 1 | 1 |
+
+- **Predictions held for losses and retries** (< 3 %, < 1.5), **failed for time in the radio, RTT and rate.** The gate stays: it removes the losses.
+- **New reading (FACT for the counters, ASSUMPTION for the cause):** awdld is no longer waiting for TCP (`host empty` 3783 → 230); it now waits for the radio. With at most 8 frames in the radio and 38–51 ms mean in it, the radio completes one frame every ~5–6 ms – about 100–160 frames/s at any PHY rate, the plateau of every run since F-028. F-019 measured the same ~6 ms per frame on ALTX0. Our unicast data goes frame by frame through the management queue ALTX0 at a fixed rate, without a station record for the phone and without aggregation (M5's choice, F-019/F-020: the AC queues held data 115–560 ms). mt76 sends data on AC queues with a station record (`STA_REC`) and A-MPDU aggregation under a block-ack agreement; winawdl reached 2.2 MB/s on its chip only after doing the equivalent.
+- **Next step for throughput (ADR-0006 A, larger):** a station record for the peer in the firmware and data on AC queues with aggregation – driver work in `mt792x` (MCU commands, as mt76's `mt7921_mac_sta_add` / BA setup), with the hang risk of new MCU commands (F-011). Needs the maintainer's go-ahead.
