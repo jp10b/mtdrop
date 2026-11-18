@@ -1302,3 +1302,23 @@ Offline (FACT, 2026-11-17): with an existing adapter the app listens on 8771 wit
 
 1. The user story works with the real consent window: the share sheet shows the PC, Windows asks, Accept saves the photo to Downloads. Still open for the M6 acceptance: the toast (look for it), Decline, the recording.
 2. The session still needs an elevated script started by hand; the tray's "Receive" cannot start the radio itself yet. That is M7's service.
+
+## F-025 – M7.3: one-click receive session through the installed service
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Milestone:** M7.3 (ADR-0004): the tray app's **Start receiving** alone runs the whole session – no script, no elevation by the user.
+- **Setup:** service installed by `scripts/install-service.ps1 -Apply` (M7.2), updated the same day; card on MediaTek 3.5.0.1349, no proxy package, state clear, Wi-Fi connected (FACT, `mtdrop-service.exe --check`). Uptime ~14 h, 4.9 GB RAM free. Tray app from the Start menu (`C:\Program Files\mtdrop\app\mtdrop.exe`, default 2 min window). iPhone 15 Pro, iOS 26.5.2, AirDrop "Everyone for 10 Minutes". Two sessions back to back: the first accepts a photo, the second declines one (also checks that a second session works after a give-back).
+
+### Predictions
+
+| step | prediction |
+|---|---|
+| Start clicked | menu line runs through "reserving memory for the radio" → "switching the Wi-Fi card to mtdrop" → "starting the radio" → "waiting for the AWDL adapter"; amber icon; Wi-Fi drops |
+| radio up | green icon "Receiving" within ~30 s of the click (dma-probe + swap ~5–10 s, radiod firmware + awdl0 ~10 s) |
+| share sheet | the PC appears within ~20 s of opening the sheet, as F-023/F-024 |
+| Accept | Accept/Decline window, photo in Downloads, toast with **Open folder** |
+| window end (2 min) | "Turning Wi-Fi back on..." with Start disabled, then "Not receiving"; Wi-Fi reconnects within ~60 s of the end; no error notice |
+| afterwards | `--check`: MediaTek driver, no proxy package, state clear; no task `mtdrop\watchdog`; no rules `mtdrop-receiver-*` |
+| second session, Decline | same start; the iPhone shows the transfer declined; nothing new in Downloads; Wi-Fi back again |
+
+What would falsify M7.3: anything needing a manual step (script, elevation) to receive, or Wi-Fi not back without `wifi-giveback.ps1`.
