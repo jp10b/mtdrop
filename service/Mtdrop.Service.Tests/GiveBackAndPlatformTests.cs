@@ -20,31 +20,15 @@ public sealed class GiveBackTests : IDisposable
     }
 
     [Fact]
-    public void Quick_give_back_switches_to_the_vendor_package_and_removes_ours_afterwards()
+    public void Give_back_never_switches_the_running_device_to_the_vendor_package()
     {
+        // F-032: switching the driver on the running device hung Windows; the package is always removed with /uninstall.
         _rig.Driver.Bound = FakeDriver.Binding.Proxy;
         _rig.Driver.PackageInStore = true;
         _rig.Driver.VendorInStore = true;
 
         Assert.True(_rig.GiveBack().Run());
-        Assert.Equal(["driver:bind-vendor oem10.inf", "wifi:restore", "driver:remove oem99.inf"], _rig.Calls);
-        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
-        Assert.False(_rig.Driver.PackageInStore);
-        Assert.Equal(0, _rig.Lock.Held);
-    }
-
-    [Fact]
-    public void Quick_give_back_falls_back_to_removing_our_package()
-    {
-        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
-        _rig.Driver.PackageInStore = true;
-        _rig.Driver.VendorInStore = true;
-        _rig.Driver.VendorBindWorks = false;
-
-        Assert.True(_rig.GiveBack().Run());
-        Assert.Equal(["driver:bind-vendor oem10.inf", "driver:delete oem99.inf", "driver:scan", "wifi:restore"], _rig.Calls);
-        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
-        Assert.True(_rig.Log.Has("quick switch did not bring"));
+        Assert.Equal(["driver:delete oem99.inf", "driver:scan", "wifi:restore"], _rig.Calls);
     }
 
     [Fact]

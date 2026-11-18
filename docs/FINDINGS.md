@@ -1609,3 +1609,18 @@ Same 5,428,586-byte photo, two sends (maintainer: both arrived):
 | send rate | clearly faster than F-031 at the same data rate (TCP window no longer collapses): ≥ 1.5× (≥ 220 kB/s at 12, ≥ 330 kB/s at 54) | no change → losses were not the limit; next: the 40 % second transmissions |
 | give-back | `give-back: switching the card back to oem12.inf`, MediaTek driver back within ~5 s, `Wi-Fi is connected` ~10–15 s after the stop (F-026/F-027: 26–30 s); then `removed proxy package … from the driver store` | the quick switch fails and the fallback runs |
 | receive | the session ends ~3 s after the "Received" card; Wi-Fi back ~15 s later | the session runs to the end of the window |
+
+### Result (2026-11-18, 20:33–20:47) – **quick give-back hung Windows; reverted**
+
+| | send 1 (default 12) | send 2 (`--data-rate 54`) |
+|---|---|---|
+| upload | 38.2 s, **142 kB/s** (F-031: 145) | 26.5 s, **205 kB/s** (F-031: 220) |
+| refused by radiod | **0** (953 frames waited in the backlog, deepest 14) | – (logs not copied yet) |
+| transmissions per data frame | 5387 / 4057 = 1.33 | – |
+| RTT (ping) | median 103 ms (min 9, max 550) | median 85 ms (min 7, max 454) |
+| give-back | **46 s**: `switching the card back to oem12.inf` 20:34:50 → MediaTek driver back **20:35:23 (33 s)**, Wi-Fi connected 20:35:32, our package removed 20:35:34 | **Windows hung** after `RestoringWifi` at 20:44:29: no event logged until the maintainer forced a power-off; `Kernel-Power 41` (unclean restart), boot at 20:47:26; the service's boot recovery gave the card back, Wi-Fi connected |
+
+- **Backlog:** works as designed (no refusals), **but the send rate did not change** – refusals were not what limits it. The prediction (≥ 1.5×) is falsified.
+- **Quick give-back:** switching the driver on the running device (`UpdateDriverForPlugAndPlayDevices` with the vendor INF, no `/uninstall`) took 33 s once and **hung Windows the next time**. ASSUMPTION: without the device being removed and enumerated again, the MediaTek driver starts on a function in the state our session left (the old path's `/uninstall` removes the device, which goes through a fresh start), like the boot hangs in F-011. **Reverted at once:** the give-back always removes our package with `/uninstall` again; a test guards it (service tests 69/69). Not to be retried without a reset of the PCI function first.
+- **Receive ends after the transfer:** not tested yet (step 4 was not run after the hang).
+- TODO: the service log and `radiod-live.log` of send 2 (copied after the restart, before any new session) to see the last line before the hang.

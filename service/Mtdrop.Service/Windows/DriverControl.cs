@@ -76,21 +76,6 @@ public sealed partial class DriverControl(IProcessRunner runner, ILog log) : IDr
         if (reboot) throw new SessionException("Windows asks for a restart to switch the driver; not continuing");
     }
 
-    public bool BindVendor(string published)
-    {
-        // A published name (oemNN.inf) lives in %windir%\INF; only names pnputil listed for mtkwl6ex.inf get here.
-        if (!System.Text.RegularExpressions.Regex.IsMatch(published, @"^oem\d{1,5}\.inf$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-            return false;
-        string inf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", published);
-        if (!UpdateDriverForPlugAndPlayDevicesW(IntPtr.Zero, ServiceConfig.HardwareId, inf, INSTALLFLAG_FORCE, out bool reboot))
-        {
-            log.Warn($"give-back: Windows refused {published} ({new Win32Exception(Marshal.GetLastWin32Error()).Message})");
-            return false;
-        }
-        if (reboot) log.Warn($"give-back: Windows asks for a restart after switching to {published}");
-        return !reboot;
-    }
-
     public int DeletePackage(string published, bool uninstall) =>
         runner.Run(PnpUtil, uninstall ? ["/delete-driver", published, "/uninstall", "/force"] : ["/delete-driver", published, "/force"],
             PnpTimeout).ExitCode;

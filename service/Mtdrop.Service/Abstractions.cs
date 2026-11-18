@@ -28,12 +28,6 @@ public interface IDriverControl
     IReadOnlyList<string> VendorPackages();
 
     /// <summary>
-    /// Puts a MediaTek package that is already in the driver store back on the card (UpdateDriverForPlugAndPlayDevices,
-    /// as <see cref="BindProxy"/> does the other way). False if Windows refused or wants a restart.
-    /// </summary>
-    bool BindVendor(string published);
-
-    /// <summary>
     /// pnputil /delete-driver &lt;published&gt; /force, with /uninstall when <paramref name="uninstall"/> (removes the
     /// package from devices using it, which reinstalls the card: ~15 s, F-026); returns pnputil's exit code.
     /// </summary>

@@ -40,9 +40,7 @@ public sealed class FakeDriver(List<string> calls) : IDriverControl
     public bool VendorReturnsAfterDelete { get; set; } = true;
     public bool BackupInstallWorks { get; set; } = true;
     public bool FailBind { get; set; }
-    /// <summary>A MediaTek package in the store enables the quick give-back; off by default (the fallback path).</summary>
     public bool VendorInStore { get; set; }
-    public bool VendorBindWorks { get; set; } = true;
 
     public CardInfo? FindCard() => !Present ? null : Bound switch
     {
@@ -67,13 +65,6 @@ public sealed class FakeDriver(List<string> calls) : IDriverControl
     }
 
     public IReadOnlyList<string> VendorPackages() => VendorInStore ? ["oem10.inf"] : [];
-
-    public bool BindVendor(string published)
-    {
-        calls.Add($"driver:bind-vendor {published}");
-        if (VendorBindWorks) Bound = Binding.Vendor;
-        return VendorBindWorks;
-    }
 
     public int DeletePackage(string published, bool uninstall)
     {
