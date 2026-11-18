@@ -17,8 +17,6 @@
 #include "internal.h"
 #include "regs.h"
 
-#define SLOT_FREE 0u
-#define SLOT_BUSY 1u
 #define SLOT_QUAR 2u
 #define TX_GENS   (8192u / MT792X_TX0_SLOTS) /* token = gen * SLOTS + slot < MT7921_TOKEN_SIZE */
 
@@ -69,6 +67,7 @@ struct tx_class {
     uint8_t psd;          /* management queue (ALTX0) */
     uint8_t ac;           /* mac80211 AC (0 VO, 1 VI, 2 BE, 3 BK) for the AC queues */
     uint8_t fix_rate;
+    uint8_t wcid;         /* TXD1 WLAN_IDX: the vif's entry, or a station from mt792x_sta_add (ADR-0007) */
 };
 
 /* ieee802_1d_to_ac (mac80211 wme.c:23): BE BK BK BE VI VI VO VO with VO 0 .. BK 3 */
@@ -152,7 +151,14 @@ static int classify(struct mt792x *dev, const struct mt792x_tx_req *req, struct 
         c->ac = up_to_ac[c->tid];
         c->psd = (uint8_t)!data_present;                                 /* tx.c:718-725 */
         c->fix_rate = (uint8_t)(c->group || dev->opt.tx_data_fixed_rate);
-        if (dev->opt.tx_data_altx) c->psd = 1; /* [HOST] opt.tx_data_altx (F-019): queue ALTX0, TID as computed */
+        if (dev->opt.tx_data_altx && !req->sta) c->psd = 1; /* [HOST] opt.tx_data_altx (F-019): queue ALTX0, TID as computed */
+    }
+    c->wcid = dev->tx_wcid;
+    if (req->sta) {
+        /* ADR-0007: unicast data to a known station goes with its WTBL entry on its AC queue, like mt76's data path */
+        if (c->type != 2u || c->group) return tx_reject(dev, "a station index on a management or group frame");
+        if (!mt_sta_lookup(dev, req->sta, f + 4)) return tx_reject(dev, "station index unknown or not address 1");
+        c->wcid = req->sta;
     }
     return 0;
 }
@@ -169,7 +175,7 @@ static void build_txwi(const struct mt792x *dev, const struct mt792x_tx_req *req
     q_idx = c->psd ? MT_LMAC_ALTX0 : wmm * 4u + (3u - c->ac);          /* mt76_connac_lmac_mapping: 3 - ac */
     t[0] = ((req->len + MT_TXD_SIZE) & MT_TXD0_TX_BYTES) | (MT_TX_TYPE_CT << MT_TXD0_PKT_FMT_SHIFT) |
            (q_idx << MT_TXD0_Q_IDX_SHIFT);
-    t[1] = MT_TXD1_LONG_FORMAT | (dev->tx_wcid & MT_TXD1_WLAN_IDX) | ((uint32_t)dev->tx_omac << MT_TXD1_OWN_MAC_SHIFT) |
+    t[1] = MT_TXD1_LONG_FORMAT | (c->wcid & MT_TXD1_WLAN_IDX) | ((uint32_t)dev->tx_omac << MT_TXD1_OWN_MAC_SHIFT) |
            (MT_HDR_FORMAT_802_11 << MT_TXD1_HDR_FORMAT_SHIFT) | ((uint32_t)(c->hdrlen / 2u) << MT_TXD1_HDR_INFO_SHIFT) |
            ((uint32_t)c->tid << MT_TXD1_TID_SHIFT);
     t[2] = ((uint32_t)c->type << MT_TXD2_FRAME_TYPE_SHIFT) | c->subtype | (c->group ? MT_TXD2_MULTICAST : 0u);
@@ -318,7 +324,7 @@ void mt_tx_on_txs(struct mt792x *dev, const uint8_t *rec, uint32_t ring)
     if (((w[0] >> MT_TXS0_TXS_FORMAT_SHIFT) & 3u) <= 1u && pid >= MT_PACKET_ID_FIRST) {
         for (i = 0; i < MT792X_TX0_SLOTS; i++) {
             struct mt792x_tx_slot *s = &dev->slot[i];
-            if (s->state == SLOT_BUSY && s->want_status && !s->has_txs && s->pid == pid && wcid == dev->tx_wcid) {
+            if (s->state == SLOT_BUSY && s->want_status && !s->has_txs && s->pid == pid && wcid == s->wcid) {
                 mt_memcpy(s->txs, w, sizeof(w));
                 s->has_txs = 1;
                 s->t_event = now;
@@ -478,6 +484,7 @@ int mt792x_tx_frame(struct mt792x *dev, const struct mt792x_tx_req *req, uint32_
     s->state = SLOT_BUSY;
     s->want_ack = req->want_ack ? 1u : 0u;
     s->want_status = req->want_status ? 1u : 0u;
+    s->wcid = c.wcid;
     s->pid = pid;
     s->freed = s->has_txs = 0;
     s->cookie = dev->next_cookie++;

@@ -1404,3 +1404,25 @@ A probe response is unicast to the prober; the AP retransmits it with the same s
 - **Air time**: `txtest` ≤ 20 probe requests (~40 bytes, ≤ 1 per second); no-ACK frames are sent once.
 - **DMA**: frames and TXWIs only inside the slot pages (`mt792x_dma_bus`); a slot whose token never returns is never reused; shutdown stops DMA before anything is reported aborted.
 - **No spoofing**: address 2 must equal the address given to the firmware.
+
+## Station records (ADR-0007 S0, 2026-11-18)
+
+What `mt7921_mac_sta_add` (mt76 `mt7921/main.c:806-855`) sends for a station of an AP-type vif, reduced to what unicast data at a fixed rate needs (library `src/sta.c`, `mt792x_sta_add` / `mt792x_sta_remove`):
+
+- **WTBL index:** `mt76_wcid_alloc(mask, MT792x_WTBL_STA - 1)` = 1..14 (`MT792x_WTBL_SIZE` 20, 19..15 reserved for the vifs, 0 global; `mt792x.h:17-20`). First `mt7921_mac_wtbl_update(idx, ADM_COUNT_CLEAR)`.
+- **Command:** `MCU_UNI_CMD(STA_REC_UPDATE)` (UNI cid 0x03), answered with `{cid, status}` like DEV/BSS_INFO.
+- **Payload (add, 80 bytes):**
+
+| offset | field | value | source |
+|---|---|---|---|
+| 0 | `sta_req_hdr` (8): bss_idx, wlan_idx_lo, tlv_num (le16), is_tlv_append, muar_idx, wlan_idx_hi, rsv | 0, wcid, 2, 1, 0 (omac of the vif; `wcid->sta` = 1), 0, 0 | `mt76_connac_mcu.c:318-342`, `.h:306-314` |
+| 8 | `STA_REC_BASIC` (tag 0, len 20): conn_type (le32), conn_state, qos, aid (le16), peer_addr[6], extra_info (le16) | `CONNECTION_INFRA_STA` 0x00010001 (station of an AP-type vif), `CONN_STATE_PORT_SECURE` 2, 0, 1, peer, `EXTRA_INFO_VER \| EXTRA_INFO_NEW` 3 | `mt76_connac_mcu.c:414-479`, `.h:316-327, 897-924` |
+| 28 | `STA_REC_WTBL` (tag 13, len 4 + 8 + 40 = 52) | | `mt76_connac_mcu.c:1124-1143` |
+| 32 | `wtbl_req_hdr` (8): wlan_idx_lo, operation, tlv_num (le16), wlan_idx_hi, rsv[3] | wcid, `WTBL_RESET_AND_SET` 1, 3, 0 | `.c:344-367`, `.h:667-673, 1028-1033` |
+| 40 | `WTBL_GENERIC` (tag 0, len 20): peer_addr, muar_idx, skip_tx, cf_ack, qos, mesh, adm, partial_aid (le16), baf_en, aad_om | peer, 0, 0, 0, 0, 0, 0, 1 (= aid), 0, 0 | `.c:595-643`, `.h:675-688` |
+| 60 | `WTBL_RX` (tag 1, len 12): rcid, rca1, rca2, rv, rsv[4] | 0, 0 (`vif->type != AP` = 0), 1, 1 | same, `.h:690-698` |
+| 72 | `WTBL_HDR_TRANS` (tag 6, len 8): to_ds, from_ds, no_rx_trans, rsv | 0, 1 (not a station vif), 1 (no `MT_WCID_FLAG_HDR_TRANS`) | `.c:514-541`, `.h:727-734` |
+
+- **Remove (40 bytes):** the same header, BASIC with `CONN_STATE_DISCONNECT` 0 and `extra_info` = VER, and the WTBL TLV with only its `wtbl_req_hdr` (tlv_num 0) – `mt76_connac_mcu_sta_cmd` with `enable = false`.
+- **Left out for now (S4/S5):** `mt76_connac_mcu_sta_tlv` (HT/VHT/UAPSD/AMSDU/STATE/PHY/RA TLVs) and `WTBL_HT`; data keeps `FIX_RATE` (`opt.tx_data_fixed_rate`), so the firmware's rate table is not needed. ASSUMPTION: BASIC + WTBL suffice for the firmware to schedule data to the station on its AC queue; the STA_REC status and the completion time in S1 tell.
+- **TX:** `mt792x_tx_req.sta` = the wcid → TXD1 `WLAN_IDX` = wcid, data on its AC queue even with `opt.tx_data_altx`; TXS matched on the frame's own wcid.

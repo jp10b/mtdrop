@@ -113,6 +113,7 @@ struct fake_chip {
     uint32_t nic_reply_len;
     uint32_t uni_status_dev;    /* status in the DEV_INFO_UPDATE reply */
     uint32_t uni_status_bss;    /* status in the BSS_INFO_UPDATE reply */
+    uint32_t uni_status_sta;    /* status in the STA_REC_UPDATE reply (ADR-0007) */
     int uni_wrong_cid;          /* first DEV_INFO reply carries a wrong cid before the right one */
     uint32_t drop_key;          /* FAKE_KEY of a command never answered (0 = none) */
     int drop_all_from_cmd;      /* 1-based TX17 command index from which nothing is answered (0 = never) */
@@ -193,6 +194,9 @@ struct fake_chip {
     unsigned uni_wrong_cid_sent;
     /* pair vif (OMAC 1) */
     int dev1_active, bss1_active;
+    int sta_used[20];           /* STA_REC_UPDATE: wcid -> station (ADR-0007) */
+    uint8_t sta_addr[20][6];
+    unsigned sta_adds, sta_removes;
     uint8_t dev1_mac[6];
     /* raw TX state */
     struct fake_air air[FAKE_MAX_AIR];

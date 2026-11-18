@@ -91,7 +91,8 @@ enum mt792x_error {
     /* raw TX (spec 12) */
     MT792X_E_TX_DENIED = -45,     /* TX not enabled (cfg.allow_tx), sniffer not started, or channel not allowed */
     MT792X_E_TX_BUSY = -46,       /* no free TX slot / completion record space (poll, then try again) */
-    MT792X_E_TX_FRAME = -47       /* frame rejected by validation (length, type, address, flags) */
+    MT792X_E_TX_FRAME = -47,      /* frame rejected by validation (length, type, address, flags) */
+    MT792X_E_STA = -48            /* station table full, or not a known station (ADR-0007) */
 };
 
 /* How the radio is tuned (spec 11.6). AUTO follows mt76: firmware with the CNM feature bit in the
@@ -350,6 +351,9 @@ struct mt792x_tx_req {
     uint8_t want_ack;         /* 1 = unicast: wait for ACK, retry; 0 = TXD3 NO_ACK (required for group addresses) */
     uint8_t tx_count;         /* TXD3 REM_TX_COUNT, transmissions incl. retries: 1..15, 0 = mt76's 15 */
     uint8_t want_status;      /* 1 = ask for a TX status report (TXS: ACKed or not, final rate); needs want_ack */
+    uint8_t sta;              /* 0 = the vif's own WLAN entry (mt76's injection path); else a wcid from mt792x_sta_add
+                                 for a unicast data frame to that station: TXD1 WLAN_IDX = sta, AC queue even with
+                                 opt.tx_data_altx (ADR-0007) */
 };
 
 enum mt792x_tx_result {
@@ -402,11 +406,17 @@ enum {
 
 #define MT792X_TX_DONE_QUEUE 64u
 
+/* WTBL entries for stations: 1 .. MT792x_WTBL_STA - 2 (mt7921/main.c:817: mt76_wcid_alloc(mask, MT792x_WTBL_STA - 1),
+ * 0 is the global entry, 15..19 belong to the vifs). */
+#define MT792X_STA_FIRST 1u
+#define MT792X_STA_LAST 14u
+
 struct mt792x_tx_slot {
     uint8_t state;            /* 0 free, 1 in flight, 2 quarantined */
     uint8_t want_ack, want_status, pid;
     uint8_t freed;            /* TX-free seen */
     uint8_t free_status, tx_count, has_txs;
+    uint8_t wcid;             /* TXD1 WLAN_IDX of the frame, matched against the TXS */
     uint16_t token, gen;
     uint32_t cookie;
     uint32_t txs[4];
@@ -477,6 +487,10 @@ struct mt792x {
     struct mt792x_tx_done done_q[MT792X_TX_DONE_QUEUE];
     uint32_t done_head, done_count;
     struct mt792x_tx_counters txc;
+
+    /* station records (ADR-0007): wcid MT792X_STA_FIRST..MT792X_STA_LAST */
+    uint8_t sta_used[MT792X_STA_LAST + 1];
+    uint8_t sta_addr[MT792X_STA_LAST + 1][6];
 };
 
 /* Firmware images in memory. Untrusted: they are validated completely before any register access. */
@@ -486,6 +500,13 @@ struct mt792x_fw {
     const uint8_t *ram;
     size_t ram_len;
 };
+
+/* Station records (ADR-0007 S1): register a peer with MCU_UNI_CMD(STA_REC_UPDATE) so unicast data to it can use
+ * its own WLAN entry and the AC queues (mt792x_tx_req.sta). Needs a started sniffer. Adding a known address returns
+ * its wcid again. MT792X_E_STA when all entries are used; MT792X_E_MCU_STATUS when the firmware refuses. */
+int mt792x_sta_add(struct mt792x *dev, const uint8_t addr[6], uint8_t *wcid);
+/* MT792X_E_TX_BUSY while frames to it are in flight; the entry is forgotten whatever the firmware answers. */
+int mt792x_sta_remove(struct mt792x *dev, uint8_t wcid);
 
 /* S0: check the HAL, lay out and zero the DMA region. No register access. */
 int mt792x_init(struct mt792x *dev, struct mt_hal *hal);

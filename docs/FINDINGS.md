@@ -1695,3 +1695,21 @@ Send of the 5.4 MB photo at the default rate: upload 55.6 s, **98 kB/s** (slower
 - **Predictions held for losses and retries** (< 3 %, < 1.5), **failed for time in the radio, RTT and rate.** The gate stays: it removes the losses.
 - **New reading (FACT for the counters, ASSUMPTION for the cause):** awdld is no longer waiting for TCP (`host empty` 3783 → 230); it now waits for the radio. With at most 8 frames in the radio and 38–51 ms mean in it, the radio completes one frame every ~5–6 ms – about 100–160 frames/s at any PHY rate, the plateau of every run since F-028. F-019 measured the same ~6 ms per frame on ALTX0. Our unicast data goes frame by frame through the management queue ALTX0 at a fixed rate, without a station record for the phone and without aggregation (M5's choice, F-019/F-020: the AC queues held data 115–560 ms). mt76 sends data on AC queues with a station record (`STA_REC`) and A-MPDU aggregation under a block-ack agreement; winawdl reached 2.2 MB/s on its chip only after doing the equivalent.
 - **Next step for throughput (ADR-0006 A, larger):** a station record for the peer in the firmware and data on AC queues with aggregation – driver work in `mt792x` (MCU commands, as mt76's `mt7921_mac_sta_add` / BA setup), with the hang risk of new MCU commands (F-011). Needs the maintainer's go-ahead.
+
+## F-035 – ADR-0007 S1/S2: does a station record take data off the slow path?
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Code:** library `mt792x_sta_add` / `mt792x_sta_remove` (`STA_REC_UPDATE`: BASIC + WTBL{GENERIC, RX, HDR_TRANS}, layout in `docs/MT7921-BRINGUP.md` "Station records"), `mt792x_tx_req.sta` (station's WLAN entry, AC queue). Library tests 104/104 (the fake chip checks the command byte by byte; one test compares the payload with bytes worked out by hand from mt76's structs). `radiod acktest --sta` (both arms registered as stations) and `--burst N` (N data frames to the access point as fast as the library takes them; frames/s from the first submit to the last completion).
+- **Method (no phone):** one hand-started session (`s3-bringup.ps1` as SYSTEM, `-KeepGoing`), home access point on channel 2:
+  - A: `acktest 2 @alt --mac random --data --data-altx --data-fixed-rate --burst 300` – today's path (ALTX0, vif entry);
+  - B: the same with `--sta` – station records, AC queue.
+
+### Predictions
+
+| | A (ALTX0) | B (station, AC) | falsified by |
+|---|---|---|---|
+| `STA_REC_UPDATE` | – | status 0 for both arms | non-zero status → payload/state wrong (no TX on that path) |
+| access-point frames, completion time | ~6–14 ms (F-019/F-020) | **≤ 10 ms** (no more 115–560 ms) | B ≥ 100 ms → the station record is not what held the AC queue |
+| ghost frames | NOT ACKed, 15 tries | NOT ACKed, 15 tries | ACKed |
+| burst frames/s | ~150–170 (~6 ms each, one at a time) | **clearly more** (several in flight on the AC queue) | about the same → the per-frame cost is not the queue |
+| system | no hang | no hang (new MCU command: hang risk as in F-011) | hang |

@@ -24,6 +24,7 @@ add_library(mt792x STATIC
   src/bringup.c
   src/rx.c
   src/postboot.c
+  src/sta.c
   src/tx.c
 )
 target_include_directories(mt792x PUBLIC include)

@@ -963,6 +963,7 @@ const char *mt792x_strerror(int err)
     case MT792X_E_TX_DENIED: return "TX not allowed (not enabled, or channel outside the allow-list)";
     case MT792X_E_TX_BUSY: return "no free TX slot";
     case MT792X_E_TX_FRAME: return "TX frame rejected";
+    case MT792X_E_STA: return "station table full or unknown station";
     default: return "unknown error";
     }
 }

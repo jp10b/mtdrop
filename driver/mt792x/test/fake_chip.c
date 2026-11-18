@@ -52,6 +52,8 @@ static void violation(struct fake_chip *f, const char *fmt, ...)
     }
 }
 
+static uint32_t le16(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8); }
+
 static uint32_t le32(const uint8_t *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -773,6 +775,49 @@ static void postboot_command(struct fake_chip *f, unsigned fmt, uint8_t id, uint
             uni_status_reply(f, key, 0x02, seq, f->uni_status_bss);
             return;
         }
+        case 0x03: { /* STA_REC_UPDATE (ADR-0007): sta_req_hdr + BASIC + WTBL{GENERIC, RX, HDR_TRANS} as mt76 builds it */
+            int add = plen == 80;
+            uint8_t w = pl[1];
+            const uint8_t *b = pl + 8, *t = pl + 28;
+            if ((plen != 80 && plen != 40) || pl[0] != 0 || w < 1 || w > 14 || le16(pl + 2) != 2 || pl[4] != 1 || pl[5] ||
+                pl[6] || pl[7]) {
+                violation(f, "STA_REC_UPDATE header (%u bytes)", plen);
+                return;
+            }
+            if (le16(b) != 0 || le16(b + 2) != 20 || le32(b + 4) != 0x00010001u || b[8] != (add ? 2u : 0u) || b[9] ||
+                le16(b + 10) == 0 || (b[12] & 1u) || le16(b + 18) != (add ? 3u : 1u)) {
+                violation(f, "STA_REC_UPDATE BASIC");
+                return;
+            }
+            if (le16(t) != 13 || le16(t + 2) != (add ? 52u : 12u) || t[4] != w || t[5] != 1 || le16(t + 6) != (add ? 3u : 0u) ||
+                !all_zero(t + 8, 4)) {
+                violation(f, "STA_REC_UPDATE WTBL header");
+                return;
+            }
+            if (add) {
+                const uint8_t *g = pl + 40, *rx = pl + 60, *h = pl + 72;
+                if (le16(g) != 0 || le16(g + 2) != 20 || memcmp(g + 4, b + 12, 6) || !all_zero(g + 10, 6) ||
+                    le16(g + 16) != le16(b + 10) || g[18] || g[19] || le16(rx) != 1 || le16(rx + 2) != 12 || rx[4] || rx[5] ||
+                    rx[6] != 1 || rx[7] != 1 || !all_zero(rx + 8, 4) || le16(h) != 6 || le16(h + 2) != 8 || h[4] || h[5] != 1 ||
+                    h[6] != 1 || h[7]) {
+                    violation(f, "STA_REC_UPDATE WTBL TLVs");
+                    return;
+                }
+                if (!f->bss_active) violation(f, "STA_REC_UPDATE add before the BSS is active");
+                if (f->sta_used[w]) violation(f, "STA_REC_UPDATE add on wcid %u in use", w);
+                if (f->uni_status_sta == 0) {
+                    f->sta_used[w] = 1;
+                    memcpy(f->sta_addr[w], b + 12, 6);
+                    f->sta_adds++;
+                }
+            } else {
+                if (!f->sta_used[w] || memcmp(f->sta_addr[w], b + 12, 6)) violation(f, "STA_REC_UPDATE remove of an unknown station");
+                f->sta_used[w] = 0;
+                f->sta_removes++;
+            }
+            uni_status_reply(f, key, 0x03, seq, f->uni_status_sta);
+            return;
+        }
         case 0x24: /* SNIFFER */
             if (plen == 12 && all_zero(pl, 4) && pl[4] == 0 && pl[5] == 0 && pl[6] == 8 && pl[7] == 0 && pl[8] <= 1 &&
                 all_zero(pl + 9, 3)) {
@@ -981,7 +1026,13 @@ static void tx0_frame(struct fake_chip *f, const uint8_t *w, uint32_t len)
     if (omac > 1 || !(omac ? f->dev1_active : f->dev_active)) violation(f, "TXD1 OWN_MAC %u has no active DEV_INFO", omac);
     mac = omac ? f->dev1_mac : f->dev_mac;
     if (!f->allow_foreign_sa && memcmp(fr + 10, mac, 6) != 0) violation(f, "address 2 is not the OMAC %u address", omac);
-    if (wcid != 0 && wcid != 19u - omac) violation(f, "TXD1 WLAN_IDX %u", wcid);
+    if (wcid >= 1u && wcid <= 14u) {
+        /* ADR-0007: a station's entry only for unicast data to that station, on an AC queue */
+        if (!f->sta_used[wcid] || type != 2 || group || memcmp(fr + 4, f->sta_addr[wcid], 6) || q == 0x10u)
+            violation(f, "TXD1 WLAN_IDX %u: not unicast data on an AC queue to that station", wcid);
+    } else if (wcid != 0 && wcid != 19u - omac) {
+        violation(f, "TXD1 WLAN_IDX %u", wcid);
+    }
     if (!tx_chan_ok(f->channel, f->band)) violation(f, "frame transmitted on channel %u band %u (not allowed)", f->channel, f->band);
     if (tok_test(f, token)) violation(f, "token %u reused while in flight", token);
     tok_set(f, token, 1);

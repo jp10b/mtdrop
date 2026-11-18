@@ -285,6 +285,11 @@ static int wtbl_update(struct mt792x *dev, uint32_t idx)
     return err;
 }
 
+int mt_wtbl_update(struct mt792x *dev, uint32_t idx)
+{
+    return wtbl_update(dev, idx);
+}
+
 static int mac_init_band(struct mt792x *dev, uint32_t b)
 {
     int err = mt_rmw(dev, MT_TMAC_CTCR0(b), MT_TMAC_CTCR0_INS_DDLMT_REFTIME, 0x3fu);

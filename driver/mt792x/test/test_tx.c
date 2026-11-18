@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* src/sta.c (internal) */
+uint32_t mt_sta_rec_build(uint8_t *req, uint32_t cap, uint8_t wcid, const uint8_t addr[6], int enable);
+
 static const uint8_t chip_mac[6] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 }; /* the fake's GET_NIC_CAPAB MAC */
 static const uint8_t peer[6] = { 0x0a, 0x99, 0x88, 0x77, 0x66, 0x55 };
 static const uint8_t awdl_bssid[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
@@ -319,6 +322,119 @@ TEST(tx_data_on_altx_queue)
     CHECK(rig_check_no_violations(&r) == 0);
     CHECK_EQ_U32(r.m.log_errors, 0);
     rig_free(&r);
+}
+
+/* ADR-0007 S1: a station record for the peer (STA_REC_UPDATE as mt76, checked byte by byte by the fake), then
+ * unicast data to it with its WLAN entry on the AC queue, even with opt.tx_data_altx; frames to others unchanged. */
+TEST(tx_station_record_and_data_on_ac_queue)
+{
+    struct rig r;
+    uint8_t f[256], w = 0, again = 0;
+    uint32_t len, cookie = 0;
+    struct mt792x_tx_done d;
+    struct mt792x_tx_req q;
+    CHECK(rig_init(&r, 0) == 0);
+    r.dev->opt.tx_data_altx = 1;
+    r.dev->opt.tx_data_fixed_rate = 1;
+    CHECK(tx_rig_start(&r, 44) == 0);
+    CHECK(mt792x_sta_add(r.dev, peer, &w) == 0);
+    CHECK_EQ_U32(w, 1);
+    CHECK_EQ_U32(r.f->sta_adds, 1);
+    CHECK(mt792x_sta_add(r.dev, peer, &again) == 0);              /* known: same wcid, no second command */
+    CHECK_EQ_U32(again, 1);
+    CHECK_EQ_U32(r.f->sta_adds, 1);
+
+    len = awdl_data(f, 0x40, 100);
+    memset(&q, 0, sizeof(q));
+    q.frame = f;
+    q.len = len;
+    q.rate = MT792X_RATE_OFDM_54M;
+    q.want_ack = 1;
+    q.want_status = 1;
+    q.sta = w;
+    CHECK(mt792x_tx_frame(r.dev, &q, &cookie) == 0);
+    CHECK_EQ_U32(r.f->air[0].txd[1] & 0x3ffu, 1);                  /* the station's WLAN entry */
+    CHECK_EQ_U32(r.f->air[0].txd[0] >> 25, 1);                     /* AC BE, not ALTX0 */
+    CHECK(r.f->air[0].txd[2] & 0x80000000u);                       /* fixed rate kept */
+    CHECK(next_done(&r, &d) == 1);
+    CHECK_EQ_U32(d.acked, MT792X_ACK_YES);
+    CHECK(d.has_txs);                                              /* TXS matched on the station's wcid */
+
+    q.sta = 0;                                                     /* without it: ALTX0 and the vif's entry as before */
+    f[22] = 0x50;
+    CHECK(mt792x_tx_frame(r.dev, &q, &cookie) == 0);
+    CHECK_EQ_U32(r.f->air[1].txd[0] >> 25, 0x10);
+    CHECK_EQ_U32(r.f->air[1].txd[1] & 0x3ffu, 19);
+    CHECK(next_done(&r, &d) == 1);
+
+    CHECK(mt792x_sta_remove(r.dev, w) == 0);
+    CHECK_EQ_U32(r.f->sta_removes, 1);
+    CHECK(rig_check_no_violations(&r) == 0);
+    CHECK_EQ_U32(r.m.log_errors, 0);
+    rig_free(&r);
+}
+
+TEST(tx_station_record_refusals)
+{
+    struct rig r;
+    uint8_t f[256], w = 0, addr[6];
+    uint32_t len, cookie = 0, i;
+    struct mt792x_tx_req q;
+    CHECK(rig_init(&r, 0) == 0);
+    CHECK(mt792x_sta_add(r.dev, peer, &w) == MT792X_E_TX_DENIED);  /* no sniffer yet */
+    CHECK(tx_rig_start(&r, 44) == 0);
+    CHECK(mt792x_sta_add(r.dev, bcast, &w) == MT792X_E_TX_FRAME);  /* group address */
+    memcpy(addr, peer, 6);
+    for (i = 0; i < 14u; i++) {
+        addr[5] = (uint8_t)i;
+        CHECK(mt792x_sta_add(r.dev, addr, &w) == 0);
+    }
+    addr[5] = 0xee;
+    CHECK(mt792x_sta_add(r.dev, addr, &w) == MT792X_E_STA);         /* 14 entries, all used */
+    CHECK(mt792x_sta_remove(r.dev, 0) == MT792X_E_STA);
+    CHECK(mt792x_sta_remove(r.dev, 15) == MT792X_E_STA);
+
+    len = awdl_data(f, 0x41, 20);                                  /* address 1 = peer (..:55), wcid 1 is ..:00 */
+    memset(&q, 0, sizeof(q));
+    q.frame = f;
+    q.len = len;
+    q.rate = MT792X_RATE_OFDM_6M;
+    q.want_ack = 1;
+    q.sta = 1;
+    CHECK(mt792x_tx_frame(r.dev, &q, &cookie) == MT792X_E_TX_FRAME);
+    len = awdl_action(f, 3);                                       /* management frame with a station index */
+    q.len = len;
+    q.want_ack = 0;
+    CHECK(mt792x_tx_frame(r.dev, &q, &cookie) == MT792X_E_TX_FRAME);
+
+    r.f->uni_status_sta = 5;                                       /* firmware refuses */
+    CHECK(mt792x_sta_remove(r.dev, 3) == MT792X_E_MCU_STATUS);
+    CHECK(mt792x_sta_add(r.dev, addr, &w) == MT792X_E_MCU_STATUS); /* wcid 3 is free again, the add is refused */
+    CHECK(rig_check_no_violations(&r) == 0);
+    rig_free(&r);
+}
+
+TEST(tx_station_record_payload_bytes)
+{
+    static const uint8_t a[6] = { 0x02, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    static const uint8_t want_add[80] = {
+        0x00, 0x03, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00,                                     /* sta_req_hdr, wcid 3 */
+        0x00, 0x00, 0x14, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00,             /* BASIC: INFRA_STA, PORT_SECURE, aid 1 */
+        0x02, 0x01, 0x02, 0x03, 0x04, 0x05, 0x03, 0x00,                                     /* peer, VER | NEW */
+        0x0d, 0x00, 0x34, 0x00, 0x03, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,             /* WTBL 52 bytes, RESET_AND_SET, 3 TLVs */
+        0x00, 0x00, 0x14, 0x00, 0x02, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00, 0x00, /* GENERIC */
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,             /* RX: rca2, rv */
+        0x06, 0x00, 0x08, 0x00, 0x00, 0x01, 0x01, 0x00,                                     /* HDR_TRANS: from_ds, no_rx_trans */
+    };
+    uint8_t buf[128];
+    CHECK_EQ_U32(mt_sta_rec_build(buf, sizeof(buf), 3, a, 1), 80);
+    CHECK(memcmp(buf, want_add, 80) == 0);
+    CHECK_EQ_U32(mt_sta_rec_build(buf, sizeof(buf), 3, a, 0), 40);
+    CHECK_EQ_U32(buf[16], 0);                                      /* DISCONNECT */
+    CHECK_EQ_U32(buf[26], 1);                                      /* VER only */
+    CHECK_EQ_U32(buf[30] | (buf[31] << 8), 12);                    /* WTBL TLV: header only */
+    CHECK_EQ_U32(mt_sta_rec_build(buf, 79, 3, a, 1), 0);           /* too small */
 }
 
 TEST(tx_directed_probe_ack_status_single_and_pair)

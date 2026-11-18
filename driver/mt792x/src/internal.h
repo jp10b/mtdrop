@@ -95,6 +95,17 @@ uint32_t mt_ring_rx_completed(const struct mt792x *dev, const struct mt792x_ring
 
 /* ---- MCU (mcu.c) ---- */
 #define MT_MCU_TIMEOUT_US   3000000u   /* mt7921/pci_mcu.c: mcu.timeout = 3 * HZ */
+
+/* TX slot states (tx.c, sta.c) */
+#define SLOT_FREE 0u
+#define SLOT_BUSY 1u
+
+/* sta.c (ADR-0007): STA_REC_UPDATE payload for one peer; 0 if cap is too small. */
+uint32_t mt_sta_rec_build(uint8_t *req, uint32_t cap, uint8_t wcid, const uint8_t addr[6], int enable);
+/* 1 if wcid is a known station whose address is addr1. */
+int mt_sta_lookup(const struct mt792x *dev, uint8_t wcid, const uint8_t *addr1);
+/* postboot.c: mt7921_mac_wtbl_update(idx, ADM_COUNT_CLEAR) */
+int mt_wtbl_update(struct mt792x *dev, uint32_t idx);
 #define MT_MCU_SHUTDOWN_TIMEOUT_US 500000u /* [HOST] best-effort commands during shutdown */
 #define MT_TX_DONE_TIMEOUT_US 1000000u /* ASSUMPTION: mt76 has no TX-done timeout (it reaps lazily) */
 uint8_t mt_mcu_next_seq(struct mt792x *dev);

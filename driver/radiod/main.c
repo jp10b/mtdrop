@@ -1285,11 +1285,74 @@ static void ack_print_arm(const char *label, const struct ack_arm *a) {
     printf("; answered by the access point %u\n", a->answered);
 }
 
+/* acktest --burst (ADR-0007 S2): 'n' unicast data frames to 'target' as fast as the library takes them; frames per
+ * second from the first submit to the last completion. With 'sta' they go with the station's entry on the AC queue,
+ * without it on ALTX0 (today's serve path, ~160 frames/s with the iPhone, F-034). */
+static int ack_burst(struct mt_hal *hal, const uint8_t *own, const uint8_t *target, unsigned n, uint8_t sta, uint8_t rate,
+                     unsigned tries) {
+    uint8_t frame[64];
+    unsigned submitted = 0, done = 0, yes = 0, no = 0, busy = 0, tx_sum = 0;
+    uint64_t elapsed_sum = 0, t0 = hal->now_us(hal->ctx), t_end = t0, limit = t0 + 20000000u;
+    uint32_t elapsed_max = 0;
+    while (done < submitted || submitted < n) {
+        struct mt792x_tx_done d;
+        struct mt792x_rx_frame fr;
+        int r;
+        if (hal->now_us(hal->ctx) > limit) {
+            printf("burst: stopped after 20 s\n");
+            break;
+        }
+        if (submitted < n) {
+            struct mt792x_tx_req q;
+            uint32_t cookie;
+            memset(&q, 0, sizeof(q));
+            q.frame = frame;
+            q.len = build_data_frame(frame, own, target, (uint16_t)(0x800 + submitted));
+            q.rate = rate;
+            q.want_ack = 1;
+            q.want_status = 1;
+            q.tx_count = (uint8_t)tries;
+            q.sta = sta;
+            r = mt792x_tx_frame(&g_dev, &q, &cookie);
+            if (r == 0) {
+                submitted++;
+                continue;
+            }
+            if (r != MT792X_E_TX_BUSY) {
+                printf("burst: TX refused: %s (%d)\n", mt792x_strerror(r), r);
+                return r;
+            }
+            busy++;
+        }
+        r = mt792x_rx_poll(&g_dev, &fr); /* drives TX-free / TXS processing */
+        if (r < 0) return r;
+        while (mt792x_tx_done_get(&g_dev, &d) == 1) {
+            done++;
+            t_end = hal->now_us(hal->ctx);
+            tx_sum += d.tx_count;
+            elapsed_sum += d.elapsed_us;
+            if (d.elapsed_us > elapsed_max) elapsed_max = d.elapsed_us;
+            if (d.acked == MT792X_ACK_YES) yes++;
+            else if (d.acked == MT792X_ACK_NO) no++;
+        }
+        if (r == 0 && submitted == n) hal->sleep_us(hal->ctx, 100);
+    }
+    {
+        double secs = (double)(t_end - t0) / 1e6;
+        printf("burst (%s): %u frames submitted, %u done in %.3f s = %.0f frames/s; ACKed %u, NOT ACKed %u; "
+               "transmissions mean %.2f; submit to completion mean %llu us, max %u us; library busy %u time(s)\n",
+               sta ? "station entry, AC queue" : "vif entry, ALTX0", submitted, done, secs, secs > 0 ? done / secs : 0.0, yes,
+               no, done ? (double)tx_sum / done : 0.0, done ? (unsigned long long)(elapsed_sum / done) : 0ull, elapsed_max, busy);
+    }
+    return 0;
+}
+
 static int acktest(int argc, char **argv) {
     static struct txt_state t; /* large: keep it off the stack */
     struct session s;
     struct tx_cli cli;
-    unsigned count = 5, tries = 15, scan_ms = 2000, sent = 0, data = 0;
+    unsigned count = 5, tries = 15, scan_ms = 2000, sent = 0, data = 0, use_sta = 0, burst = 0;
+    uint8_t sta_target = 0, sta_ghost = 0;
     uint8_t target[6], ghost[6], ch, band;
     int have_target = 0, rc = 1, err, poll_err = 0, st;
     long chl = strtol(argv[2], NULL, 10);
@@ -1304,6 +1367,8 @@ static int acktest(int argc, char **argv) {
         else if (strcmp(argv[i], "--tries") == 0 && i + 1 < argc) tries = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--scan-ms") == 0 && i + 1 < argc) scan_ms = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--data") == 0) data = 1;
+        else if (strcmp(argv[i], "--sta") == 0) use_sta = 1;
+        else if (strcmp(argv[i], "--burst") == 0 && i + 1 < argc) burst = (unsigned)atoi(argv[++i]);
         else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
             if (parse_mac(argv[++i], target) != 0) {
                 printf("RESULT: FAIL - --target must be a unicast MAC address aa:bb:cc:dd:ee:ff\n");
@@ -1325,6 +1390,14 @@ static int acktest(int argc, char **argv) {
     }
     if (scan_ms < 500 || scan_ms > 10000) {
         printf("RESULT: FAIL - --scan-ms must be 500..10000\n");
+        return 2;
+    }
+    if ((use_sta || burst) && !data) {
+        printf("RESULT: FAIL - --sta and --burst need --data (station entries are for unicast data)\n");
+        return 2;
+    }
+    if (burst > 5000) {
+        printf("RESULT: FAIL - --burst must be 0..5000\n");
         return 2;
     }
     st = tx_start(&s, argv[3], argv[4], chl, &cli, 0, cli.mac_random ? cli.mac : NULL);
@@ -1373,6 +1446,16 @@ static int acktest(int argc, char **argv) {
         printf(", ghost ");
         print_masked_addr(ghost);
         printf(", vifs %s, TX power %s\n", cli.extra.vif_mode ? "Linux pair" : "single", tx_power_desc(&cli));
+        if (use_sta) {
+            /* ADR-0007 S1: station records for both arms, so both go with their own entry on the AC queue */
+            err = mt792x_sta_add(&g_dev, target, &sta_target);
+            if (!err) err = mt792x_sta_add(&g_dev, ghost, &sta_ghost);
+            if (err) {
+                printf("RESULT: FAIL - STA_REC_UPDATE refused: %s (%d)\n", mt792x_strerror(err), err);
+                goto out;
+            }
+            printf("acktest: station records: target wcid %u, ghost wcid %u (data on the AC queue)\n", sta_target, sta_ghost);
+        }
 
         for (unsigned i = 0; i < frames && !poll_err; i++) {
             struct mt792x_tx_req q;
@@ -1387,6 +1470,7 @@ static int acktest(int argc, char **argv) {
             q.want_ack = 1;
             q.want_status = 1;
             q.tx_count = (uint8_t)tries;
+            q.sta = a ? sta_ghost : sta_target;
             err = mt792x_tx_frame(&g_dev, &q, &t.cookie[i]);
             if (err) {
                 printf("frame %u: TX refused: %s (%d)\n", i + 1, mt792x_strerror(err), err);
@@ -1423,6 +1507,13 @@ static int acktest(int argc, char **argv) {
             }
         }
         if (poll_err) printf("receive/transmit loop stopped: %s (%d)\n", mt792x_strerror(poll_err), poll_err);
+
+        if (!poll_err && burst) {
+            int b = ack_burst(hal, own, target, burst, sta_target, cli.rate, tries);
+            if (b < 0) poll_err = b;
+        }
+        if (sta_target) mt792x_sta_remove(&g_dev, sta_target);
+        if (sta_ghost) mt792x_sta_remove(&g_dev, sta_ghost);
 
         /* ---- analysis ---- */
         for (unsigned i = 0; i < sent; i++) {
