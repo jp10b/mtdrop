@@ -1391,3 +1391,27 @@ What would falsify the fix: Wi-Fi needing a manual connect again, or the export 
 - Decline must answer **401**, not 403: make 401 the default (`AirDropServer.DeclineStatus`, `ReceiveSession`, tray app); `--decline-status` stays for experiments.
 - The notice card replaces toasts when they are off; Accept → save → "Open folder" works end to end.
 - Open: export/re-add counts from the service log (not copied yet).
+
+## F-027 – M7.4 robustness: kill each process, restart and sleep mid-session
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Goal (ADR-0004, M7 acceptance):** Wi-Fi comes back without manual steps after a kill of any process, a restart or a sleep in the middle of a receive session.
+- **What the code does (FACT, source):** the session loop ends on any child exit and gives the card back (`Session.RunAsync`); `radiod` and `awdld` run in a kill-on-close job object of the service, so killing the service kills both; the service is restarted by the SCM 5 s after a crash and its start-up recovery gives the card back when the state file says "taken" or the proxy is bound; the watchdog task (`--give-back`, deadline + 2 min, `StartWhenAvailable`) and the service never swap at the same time (global mutex `mtdrop-card`).
+- **Change before the run:** on **system shutdown** the service now only stops `awdld`/`radiod` and leaves card, state file and watchdog task (`Session.ShutdownForSystemAsync`, 4 s budget); boot recovery gives the card back. Reason: the give-back takes ~26 s (F-026: 15 s of it is `pnputil /delete-driver`), more than Windows waits for services at shutdown (ASSUMPTION: a few seconds), and a give-back that ends while WLAN AutoConfig is stopping could clear the state file without re-adding the networks. A service *stop* (installer update) still gives the card back at once. Service tests 60/60.
+- **Machine facts (FACT, `powercfg /a`):** only Modern Standby ("S0 Low Power Idle, Network Connected"); hibernation disabled, so Fast Startup is not available (removes the ADR-0004 open question on this machine). Services keep running in Modern Standby.
+- **Risk:** the abrupt death of `radiod` while DMA runs relies on the proxy's stop list (replayed in `EvtFileCleanup`, F-006 TODO-VERIFY "not yet exercised by a real process death"). If the stop list ran after Windows freed the DMA pages, the chip could write into freed memory. T3 and T4 test this; worst case a hang as in F-011 (recovered by a full power-off).
+
+### Tests and predictions
+
+Each test is one 2-minute session started from the tray app; the action happens after the icon turns green.
+
+| # | action (mid-session) | prediction |
+|---|---|---|
+| T1 | kill the tray app | session runs on until the window ends; normal give-back; restarted tray app shows the service state (grey after the end) |
+| T2 | `taskkill /f /im awdld.exe` | service log `the AWDL daemon stopped (exit code 1)` within 1 s, `radiod exit code 0` (orderly shutdown when its client goes), give-back ~26 s, Wi-Fi back by itself |
+| T3 | `taskkill /f /im radiod.exe` | `the radio stopped (exit code 1)` within 1 s, no hang/bugcheck, give-back ~26 s, MediaTek driver back, Wi-Fi back by itself |
+| T4 | `taskkill /f /im mtdrop-service.exe` | `radiod`/`awdld` gone with the service; SCM restarts it after 5 s; `recovery: the card was left on our driver` → give-back; Wi-Fi back < 60 s after the kill; tray app shows "service not available" briefly, then grey |
+| T5 | Restart Windows | service log `system shutdown - the card stays on our driver`; after logon the delayed service start (~2 min) or the watchdog task gives the card back; Wi-Fi back by itself within ~3 min of logon |
+| T6 | close the lid ~1 min, open | ASSUMPTION: the session keeps running through Modern Standby and ends at the deadline (or `radiod` fails and the session ends early); either way Wi-Fi back by itself, at the latest by the watchdog |
+
+What would falsify M7 acceptance: any test needing `wifi-giveback.ps1` or a manual connect, a hang, or a bugcheck.

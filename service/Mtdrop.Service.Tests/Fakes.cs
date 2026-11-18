@@ -231,6 +231,9 @@ public sealed class Rig : IDisposable
 
     public GiveBack GiveBack() => new(Config, Driver, Wifi, Lock, Clock, Log);
 
+    /// <summary>A second service instance on the same machine state (service restart, next boot).</summary>
+    public Session NewSession() => new(Config, Driver, Wifi, Firewall, Watchdog, State, Lock, Runner, Network, Clock, Log);
+
     public void AddVendorBackup()
     {
         string dir = Path.Combine(Config.VendorBackupDir, "oem12-3.5.0.1349");

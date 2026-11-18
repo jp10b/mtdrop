@@ -22,11 +22,14 @@ public sealed record Host(
 
 /// <summary>
 /// Windows service "mtdrop": recovery first (gives the card back if a session left it on our driver), then the
-/// control pipe. Stop and system shutdown end a running session and give the card back before returning.
+/// control pipe. Stop ends a running session and gives the card back before returning; system shutdown only stops
+/// the radio and leaves the give-back to the next boot.
 /// </summary>
 public sealed class MtdropService : ServiceBase
 {
     private static readonly TimeSpan StopBudget = TimeSpan.FromMinutes(2);
+    /// <summary>System shutdown: only the radio processes stop (Session.ShutdownForSystemAsync).</summary>
+    private static readonly TimeSpan ShutdownBudget = TimeSpan.FromSeconds(4);
     private readonly ILog _log;
     private readonly ServiceConfig _config;
     private readonly Session _session;
@@ -49,7 +52,7 @@ public sealed class MtdropService : ServiceBase
 
     protected override void OnStop() => End();
 
-    protected override void OnShutdown() => End();
+    protected override void OnShutdown() => End(system: true);
 
     public void StartInConsole() => Begin();
 
@@ -63,10 +66,16 @@ public sealed class MtdropService : ServiceBase
         _serving = Task.Run(() => _server.RunAsync(_cts.Token));
     }
 
-    private void End()
+    private void End(bool system = false)
     {
-        _log.Info("mtdrop service stopping");
+        _log.Info(system ? "mtdrop service stopping (system shutdown)" : "mtdrop service stopping");
         _cts.Cancel();
+        if (system)
+        {
+            _session.ShutdownForSystemAsync(ShutdownBudget).GetAwaiter().GetResult();
+            _log.Info("mtdrop service stopped (system shutdown)");
+            return;
+        }
         try { RequestAdditionalTime((int)StopBudget.TotalMilliseconds); }
         catch (InvalidOperationException) { /* console mode: no service control manager */ }
         _session.ShutdownAsync(StopBudget).GetAwaiter().GetResult();

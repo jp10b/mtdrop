@@ -328,4 +328,36 @@ public sealed class SessionTests : IDisposable
         Assert.False(_rig.State.CardTaken);
         Assert.Equal(SessionState.Idle, end.State);
     }
+
+    [Fact]
+    public async Task System_shutdown_stops_the_radio_and_leaves_the_card_for_boot_recovery()
+    {
+        _rig.Network.OnCall = n => { if (n == 3) _ = _rig.Session.ShutdownForSystemAsync(TimeSpan.FromSeconds(4)); };
+        ControlResponse end = await RunToEnd(10);
+
+        Assert.True(_rig.Runner.Children["awdld"].Killed);
+        Assert.True(_rig.Runner.Children["radiod"].HasExited);
+        Assert.Null(_rig.Firewall.AllowedProgram);
+        Assert.Equal(FakeDriver.Binding.Proxy, _rig.Driver.Bound);       // no give-back during shutdown
+        Assert.Equal(-1, _rig.IndexOf("driver:delete oem99.inf"));
+        Assert.True(_rig.State.CardTaken);                                 // boot recovery will see it
+        Assert.NotNull(_rig.Watchdog.ArmedFor);                            // and the watchdog stays armed
+        Assert.Equal(0, _rig.Lock.Held);
+        Assert.Equal(SessionState.Idle, end.State);
+    }
+
+    [Fact]
+    public async Task Recovery_after_a_shutdown_mid_session_gives_the_card_back()
+    {
+        _rig.Network.OnCall = n => { if (n == 3) _ = _rig.Session.ShutdownForSystemAsync(TimeSpan.FromSeconds(4)); };
+        await RunToEnd(10);
+
+        Session booted = _rig.NewSession();     // next boot: a new service instance on the same machine state
+        await booted.RecoverAsync().WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
+        Assert.False(_rig.State.CardTaken);
+        Assert.Null(_rig.Watchdog.ArmedFor);
+        Assert.Equal(SessionState.Idle, booted.Status().State);
+    }
 }

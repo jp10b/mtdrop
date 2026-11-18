@@ -82,5 +82,5 @@ Gaps for normal use: nothing restores Wi-Fi after a reboot or power loss mid-ses
 ## Open points
 
 - Whether `pnputil /delete-driver` of our package is still the best way back when the package stays signed in `Program Files` (alternative: `UpdateDriverForPlugAndPlayDevices` with the vendor INF). Keep the current method first, it is the tested one.
-- Fast Startup / hibernation mid-session: does the proxy come back bound on resume? TODO-VERIFY in M7.4.
+- Fast Startup / hibernation mid-session: does the proxy come back bound on resume? Not testable on the maintainer's machine (hibernation disabled, Modern Standby only; F-027). System shutdown no longer gives the card back itself; boot recovery does (F-027).
 - Multiple signed-in users (fast user switching): the second user's tray app would see the session as busy. Not handled beyond that in v0.1.

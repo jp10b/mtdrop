@@ -31,6 +31,7 @@ public sealed class Session(
     private DateTime _deadline;
     private CancellationTokenSource? _cts;
     private Task _run = Task.CompletedTask;
+    private bool _leaveCard;
 
     public static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
 
@@ -97,12 +98,25 @@ public sealed class Session(
         }
     }
 
-    /// <summary>Service stop or system shutdown: end the session and give the card back before returning.</summary>
+    /// <summary>Service stop: end the session and give the card back before returning.</summary>
     public async Task ShutdownAsync(TimeSpan timeout)
     {
         Stop();
         Task run = Completion;
         await Task.WhenAny(run, Task.Delay(timeout));
+    }
+
+    /// <summary>
+    /// System shutdown or restart: stop the radio but leave the card, the state file and the watchdog task as they
+    /// are. Windows gives services only seconds here, so a give-back (about 25 s) would be cut off half way, and a
+    /// give-back that finishes while WLAN AutoConfig is already stopping cannot re-add the saved networks but would
+    /// clear the state file. The give-back runs in full after the next boot instead: service recovery
+    /// (<see cref="RecoverAsync"/>) or the watchdog task, whichever comes first (FINDINGS F-027).
+    /// </summary>
+    public async Task ShutdownForSystemAsync(TimeSpan timeout)
+    {
+        lock (_gate) _leaveCard = true;
+        await ShutdownAsync(timeout);
     }
 
     private void Set(SessionState state, string? message)
@@ -256,7 +270,13 @@ public sealed class Session(
                 Set(SessionState.RestoringWifi, "turning Wi-Fi back on");
             await StopChildrenAsync(radiod, awdld);
             Safe(firewall.RemoveReceiverRules, "removing the firewall rules");
-            if (taken)
+            bool leave;
+            lock (_gate) leave = _leaveCard;
+            if (taken && leave)
+            {
+                log.Warn("session: system shutdown - the card stays on our driver; it is given back after the next boot");
+            }
+            else if (taken)
             {
                 bool back = false;
                 try { back = _giveBack.Run(); }
