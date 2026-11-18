@@ -222,10 +222,17 @@ public sealed class Session(
             await clock.Delay(TimeSpan.FromSeconds(2), ct);
             int seconds = (int)Math.Clamp(Math.Ceiling((deadline - clock.UtcNow + config.RadiodMargin).TotalSeconds), 5, 900);
             Directory.CreateDirectory(config.LogDir);
-            radiod = runner.Start(config.Radiod,
+            List<string> radiodArgs =
                 ["--live-log", Path.Combine(config.LogDir, "radiod-live.log"), "serve", $"{ServiceConfig.Channel}",
-                 config.FirmwarePatch, config.FirmwareRam, "--max-seconds", $"{seconds}", "--mac", "random", "--wait-client", "60"],
-                Path.Combine(config.LogDir, "radiod.log"), config.InstallDir);
+                 config.FirmwarePatch, config.FirmwareRam, "--max-seconds", $"{seconds}", "--mac", "random", "--wait-client", "60"];
+            int? dataRate = config.ReadDataRate(out string? badRate);
+            if (badRate is not null) log.Warn($"session: ignoring {config.DataRateFile}: {badRate}");
+            if (dataRate is int mbps)
+            {
+                radiodArgs.AddRange(["--data-rate", $"{mbps}"]);
+                log.Info($"session: experiment setting: unicast data at {mbps} Mbit/s");
+            }
+            radiod = runner.Start(config.Radiod, radiodArgs, Path.Combine(config.LogDir, "radiod.log"), config.InstallDir);
             awdld = runner.Start(config.Awdld, ["-c", $"{ServiceConfig.Channel}", "-S", "intersect"],
                 Path.Combine(config.LogDir, "awdld.log"), config.InstallDir);
             firewall.AllowReceiver(config.TrayApp);

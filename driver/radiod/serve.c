@@ -59,6 +59,8 @@ struct server {
     struct txmap map[TXMAP_SLOTS];
     struct rl_stats st;
     unsigned channel_logs;
+    uint8_t data_rate;          /* 0 = as the client asks (OWL: OFDM 12); else MT792X_RATE_* for unicast data (M9, F-030) */
+    uint8_t data_rate_500k;
     int client_gone;
     int bye_reason;
 };
@@ -410,6 +412,9 @@ static void do_tx(struct server *sv, const uint8_t *p, size_t len) {
     q.frame = frame;
     q.len = (uint32_t)flen;
     q.rate = tx_rate_from_500k(rate500k, r_band());
+    /* --data-rate (ADR-0006 A1): unicast data frames only (type 2, receiver address not group); management and
+     * action frames keep the client's rate, so AWDL sync is unchanged. OFDM only: valid on both bands. */
+    if (sv->data_rate && flen >= 10 && ((frame[0] >> 2) & 3u) == 2u && !(frame[4] & 1u)) q.rate = sv->data_rate;
     q.want_ack = (frame[4] & 1u) ? 0u : 1u; /* group-addressed: no ACK */
     q.want_status = q.want_ack;
     q.tx_count = 0;                          /* mt76's 15 */
@@ -606,6 +611,16 @@ int serve(int argc, char **argv) {
         else if (strcmp(argv[i], "--no-filter") == 0) sv.filter_on = 0;
         else if (strcmp(argv[i], "--loopback") == 0) loopback = 1;
         else if (strcmp(argv[i], "--data-fw-rate-ac") == 0) cli.extra.tx_data_altx = cli.extra.tx_data_fixed_rate = 0;
+        else if (strcmp(argv[i], "--data-rate") == 0 && i + 1 < argc) {
+            long mbps = strtol(argv[++i], NULL, 10);
+            uint8_t r500 = (uint8_t)(mbps * 2);
+            if (mbps != 6 && mbps != 9 && mbps != 12 && mbps != 18 && mbps != 24 && mbps != 36 && mbps != 48 && mbps != 54) {
+                printf("RESULT: FAIL - --data-rate must be an OFDM rate: 6 9 12 18 24 36 48 54\n");
+                return 2;
+            }
+            sv.data_rate = tx_rate_from_500k(r500, MT792X_BAND_5GHZ);
+            sv.data_rate_500k = r500;
+        }
         else {
             printf("RESULT: FAIL - unknown option %s\n", argv[i]);
             return 2;
@@ -662,9 +677,9 @@ int serve(int argc, char **argv) {
         sv.own = r_own();
         printf("serve: channel %u, address ", r_channel());
         print_masked_addr(sv.own);
-        printf(" (%s), BSSID filter %s, TX power %s; waiting up to %u s for a client on %s\n",
+        printf(" (%s), BSSID filter %s, TX power %s, unicast data rate %s%u Mb/s; waiting up to %u s for a client on %s\n",
                cli.mac_random ? "random" : loopback ? "fixed" : "chip", sv.filter_on ? "AWDL" : "off", tx_power_desc(&cli),
-               wait_seconds, RL_PIPE_NAME);
+               sv.data_rate ? "" : "as asked, OWL ", sv.data_rate ? sv.data_rate_500k / 2u : 12u, wait_seconds, RL_PIPE_NAME);
         c = wait_client(sv.pipe, wait_seconds * 1000u);
         if (c <= 0) {
             printf("RESULT: FAIL - %s\n", c == 0 ? "no client connected in time" : "pipe connect failed");

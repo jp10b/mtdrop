@@ -31,6 +31,28 @@ public sealed record ServiceConfig
     public string ProfilesDir => Path.Combine(DataDir, "wifi-profiles");
     public string VendorBackupDir => Path.Combine(DataDir, "vendor-driver-backup");
     public string StateFile => Path.Combine(DataDir, "state", "card-taken");
+    /// <summary>
+    /// Experiment setting (ADR-0006 A1, F-030): one OFDM rate in Mbit/s for unicast data, passed to radiod as
+    /// --data-rate. Absent = OWL's 12 Mbit/s. In the data directory, so only SYSTEM and Administrators can set it.
+    /// </summary>
+    public string DataRateFile => Path.Combine(DataDir, "settings", "radio-data-rate");
+
+    public static readonly IReadOnlySet<int> OfdmRates = new HashSet<int> { 6, 9, 12, 18, 24, 36, 48, 54 };
+
+    /// <summary>The data rate setting, or null when absent; <paramref name="invalid"/> is set for a bad file.</summary>
+    public int? ReadDataRate(out string? invalid)
+    {
+        invalid = null;
+        string text;
+        try { text = File.ReadAllText(DataRateFile).Trim(); }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { invalid = e.Message; return null; }
+        if (int.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int mbps)
+            && OfdmRates.Contains(mbps))
+            return mbps;
+        invalid = $"'{(text.Length > 20 ? text[..20] : text)}' is not one of {string.Join(" ", OfdmRates)}";
+        return null;
+    }
 
     /// <summary>How long the give-back waits for the MediaTek driver after a rescan, per attempt.</summary>
     public TimeSpan VendorWait { get; init; } = TimeSpan.FromSeconds(40);

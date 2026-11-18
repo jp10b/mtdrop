@@ -1524,3 +1524,21 @@ Maintainer: the photo arrived on the iPhone; everything worked as expected.
 
 - **M8 acceptance met:** photos chosen in Explorer's context menu arrive on the iPhone; several files in one transfer work (archive with `.` + two members, PROTOCOL §10 item 4 answered for photos sent *to* iOS).
 - TODO-VERIFY: the hand-over to an already running tray app (named pipe) – next time "Send to" is used while the tray icon is up.
+
+## F-030 – M9 A1: does a higher unicast data rate speed up sending?
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Hypothesis (ADR-0006 A1):** sending is limited by air time while the phone is on our channel 44: every data frame goes at OWL's OFDM 12 Mbit/s, and only part of the phone's 16-slot sequence is on 44. A higher rate puts more frames into each co-channel window.
+- **What the F-028 logs already show (FACT, `radiod.log`/`awdld.log` of the first send):** 410 unicast frames, 361 ACKed, 49 not ACKed (12 %), **26 refused** by `radiod` with "no free TX slot": the library keeps at most **16 frames in flight** (`MT792X_TX0_SLOTS`, mt76 has 8192). A refused frame is a lost TCP segment for the sender. Bursts of ~270 kB/s (19:28:59–19:29:01) between slow phases.
+- **Change:** `radiod serve --data-rate <6|9|12|18|24|36|48|54>` rewrites the rate of unicast data frames only (management/action frames keep OWL's rate, so AWDL sync is untouched). The service passes it from `C:\ProgramData\mtdrop\settings\radio-data-rate` (SYSTEM/Administrators only; a bad value is ignored with a warning). No file = unchanged behaviour. Service tests 67/67; `radiod` option checked in `--loopback` (logged, bad values refused); the rate actually used on air is in the TXS of each frame in `radiod-live.log` (hardware run).
+- **Method:** the same ~2–3 MB photo sent three times from Explorer to the iPhone (Everyone, share sheet closed, phone ~1 m away), one session each: no file (12), `24`, `54`. Read `app.log` (/Upload time), `awdld.log` (tx acked / not acked / refused), `radiod.log` (TX rates).
+
+### Predictions
+
+| rate | upload rate | not ACKed | refused |
+|---|---|---|---|
+| 12 (baseline) | 70–90 kB/s (F-028/F-029) | ~10 % | some |
+| 24 | clearly faster, ~1.5–2× | similar | more (the 16-frame limit is reached sooner) |
+| 54 | faster than 24, but less than 4.5× of 12 – the 16 frames in flight and TCP losses from refusals cap it | maybe higher (54 Mbit/s needs a better link) | most |
+
+What falsifies the hypothesis: no clear change between 12 and 54 → air time is not the limit; then the refusals (16 in flight) or the slot overlap are, and the next step is a user-space TX backlog in `radiod` instead of refusing, or the sequence we advertise during a send (ADR-0006 A2/A3).

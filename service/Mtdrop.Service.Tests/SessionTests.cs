@@ -75,6 +75,24 @@ public sealed class SessionTests : IDisposable
         Assert.True(_rig.IndexOf("firewall:allow") > _rig.IndexOf("start:awdld"));
     }
 
+    [Theory]
+    [InlineData("54", true)]
+    [InlineData(" 24\r\n", true)]
+    [InlineData("55", false)]
+    [InlineData("54 --max-seconds 900", false)]
+    public async Task Data_rate_setting_is_passed_to_radiod_only_when_valid(string content, bool passed)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_rig.Config.DataRateFile)!);
+        File.WriteAllText(_rig.Config.DataRateFile, content);
+        await RunToEnd(2);
+
+        IReadOnlyList<string> args = _rig.Runner.Started[0].Args;
+        Assert.Equal(passed, args.Contains("--data-rate"));
+        if (passed) Assert.Equal(content.Trim(), args[args.ToList().IndexOf("--data-rate") + 1]);
+        else Assert.True(_rig.Log.Has("ignoring"));
+        Assert.Equal(passed ? 14 : 12, args.Count);
+    }
+
     [Fact]
     public async Task Firewall_rule_is_for_the_tray_app_only()
     {
