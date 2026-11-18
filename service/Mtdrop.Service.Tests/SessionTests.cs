@@ -347,6 +347,24 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
+    public async Task Radio_ending_just_before_the_shutdown_notice_still_leaves_the_card()
+    {
+        // F-027 T5: Windows ends radiod about a second before the service hears of the shutdown.
+        _rig.Network.OnCall = n =>
+        {
+            if (n != 3) return;
+            _rig.Runner.Children["radiod"].HasExited = true;
+            _rig.Runner.Children["radiod"].ExitCode = 0;
+            _ = _rig.Session.ShutdownForSystemAsync(TimeSpan.FromSeconds(4));
+        };
+        await RunToEnd(10);
+
+        Assert.Equal(FakeDriver.Binding.Proxy, _rig.Driver.Bound);
+        Assert.True(_rig.State.CardTaken);
+        Assert.True(_rig.Log.Has("card stays on our driver"));
+    }
+
+    [Fact]
     public async Task Recovery_after_a_shutdown_mid_session_gives_the_card_back()
     {
         _rig.Network.OnCall = n => { if (n == 3) _ = _rig.Session.ShutdownForSystemAsync(TimeSpan.FromSeconds(4)); };

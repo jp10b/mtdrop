@@ -20,6 +20,32 @@ public sealed class GiveBackTests : IDisposable
     }
 
     [Fact]
+    public void Nudges_a_connect_when_wifi_does_not_reconnect_by_itself()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Wifi.Connected = false;
+
+        Assert.True(_rig.GiveBack().Run());
+        Assert.Equal(["driver:delete oem99.inf", "driver:scan", "wifi:restore", "wifi:nudge"], _rig.Calls);
+        Assert.True(_rig.Log.Has("did not connect by itself; nudged (test)"));
+        Assert.True(_rig.Log.Has("give-back: Wi-Fi is connected"));
+    }
+
+    [Fact]
+    public void Reports_wifi_still_disconnected_after_the_nudge()
+    {
+        _rig.Driver.Bound = FakeDriver.Binding.Proxy;
+        _rig.Driver.PackageInStore = true;
+        _rig.Wifi.Connected = false;
+        _rig.Wifi.NudgeConnects = false;
+
+        Assert.True(_rig.GiveBack().Run());       // the card is back; only the connect is missing
+        Assert.Single(_rig.Calls, "wifi:nudge");
+        Assert.True(_rig.Log.Has("back but not connected yet"));
+    }
+
+    [Fact]
     public void Installs_the_vendor_driver_from_the_backup_if_it_does_not_come_back()
     {
         _rig.Driver.Bound = FakeDriver.Binding.Proxy;

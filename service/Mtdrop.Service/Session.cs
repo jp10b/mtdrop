@@ -34,6 +34,8 @@ public sealed class Session(
     private bool _leaveCard;
 
     public static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
+    /// <summary>Wait after a child ended by itself before the give-back, in case the system is shutting down.</summary>
+    public static readonly TimeSpan ShutdownGrace = TimeSpan.FromSeconds(3);
 
     /// <summary>The running session or recovery (completed when idle).</summary>
     public Task Completion { get { lock (_gate) return _run; } }
@@ -173,7 +175,7 @@ public sealed class Session(
 
     private async Task RunAsync(CancellationToken ct)
     {
-        bool armed = false, taken = false;
+        bool armed = false, taken = false, childEnded = false;
         IChildProcess? radiod = null, awdld = null;
         try
         {
@@ -233,8 +235,8 @@ public sealed class Session(
             bool warnedGone = false;
             while (true)
             {
-                if (radiod.HasExited) throw new SessionException($"the radio stopped (exit code {radiod.ExitCode})");
-                if (awdld.HasExited) throw new SessionException($"the AWDL daemon stopped (exit code {awdld.ExitCode})");
+                if (radiod.HasExited) { childEnded = true; throw new SessionException($"the radio stopped (exit code {radiod.ExitCode})"); }
+                if (awdld.HasExited) { childEnded = true; throw new SessionException($"the AWDL daemon stopped (exit code {awdld.ExitCode})"); }
                 bool up = network.AwdlUp();
                 SessionState now = Status().State;
                 if (now == SessionState.Starting && up)
@@ -270,6 +272,9 @@ public sealed class Session(
                 Set(SessionState.RestoringWifi, "turning Wi-Fi back on");
             await StopChildrenAsync(radiod, awdld);
             Safe(firewall.RemoveReceiverRules, "removing the firewall rules");
+            // At a restart Windows ends radiod (console shutdown event) about a second before the service hears of the
+            // shutdown (F-027 T5); give OnShutdown that moment before starting a give-back that would be cut off.
+            if (taken && childEnded) await clock.Delay(ShutdownGrace, CancellationToken.None);
             bool leave;
             lock (_gate) leave = _leaveCard;
             if (taken && leave)

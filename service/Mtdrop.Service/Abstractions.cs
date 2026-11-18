@@ -47,6 +47,13 @@ public interface IWifi
 
     /// <summary>Read-only one-liner for --check: how many saved networks the card has now.</summary>
     string SavedNetworksSummary();
+
+    /// <summary>
+    /// After a give-back that did not reconnect by itself (F-027: after an abrupt end of radiod the WLAN service did
+    /// not even try): scan, then connect to the first saved network in range in Windows' preference order, as the
+    /// user would from the Wi-Fi menu. Does nothing when the radio is off. Returns a log line without network names.
+    /// </summary>
+    string NudgeConnect();
 }
 
 /// <param name="Saved">Networks exported before the session.</param>

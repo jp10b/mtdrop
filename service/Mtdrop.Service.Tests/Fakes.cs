@@ -97,6 +97,9 @@ public sealed class FakeWifi(List<string> calls) : IWifi
     public ProfileRestore RestoreMissingProfiles() { calls.Add("wifi:restore"); return new ProfileRestore(Exported, 0, 0, 0); }
     public bool AdapterConnected() => Connected;
     public string SavedNetworksSummary() => $"{Exported} on the card";
+    /// <summary>Whether a nudge connects (true) or the adapter stays disconnected.</summary>
+    public bool NudgeConnects { get; set; } = true;
+    public string NudgeConnect() { calls.Add("wifi:nudge"); if (NudgeConnects) Connected = true; return "nudged (test)"; }
 }
 
 public sealed class FakeFirewall(List<string> calls) : IFirewall

@@ -1415,3 +1415,25 @@ Each test is one 2-minute session started from the tray app; the action happens 
 | T6 | close the lid ~1 min, open | ASSUMPTION: the session keeps running through Modern Standby and ends at the deadline (or `radiod` fails and the session ends early); either way Wi-Fi back by itself, at the latest by the watchdog |
 
 What would falsify M7 acceptance: any test needing `wifi-giveback.ps1` or a manual connect, a hang, or a bugcheck.
+
+### Result (2026-11-18, 18:36–18:55; maintainer's notes + service log, WLAN AutoConfig and System event logs)
+
+| # | result | evidence |
+|---|---|---|
+| T1 kill tray app | **PASS** – session ran on, Wi-Fi back by itself | service log: window ended 18:39:00, connected 18:39:28 |
+| T2 kill awdld | **PASS** – notice "Receiving ended: the AWDL daemon stopped (exit code 1)", Wi-Fi back by itself | `the AWDL daemon stopped (exit code 1)` 18:40:07, `radiod exit code 0`, vendor back 18:40:27, connected 18:40:35 |
+| T3 kill radiod | **FAIL (Wi-Fi)** – no hang, no bugcheck, vendor driver back, but **manual connect needed** | `the radio stopped (exit code 1)` 18:41:22, vendor back 18:41:41, 35/35 networks re-added 18:41:44, `not connected yet` after 30 s; WLAN AutoConfig: **no connection attempt at all** until the manual one at 18:44:19, which succeeded at once |
+| T4 kill service | **FAIL (Wi-Fi)** – same as T3 | SCM event 7031, restart after 5 s, `recovery: the card was left on our driver` 18:44:46, vendor back 18:45:04, 35/35 re-added, `not connected yet`; no AutoConfig event until 18:47 |
+| T5 restart | **PASS** – Wi-Fi back by itself after logon | radiod ended (exit 0) and `awdl0` vanished at 18:48:18, the service heard of the shutdown at 18:48:19 – one second **after** the session had already started a give-back; after boot (service 18:51:17) the state file was still set, recovery re-added 35/35 and connected at 18:51:30 |
+| T6 lid closed ~1 min | **PASS** – session ran to its deadline through Modern Standby, Wi-Fi back by itself | window ended 18:54:52, connected 18:55:09 |
+
+- **The stop list works on a real process death (FACT):** in T3 and T4 `radiod` was killed with DMA running; no hang, no bugcheck, the vendor driver started normally and a manual connect worked at once. Closes the F-006 TODO-VERIFY.
+- **Only an abrupt end of `radiod` leaves Wi-Fi unconnected** (T3, T4); every orderly end (T1, T2, T5, T6, F-026) connected 2–8 s after the networks were re-added. The driver works (manual connect succeeds), but WLAN AutoConfig never started an automatic connection. Cause unknown (ASSUMPTION: the first scan after the vendor driver start comes back empty because the chip was left by the stop list rather than by radiod's orderly shutdown, and AutoConfig waits for a later scan cycle).
+- **T5 race (FACT):** at a restart Windows ends `radiod` before the service gets `SERVICE_CONTROL_SHUTDOWN`, so the "leave it to boot recovery" path from this entry's change was not taken; the cut-off give-back did no harm this time (the proxy package was already deleted, boot recovery finished the job).
+
+### Fixes after the run
+
+- **Give-back nudges the connect:** if Wi-Fi is not connected 12 s after the networks are back, the service logs the radio state, asks for a scan, and connects (`WlanConnect`) to the first saved network in range in Windows' preference order – what the maintainer did by hand; then waits another 25 s. Nothing happens when the radio is off. The log names networks only by their preference index.
+- **Shutdown grace:** when a child ends by itself, the session waits 3 s before the give-back so a shutdown notice arriving in that moment still selects the boot-recovery path.
+- `--check` now also prints the radio state and the last scan (entries, saved networks in range). Unelevated on the maintainer's machine: radio software On, hardware On, 4 entries, 1 saved in range, connected (the struct offsets of `WLAN_AVAILABLE_NETWORK` read correctly).
+- Service tests 63/63. Re-test T3 and T4 (and T5 once) after the re-install.

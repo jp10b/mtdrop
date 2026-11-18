@@ -112,11 +112,44 @@ public sealed class Wifi(ServiceConfig config, ILog log) : IWifi
                 try { return ProfileName(wlan.Profile(id, p.Name).Xml) == p.Name; }
                 catch (Win32Exception) { return false; }
             });
-            return $"{profiles.Count} on the card, {readable} readable";
+            (WlanClient.Radio sw, WlanClient.Radio hw) = wlan.RadioState(id);
+            IReadOnlyList<WlanClient.AvailableNetwork> seen = wlan.AvailableNetworks(id);
+            int inRange = seen.Where(n => n.ProfileName.Length > 0 && n.Connectable).Select(n => n.ProfileName).Distinct().Count();
+            return $"{profiles.Count} on the card, {readable} readable; radio software {sw}, hardware {hw}; " +
+                   $"last scan: {seen.Count} entries, {inRange} saved in range, connected: {seen.Any(n => n.Connected)}";
         }
         catch (Win32Exception e)
         {
             return $"unavailable: {e.Message}";
+        }
+    }
+
+    public string NudgeConnect()
+    {
+        try
+        {
+            using WlanClient wlan = WlanClient.Open();
+            if (FindCard(wlan) is not Guid card) return "the MT7921 interface is not listed by the WLAN service";
+            (WlanClient.Radio sw, WlanClient.Radio hw) = wlan.RadioState(card);
+            string radio = $"radio software {sw}, hardware {hw}";
+            if (sw != WlanClient.Radio.On || hw != WlanClient.Radio.On) return $"{radio}; not connecting (the radio is off)";
+            wlan.Scan(card);
+            Thread.Sleep(TimeSpan.FromSeconds(4));                  // scan results take a few seconds
+            List<string> order = wlan.Profiles(card).Select(p => p.Name).ToList();
+            IReadOnlyList<WlanClient.AvailableNetwork> seen = wlan.AvailableNetworks(card);
+            List<int> inRange = seen.Where(n => n.ProfileName.Length > 0 && n.Connectable)
+                .Select(n => order.IndexOf(n.ProfileName)).Where(i => i >= 0).Distinct().Order().ToList();
+            string what = $"{radio}; {seen.Count} scan entr{(seen.Count == 1 ? "y" : "ies")}, {inRange.Count} saved network(s) in range";
+            if (seen.Any(n => n.Connected)) return $"{what}; already connecting/connected";
+            if (inRange.Count == 0) return $"{what}; nothing to connect to";
+            string? error = wlan.Connect(card, order[inRange[0]]);
+            return error is null
+                ? $"{what}; asked to connect to saved network #{inRange[0] + 1} of {order.Count} (preference order)"
+                : $"{what}; connect request failed: {error}";
+        }
+        catch (Win32Exception e)
+        {
+            return $"could not ask the WLAN service: {e.Message}";
         }
     }
 
