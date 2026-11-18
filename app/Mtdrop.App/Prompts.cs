@@ -160,7 +160,8 @@ public sealed class Prompts
         }
     }
 
-    private void Notify(string title, string detail, string? reveal, Action<ToastContentBuilder>? extend, string group)
+    /// <param name="logAs">What app.log records: never the title or detail, which carry the sender's name and file names.</param>
+    private void Notify(string title, string detail, string? reveal, Action<ToastContentBuilder>? extend, string group, string logAs)
     {
         if (ToastsVisible())
         {
@@ -169,7 +170,7 @@ public sealed class Prompts
                 var builder = new ToastContentBuilder().AddText(title).AddText(detail);
                 extend?.Invoke(builder);
                 builder.Show(t => t.Group = group);
-                AppLog.Write($"notice (toast): {title}");
+                AppLog.Write($"notice (toast): {logAs}");
                 return;
             }
             catch (Exception ex)
@@ -177,7 +178,7 @@ public sealed class Prompts
                 AppLog.Write($"toast failed ({ex.GetType().Name}: {ex.Message}); showing the card instead");
             }
         }
-        AppLog.Write($"notice (card): {title}");
+        AppLog.Write($"notice (card): {logAs}");
         Dispatcher? ui = System.Windows.Application.Current?.Dispatcher;
         _ = ui?.InvokeAsync(() =>
         {
@@ -211,14 +212,15 @@ public sealed class Prompts
             b => b.AddArgument("action", "open").AddArgument("path", first)
                 .AddButton(new ToastButton().SetContent("Open folder").AddArgument("action", "open").AddArgument("path", first)
                     .SetBackgroundActivation()),
-            "result");
+            "result", $"saved {result.SavedFiles.Count} file(s)");
     }
 
     public void ShowFailed(TransferResult result) =>
         Notify($"Transfer from {result.Ask.SenderName} did not complete", "Nothing was saved. The sender may retry automatically.",
-            null, null, "result");
+            null, null, "result", "transfer did not complete");
 
-    public void ShowMessage(string title, string detail) => Notify(title, detail, null, null, "info");
+    /// <summary>For the app's own messages only: the title is logged.</summary>
+    public void ShowMessage(string title, string detail) => Notify(title, detail, null, null, "info", title);
 }
 
 public static class Shell
