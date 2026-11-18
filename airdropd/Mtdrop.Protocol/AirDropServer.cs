@@ -109,6 +109,8 @@ public sealed class AirDropServer : IAsyncDisposable
                 client = await _listener.AcceptTcpClientAsync(_stop.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { break; }
+            // Disposed right after Start: the listener was stopped before the loop's first accept.
+            catch (ObjectDisposedException) when (_stop.IsCancellationRequested) { break; }
             catch (SocketException) when (_stop.IsCancellationRequested) { break; }
             catch (SocketException e) { Log($"accept failed: {e.SocketErrorCode}"); continue; }
 

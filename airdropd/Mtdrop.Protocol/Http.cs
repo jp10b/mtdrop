@@ -100,8 +100,66 @@ public sealed class ConnectionReader(Stream stream, TimeSpan idleTimeout)
         string[] parts = line.Split(' ');
         if (parts.Length != 3 || parts[2] is not ("HTTP/1.1" or "HTTP/1.0") || parts[0].Length == 0 || !parts[1].StartsWith('/'))
             throw new ProtocolFormatException("bad request line");
+        Dictionary<string, string> headers = await ReadHeadersAsync(line.Length, ct).ConfigureAwait(false);
+        var head = new HttpRequestHead { Method = parts[0], Path = parts[1], Headers = headers };
+        if (headers.ContainsKey("Content-Length") && headers.ContainsKey("Transfer-Encoding"))
+            throw new ProtocolFormatException("both Content-Length and Transfer-Encoding");
+        return head;
+    }
+
+    /// <summary>Reads a response head (client side), skipping interim 1xx responses.</summary>
+    public async ValueTask<HttpResponseHead> ReadResponseHeadAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            string line = await ReadLineAsync(MaxHeaderBytes, ct).ConfigureAwait(false)
+                          ?? throw new EndOfStreamException("connection closed before a response");
+            string[] parts = line.Split(' ', 3);
+            if (parts.Length < 2 || parts[0] is not ("HTTP/1.1" or "HTTP/1.0")
+                || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int status) || status is < 100 or > 599)
+                throw new ProtocolFormatException("bad status line");
+            Dictionary<string, string> headers = await ReadHeadersAsync(line.Length, ct).ConfigureAwait(false);
+            if (status is >= 100 and < 200) continue;
+            if (headers.ContainsKey("Content-Length") && headers.ContainsKey("Transfer-Encoding"))
+                throw new ProtocolFormatException("both Content-Length and Transfer-Encoding");
+            return new HttpResponseHead { Status = status, Reason = parts.Length == 3 ? parts[2] : "", Headers = headers };
+        }
+    }
+
+    /// <summary>Reads a response body completely (bounded): chunked, Content-Length, or up to the close.</summary>
+    public async ValueTask<byte[]> ReadResponseBodyAsync(HttpResponseHead head, int maxBytes, CancellationToken ct)
+    {
+        Stream body;
+        if (head.Header("Transfer-Encoding") is { } te)
+        {
+            if (!string.Equals(te.Trim(), "chunked", StringComparison.OrdinalIgnoreCase))
+                throw new ProtocolFormatException("unsupported transfer encoding");
+            body = new ChunkedBodyStream(this);
+        }
+        else if (head.Header("Content-Length") is { } cl)
+        {
+            if (!long.TryParse(cl, NumberStyles.None, CultureInfo.InvariantCulture, out long len) || len > maxBytes)
+                throw new ProtocolFormatException("bad or too large Content-Length");
+            body = new FixedBodyStream(this, len);
+        }
+        else if (head.Closes)
+            body = new ToEndBodyStream(this);
+        else
+            return [];
+        using var ms = new MemoryStream();
+        byte[] buf = new byte[16 * 1024];
+        int n;
+        while ((n = await body.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
+        {
+            if (ms.Length + n > maxBytes) throw new ProtocolFormatException("response body too large");
+            ms.Write(buf, 0, n);
+        }
+        return ms.ToArray();
+    }
+
+    private async ValueTask<Dictionary<string, string>> ReadHeadersAsync(int total, CancellationToken ct)
+    {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        int total = line.Length;
         while (true)
         {
             string h = await ReadLineAsync(MaxHeaderBytes, ct).ConfigureAwait(false) ?? throw new EndOfStreamException();
@@ -115,10 +173,7 @@ public sealed class ConnectionReader(Stream stream, TimeSpan idleTimeout)
             if (!headers.TryAdd(name, h[(colon + 1)..].Trim()))
                 throw new ProtocolFormatException("duplicate header");
         }
-        var head = new HttpRequestHead { Method = parts[0], Path = parts[1], Headers = headers };
-        if (headers.ContainsKey("Content-Length") && headers.ContainsKey("Transfer-Encoding"))
-            throw new ProtocolFormatException("both Content-Length and Transfer-Encoding");
-        return head;
+        return headers;
     }
 
     /// <summary>Opens the request body as a stream (chunked, Content-Length, or empty).</summary>
@@ -136,6 +191,86 @@ public sealed class ConnectionReader(Stream stream, TimeSpan idleTimeout)
             return new FixedBodyStream(this, len);
         }
         return new FixedBodyStream(this, 0);
+    }
+}
+
+/// <summary>Status line and headers of one HTTP/1.1 response (client side).</summary>
+public sealed class HttpResponseHead
+{
+    public required int Status { get; init; }
+    public required string Reason { get; init; }
+    public required Dictionary<string, string> Headers { get; init; }
+
+    public string? Header(string name) => Headers.TryGetValue(name, out string? v) ? v : null;
+
+    public bool Closes => string.Equals(Header("Connection")?.Trim(), "close", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>Body delimited by the end of the connection (a response without a length and with Connection: close).</summary>
+public sealed class ToEndBodyStream(ConnectionReader reader) : BodyStream
+{
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => reader.ReadAsync(buffer, ct);
+}
+
+/// <summary>
+/// Write side of HTTP chunked transfer coding. Collects writes into chunks of up to <see cref="ChunkSize"/>
+/// bytes; <see cref="CompleteAsync"/> writes the rest and the zero-length chunk.
+/// </summary>
+public sealed class ChunkedWriteStream(Stream dest) : Stream
+{
+    public const int ChunkSize = 32 * 1024;
+    private static readonly byte[] Crlf = "\r\n"u8.ToArray();
+    private static readonly byte[] LastChunk = "0\r\n\r\n"u8.ToArray();
+    private readonly byte[] _buf = new byte[ChunkSize];
+    private int _len;
+    private bool _completed;
+
+    public override bool CanRead => false;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException("use WriteAsync");
+    public override void Flush() { }
+    public override Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+        WriteAsync(buffer.AsMemory(offset, count), ct).AsTask();
+
+    public override async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    {
+        if (_completed) throw new InvalidOperationException("chunked body already completed");
+        while (data.Length > 0)
+        {
+            int n = Math.Min(data.Length, ChunkSize - _len);
+            data[..n].CopyTo(_buf.AsMemory(_len));
+            _len += n;
+            data = data[n..];
+            if (_len == ChunkSize) await EmitAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask EmitAsync(CancellationToken ct)
+    {
+        if (_len == 0) return;
+        await dest.WriteAsync(Encoding.ASCII.GetBytes(_len.ToString("x", CultureInfo.InvariantCulture)), ct).ConfigureAwait(false);
+        await dest.WriteAsync(Crlf, ct).ConfigureAwait(false);
+        await dest.WriteAsync(_buf.AsMemory(0, _len), ct).ConfigureAwait(false);
+        await dest.WriteAsync(Crlf, ct).ConfigureAwait(false);
+        _len = 0;
+    }
+
+    /// <summary>Writes what is buffered and the terminating zero-length chunk, then flushes.</summary>
+    public async Task CompleteAsync(CancellationToken ct)
+    {
+        if (_completed) return;
+        await EmitAsync(ct).ConfigureAwait(false);
+        await dest.WriteAsync(LastChunk, ct).ConfigureAwait(false);
+        await dest.FlushAsync(ct).ConfigureAwait(false);
+        _completed = true;
     }
 }
 
