@@ -45,6 +45,8 @@ $ServiceExe = Join-Path $InstallDir 'mtdrop-service.exe'
 $TrayExe = Join-Path $InstallDir 'app\mtdrop.exe'
 $Shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\mtdrop.lnk'
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+# Explorer "Send to" entry (M8.4): Explorer appends all selected files after '--send'.
+$SendTo = Join-Path ([Environment]::GetFolderPath('SendTo')) 'iPhone (mtdrop).lnk'
 $HardwareMatch = 'PCI\VEN_14C3&DEV_7961*'
 if (-not $FirmwareDir) { $FirmwareDir = Join-Path $repo 'third_party\openwrt_mt76\firmware' }
 
@@ -230,14 +232,20 @@ if (-not $Uninstall) {
             if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed ($LASTEXITCODE)" }
         }
     }
-    Step "Start menu shortcut 'mtdrop' for the tray app$(if (-not $NoAutostart) { ", and start the tray app at sign-in for $env:USERNAME (HKCU Run value 'mtdrop')" })" `
-         '-Uninstall -Apply removes both' {
+    Step "Start menu shortcut 'mtdrop' for the tray app, Explorer 'Send to > iPhone (mtdrop)' for $env:USERNAME$(if (-not $NoAutostart) { ", and start the tray app at sign-in for $env:USERNAME (HKCU Run value 'mtdrop')" })" `
+         '-Uninstall -Apply removes them' {
         $shell = New-Object -ComObject WScript.Shell
         $lnk = $shell.CreateShortcut($Shortcut)
         $lnk.TargetPath = $TrayExe
         $lnk.WorkingDirectory = Split-Path $TrayExe
         $lnk.Description = 'mtdrop: receive photos from an iPhone (AirDrop-compatible)'
         $lnk.Save()
+        $send = $shell.CreateShortcut($SendTo)
+        $send.TargetPath = $TrayExe
+        $send.Arguments = '--send'
+        $send.WorkingDirectory = Split-Path $TrayExe
+        $send.Description = 'mtdrop: send to a nearby iPhone (AirDrop-compatible, the iPhone must be set to Everyone)'
+        $send.Save()
         if (-not $NoAutostart) { Set-ItemProperty -Path $RunKey -Name 'mtdrop' -Value "`"$TrayExe`"" }
     }
     Step "Start the service and check it: on start it only verifies the Wi-Fi card is on the MediaTek driver, then waits for the tray app" `
@@ -272,10 +280,11 @@ else {
             if ($LASTEXITCODE -ne 0) { throw 'give-back failed: run scripts\wifi-giveback.ps1 as administrator before going on' }
         }
     }
-    Step "Remove the Start menu shortcut, the autostart entry, the signing certificate '$CertSubject' and $InstallDir" `
+    Step "Remove the Start menu shortcut, the 'Send to' entry, the autostart entry, the signing certificate '$CertSubject' and $InstallDir" `
          'install-service.ps1 -Apply installs again' {
         Stop-TrayApps
         if (Test-Path $Shortcut) { Remove-Item $Shortcut }
+        if (Test-Path -LiteralPath $SendTo) { Remove-Item -LiteralPath $SendTo }
         Remove-ItemProperty -Path $RunKey -Name 'mtdrop' -ErrorAction SilentlyContinue
         Remove-Certificates
         if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force; Say "  $InstallDir removed" }

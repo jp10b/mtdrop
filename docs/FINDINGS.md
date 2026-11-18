@@ -1490,3 +1490,18 @@ Maintainer: the photo arrived on the iPhone; everything worked as expected.
 - **Throughput** ~72 kB/s on the upload (vs ~1 MB/s in winawdl with rate control) – fine for photos, a M9 topic.
 - **Privacy bug found and fixed:** the tray status lines in `app.log` ("Waiting for … to accept", "Sending to …: N %") contained the receiver's name. The log now gets a second text without the name. The maintainer's local `app.log` from this run still contains it (local file, never committed).
 - Open for M8.4: Explorer context menu "Send to iPhone", several files, a receiver list instead of one Yes/No dialog per receiver.
+
+## F-029 – M8.4 acceptance: photos sent from Explorer's context menu
+
+- **Date:** 2026-11-18 (predictions written before the run)
+- **Change under test:** Explorer **Send to > iPhone (mtdrop)** – a per-user shortcut in the SendTo folder (`mtdrop.exe --send`; Explorer appends every selected file to one start), created by `install-service.ps1`. Chosen over a `HKCU\Software\Classes\*\shell` verb (ADR-0005 decision 4): a static verb starts one process per selected file, the SendTo shortcut passes all of them at once; on Windows 11 both sit under "Show more options". A second start hands its files to the running tray app through a named pipe created with `PipeOptions.CurrentUserOnly`. The receiver choice is now a list window (`ReceiverWindow`, opened at once with the radio-start status) instead of a Yes/No dialog per receiver. Offline: `--test-receivers` showed the window visible, active, topmost with 2 receivers (`last-receivers.txt`); the pipe hand-over is untested offline (the installed tray app holds the single-instance mutex).
+- **Setup:** re-install; tray app running (autostart); iPhone as in F-028; in Explorer select **two** photos → right click → Show more options → Send to → iPhone (mtdrop).
+
+### Predictions
+
+| step | prediction | falsified by |
+|---|---|---|
+| hand-over | `app.log`: `send: 2 file(s) handed over by a second start`; the receiver window opens at once | a "did not take the files" warning, or nothing |
+| list | the iPhone appears in the list within ~5 s after `awdl0` (F-028: 2.3 s after the advert) | — |
+| send | one /Ask for 2 files, the iPhone shows one prompt for 2 photos; `/Upload answered 200`; both photos in Photos | the iPhone takes only one, or refuses a 2-file archive (archive shape for several files is PROTOCOL §10 item 4) |
+| privacy | no receiver name in `app.log` | any line with it |

@@ -17,8 +17,9 @@ Tray application (WPF, .NET 10). Prototype from M2; receives over AWDL since M6 
 ```
 mtdrop.exe [--interface awdl0] [--dir <folder>] [--minutes 2] [--name <shown name>] [--receive] [--manual]
            [--decline-status 401] [--decline-keep-open]
-mtdrop.exe --send <file>
+mtdrop.exe --send <file>...
 mtdrop.exe --test-prompt
+mtdrop.exe --test-receivers
 mtdrop.exe --test-notice
 ```
 
@@ -26,7 +27,9 @@ Log: `%LOCALAPPDATA%\mtdrop\logs\app.log` (one older file kept as `app.1.log`, r
 
 `--decline-status` (400–599, default 401) and `--decline-keep-open` (answer without `Connection: close` and keep the connection) are for experiments: `401` + close makes the iPhone show "Declined" (F-026), `403` leaves it on "Waiting" (F-025).
 
-**Sending (M8, ADR-0005):** tray menu **Send files to an iPhone...** (or `--send <file>`) starts the same radio session as receiving, then switches on the Bluetooth LE advertisement that makes nearby iPhones announce themselves as AirDrop receivers (Apple type `0x05`, random hashes, no contact details), browses for `_airdrop._tcp` on `awdl0`, asks each receiver for its name and shows a **Yes/No dialog for every receiver** before anything is sent – other people's iPhones nearby wake up too. After Yes: `/Ask`, the iPhone asks its owner, then `/Upload`; the tray status shows the progress, a card shows the result, and the session ends. The iPhone must be set to Everyone for 10 Minutes, with the share sheet closed and the screen on. The receiver is not announced while sending. The log records counts, timings and outcomes, never receiver names.
+**Sending (M8, ADR-0005):** Explorer **Send to > iPhone (mtdrop)** (installed per user by `scripts/install-service.ps1`; on Windows 11 under "Show more options"), the tray menu **Send files to an iPhone...**, or `--send <file>...`. A window opens at once and shows the radio start (about 15 s, Wi-Fi goes off); then the app switches on the Bluetooth LE advertisement that makes nearby iPhones announce themselves as AirDrop receivers (Apple type `0x05`, random hashes, no contact details), browses for `_airdrop._tcp` on `awdl0`, asks each receiver for its name and **lists it in the window – nothing is sent before the user clicks one** (other people's iPhones nearby wake up too). Then `/Ask`, the iPhone asks its owner, and `/Upload`; the tray status shows the progress, a card shows the result, and the session ends. Cancel in the window or "Cancel sending" in the tray menu stops it. When the tray app already runs, a second start (that is what "Send to" does) hands its files over through a named pipe that only the same user can open, and exits. The iPhone must be set to Everyone for 10 Minutes, with the share sheet closed and the screen on. The receiver is not announced while sending. The log records counts, timings and outcomes, never receiver names.
+
+`--test-receivers` (developer switch) shows the receiver list with two made-up receivers, writes the window's state to `%LOCALAPPDATA%\mtdrop\last-receivers.txt` and closes after 15 s.
 
 `--test-notice` (developer switch) shows the card used instead of toasts and exits when it closes.
 
