@@ -1738,3 +1738,28 @@ The run was made at the office, not at home: the strongest access point on chann
 ### Next
 
 Same session again with a receiver that ACKs (home access point, or the iPhone's Personal Hotspot), with a third arm C = AC queue **without** a station record (`--data --data-fixed-rate --burst 300`), so A/B/C are measured at the same place and time.
+
+### Raw result, re-run (FACT, 2026-11-19 20:40, channel 36, one access point, -76/-78 dBm, random address, `-KeepGoing`)
+
+Three arms in one session, all data frames at fixed OFDM 6, 15 transmissions allowed. Burst frames are small (~60 bytes).
+
+| | A: ALTX0, vif entry (today) | C: AC queue, no station record (F-019) | **B: AC queue, station record** |
+|---|---|---|---|
+| AP frames (ACKed 5/5, 1 transmission each), submit → completion | 6.4–11 ms (one 497 ms) | **105–130 ms** | **1.3–3.4 ms** |
+| ghost frames (NOT ACKed, 15 transmissions) | 11.0–11.4 ms | 109–146 ms (one 2.3 s) | 110–148 ms |
+| burst 300 | 300 ACKed in 1.71 s = **176 frames/s**, 1.06 transmissions/frame, completion mean 89 ms (queued behind each other) | stopped after 20 s: 165 done = **8 frames/s**, 27 declared lost by the 2 s limit | **300 ACKed in 0.139 s = 2156 frames/s**, 1.06 transmissions/frame, completion mean 7.0 ms, max 9.2 ms |
+| `STA_REC_UPDATE` | – | – | add ×2 and remove ×2: status 0, ~2 ms each |
+| system | no hang | no hang | no hang; give-back normal, **Wi-Fi reconnected by itself** |
+
+(The burst line of run C was labelled "vif entry, ALTX0" – a label bug in `acktest`, the frames went to the AC queue; fixed.)
+
+### Conclusion (re-run)
+
+1. **ADR-0007's assumption holds (FACT for this access point):** the AC queue held unicast data because the receiver had no station record. With `STA_REC_UPDATE` the same frames on the same AC queue complete in 1.3–3.4 ms (prediction ≤ 10 ms: **met**), without it 105–130 ms (C reproduces F-019 at the same place and time).
+2. **The ~6 ms per frame of ALTX0 is gone on this path:** 2156 against 176 frames/s, ~12×, with the same retry rate (prediction "clearly more": **met**). Several frames are in the air pipeline at once instead of one after another.
+3. Ghost frames take ~110–150 ms on any AC queue, with or without a station: 15 failed transmissions with best-effort backoff (consistent with the ASSUMPTION of the first run). On ALTX the same takes 11 ms. So on the new path a frame the phone does not ACK (wrong slot) costs ~10× more air and queue time than on ALTX – OWL's slot-aware hand-over (F-034) matters even more there.
+4. Limits of this measurement: tiny frames to an access point that is always awake. A 1500-byte frame at 54 Mbit/s needs ~0.25 ms on air plus overhead, so the real ceiling is lower, and the iPhone is on our channel only in its AWDL slots. Still, the per-frame cost that capped every send since F-028 is no longer the radio.
+
+### Next
+
+S3 of ADR-0007: `radiod serve` registers a station for each AWDL peer awdld knows (new radio link message), unicast data to known peers goes with the station's entry on the AC queue; then the 5.4 MB photo send to the iPhone as the measurement.

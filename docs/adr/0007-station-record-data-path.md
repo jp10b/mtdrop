@@ -1,6 +1,6 @@
 # ADR-0007: A station record for the peer, so unicast data can leave the ALTX queue
 
-- **Status:** Accepted (2026-11-18, maintainer)
+- **Status:** Accepted (2026-11-18, maintainer). S1/S2 measured 2026-11-19 (F-035): assumption confirmed, AC queue with a station record 1.3–3.4 ms per frame, burst 2156 vs 176 frames/s
 - **Deciders:** maintainer
 - **Inputs:** ADR-0006 A (throughput); `docs/FINDINGS.md` F-019/F-020 (data on the AC queue waits 115–560 ms, on ALTX0 ~6 ms per frame), F-030–F-034 (send plateau 130–220 kB/s, the radio completes one frame every ~5–6 ms); `docs/MT7921-BRINGUP.md` (H14, open points at lines ~1051–1063, 1283, 1313, 1325); mt76 (`openwrt/mt76` @ 0936617, BSD-3-Clause-Clear): `mt7921/main.c:806-855` (`mt7921_mac_sta_add`), `mt7921/mcu.c:1099-1121` (`mt7921_mcu_sta_update`), `mt76_connac_mcu.c:1094-…` (`mt76_connac_mcu_sta_cmd`); winawdl DESIGN-NOTES "Sending" (2.2 MB/s after rate control and block-ack aggregation on its chip)
 

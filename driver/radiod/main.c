@@ -1341,7 +1341,7 @@ static int ack_burst(struct mt_hal *hal, const uint8_t *own, const uint8_t *targ
         double secs = (double)(t_end - t0) / 1e6;
         printf("burst (%s): %u frames submitted, %u done in %.3f s = %.0f frames/s; ACKed %u, NOT ACKed %u; "
                "transmissions mean %.2f; submit to completion mean %llu us, max %u us; library busy %u time(s)\n",
-               sta ? "station entry, AC queue" : "vif entry, ALTX0", submitted, done, secs, secs > 0 ? done / secs : 0.0, yes,
+               sta ? "station entry, AC queue" : g_dev.opt.tx_data_altx ? "vif entry, ALTX0" : "vif entry, AC queue", submitted, done, secs, secs > 0 ? done / secs : 0.0, yes,
                no, done ? (double)tx_sum / done : 0.0, done ? (unsigned long long)(elapsed_sum / done) : 0ull, elapsed_max, busy);
     }
     return 0;
