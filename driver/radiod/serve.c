@@ -46,6 +46,28 @@ struct txmap {
     uint32_t lib_cookie, client_cookie;
     uint8_t used, channel;
     uint8_t data;               /* unicast data frame: counted in the data rate summary */
+    uint8_t sta;                /* sent with a station's entry on the AC queue (ADR-0007 S3) */
+};
+
+/* ---- station records for AWDL peers (ADR-0007 S3) ----
+ * With --sta-data the receiver of a unicast data frame is registered with the firmware (mt792x_sta_add) the first
+ * time a frame goes to it; its data then leaves with that station's entry on the AC queue (F-035: 1.3-3.4 ms per
+ * frame instead of ALTX0's ~6-11 ms, bursts 2156 against 176 frames/s). The peers come from the frames awdld
+ * sends - OWL sends data only to peers it has validated - so the radio link protocol is unchanged. At most
+ * MT792X_STA_LAST records; when all are used, the least recently used one without frames in flight is removed.
+ * After STA_FAIL_LIMIT refusals the session keeps unicast data on ALTX0. */
+#define STA_FAIL_LIMIT 3u
+
+struct peer_sta {
+    uint8_t used, wcid;
+    uint8_t addr[6];
+    uint64_t last_us;
+};
+
+struct sta_stats {
+    uint32_t added, failed, evicted;
+    uint32_t frames, acked, transmissions;
+    uint64_t elapsed_us_sum;
 };
 
 /* Unicast data frames by the rate their TX status reports (F-030: which rate really went on air). */
@@ -92,6 +114,11 @@ struct server {
     struct data_txs dtx;
     struct backlog bl;
     int no_backlog;             /* --no-tx-backlog: refuse when the library is full (behaviour before F-032) */
+    int sta_data;               /* --sta-data: station records for data receivers, AC queue (ADR-0007 S3) */
+    int sta_off;                /* too many refusals: back to ALTX0 for this session */
+    uint8_t data_tries;         /* --data-tries: transmissions allowed per unicast data frame, 0 = mt76's 15 */
+    struct peer_sta peers[MT792X_STA_LAST];
+    struct sta_stats sta;
     int client_gone;
     int bye_reason;
 };
@@ -416,6 +443,12 @@ static int pump_tx_done(struct server *sv) {
                 sv->dtx.transmissions += d.tx_count;
                 sv->dtx.elapsed_us_sum += d.elapsed_us;
                 if (d.elapsed_us > sv->dtx.elapsed_us_max) sv->dtx.elapsed_us_max = d.elapsed_us;
+                if (e->sta) {
+                    sv->sta.frames++;
+                    sv->sta.transmissions += d.tx_count;
+                    sv->sta.elapsed_us_sum += d.elapsed_us;
+                    if (d.acked == MT792X_ACK_YES) sv->sta.acked++;
+                }
                 if (!d.has_txs) sv->dtx.no_txs++;
                 else if (((d.txs_rate >> 6) & 0xfu) <= 1u) {
                     uint8_t r500 = legacy_rate_500k((uint8_t)((d.txs_rate >> 6) & 0xfu), (uint8_t)(d.txs_rate & 0x3fu));
@@ -432,6 +465,63 @@ static int pump_tx_done(struct server *sv) {
     return r < 0 ? r : n;
 }
 
+static int r_sta_add(const uint8_t *addr, uint8_t *wcid, unsigned slot) {
+    if (!loopback) return mt792x_sta_add(&g_dev, addr, wcid);
+    *wcid = (uint8_t)(MT792X_STA_FIRST + slot);
+    return 0;
+}
+
+static int r_sta_remove(uint8_t wcid) {
+    return loopback ? 0 : mt792x_sta_remove(&g_dev, wcid);
+}
+
+/* The station entry for a data receiver, registering it if needed; 0 = send without one (ALTX0). */
+static uint8_t peer_wcid(struct server *sv, const uint8_t *addr) {
+    unsigned i, slot = MT792X_STA_LAST;
+    uint8_t w = 0;
+    int err;
+
+    for (i = 0; i < MT792X_STA_LAST; i++)
+        if (sv->peers[i].used && memcmp(sv->peers[i].addr, addr, 6) == 0) {
+            sv->peers[i].last_us = qpc_us();
+            return sv->peers[i].wcid;
+        }
+    if (sv->sta_off) return 0;
+    for (i = 0; i < MT792X_STA_LAST && slot == MT792X_STA_LAST; i++)
+        if (!sv->peers[i].used) slot = i;
+    if (slot == MT792X_STA_LAST) {
+        uint32_t tried = 0;
+        for (;;) {
+            unsigned old = MT792X_STA_LAST;
+            for (i = 0; i < MT792X_STA_LAST; i++)
+                if (!(tried & (1u << i)) && (old == MT792X_STA_LAST || sv->peers[i].last_us < sv->peers[old].last_us))
+                    old = i;
+            if (old == MT792X_STA_LAST) return 0; /* every record has frames in flight: this frame goes on ALTX0 */
+            tried |= 1u << old;
+            err = r_sta_remove(sv->peers[old].wcid);
+            if (err == MT792X_E_TX_BUSY) continue;
+            sv->peers[old].used = 0;              /* the library forgets it whatever the firmware answered */
+            sv->sta.evicted++;
+            slot = old;
+            break;
+        }
+    }
+    err = r_sta_add(addr, &w, slot);
+    if (err || !w) {
+        sv->sta.failed++;
+        if (sv->sta.failed >= STA_FAIL_LIMIT) sv->sta_off = 1;
+        printf("serve: station record refused: %s (%d)%s\n", mt792x_strerror(err), err,
+               sv->sta_off ? "; unicast data stays on ALTX0 for this session" : "");
+        return 0;
+    }
+    sv->peers[slot].used = 1;
+    sv->peers[slot].wcid = w;
+    memcpy(sv->peers[slot].addr, addr, 6);
+    sv->peers[slot].last_us = qpc_us();
+    sv->sta.added++;
+    return w;
+}
+
 /* Frames the library could not take yet (16 in flight, F-030/F-031): kept in order and submitted as slots free up,
  * instead of being refused - a refused data frame is a lost TCP segment for the sender. ADR-0006 A2. */
 static int backlog_init(struct backlog *b) {
@@ -445,6 +535,7 @@ static int submit_tx(struct server *sv, uint32_t cookie, const uint8_t *frame, s
     uint32_t lib_cookie = 0;
     struct mt792x_tx_req q;
     unsigned slot = TXMAP_SLOTS;
+    uint8_t sta = 0;
     int err;
 
     for (unsigned i = 0; i < TXMAP_SLOTS; i++)
@@ -459,6 +550,9 @@ static int submit_tx(struct server *sv, uint32_t cookie, const uint8_t *frame, s
     q.want_ack = (frame[4] & 1u) ? 0u : 1u; /* group-addressed: no ACK */
     q.want_status = q.want_ack;
     q.tx_count = 0;                          /* mt76's 15 */
+    if (unicast_data && sv->data_tries) q.tx_count = sv->data_tries;
+    if (unicast_data && sv->sta_data && slot != TXMAP_SLOTS) sta = peer_wcid(sv, frame + 4);
+    q.sta = sta;
     err = slot == TXMAP_SLOTS ? MT792X_E_TX_BUSY : r_tx_frame(&q, &lib_cookie);
     if (err == MT792X_E_TX_BUSY) return err;
     if (err) {
@@ -469,6 +563,7 @@ static int submit_tx(struct server *sv, uint32_t cookie, const uint8_t *frame, s
     sv->st.v[RL_ST_TX_SUBMITTED]++;
     sv->map[slot].used = 1;
     sv->map[slot].data = (uint8_t)unicast_data;
+    sv->map[slot].sta = sta ? 1u : 0u;
     sv->map[slot].lib_cookie = lib_cookie;
     sv->map[slot].client_cookie = cookie;
     return 0;
@@ -723,6 +818,15 @@ int serve(int argc, char **argv) {
         else if (strcmp(argv[i], "--loopback") == 0) loopback = 1;
         else if (strcmp(argv[i], "--data-fw-rate-ac") == 0) cli.extra.tx_data_altx = cli.extra.tx_data_fixed_rate = 0;
         else if (strcmp(argv[i], "--no-tx-backlog") == 0) sv.no_backlog = 1;
+        else if (strcmp(argv[i], "--sta-data") == 0) sv.sta_data = 1;
+        else if (strcmp(argv[i], "--data-tries") == 0 && i + 1 < argc) {
+            long n = strtol(argv[++i], NULL, 10);
+            if (n < 1 || n > 15) {
+                printf("RESULT: FAIL - --data-tries must be 1..15\n");
+                return 2;
+            }
+            sv.data_tries = (uint8_t)n;
+        }
         else if (strcmp(argv[i], "--data-rate") == 0 && i + 1 < argc) {
             long mbps = strtol(argv[++i], NULL, 10);
             uint8_t r500 = (uint8_t)(mbps * 2);
@@ -793,6 +897,10 @@ int serve(int argc, char **argv) {
         printf(" (%s), BSSID filter %s, TX power %s, unicast data rate %s%u Mb/s; waiting up to %u s for a client on %s\n",
                cli.mac_random ? "random" : loopback ? "fixed" : "chip", sv.filter_on ? "AWDL" : "off", tx_power_desc(&cli),
                sv.data_rate ? "" : "as asked, OWL ", sv.data_rate ? sv.data_rate_500k / 2u : 12u, wait_seconds, RL_PIPE_NAME);
+        printf("serve: unicast data path: %s, %u transmission(s) allowed\n",
+               sv.sta_data ? "station records + AC queue (ADR-0007), ALTX0 without a record"
+                           : cli.extra.tx_data_altx ? "ALTX0" : "AC queue without station records",
+               sv.data_tries ? sv.data_tries : 15u);
         c = wait_client(sv.pipe, wait_seconds * 1000u);
         if (c <= 0) {
             printf("RESULT: FAIL - %s\n", c == 0 ? "no client connected in time" : "pipe connect failed");
@@ -880,6 +988,15 @@ int serve(int argc, char **argv) {
                sv.dtx.frames ? (unsigned long long)(sv.dtx.elapsed_us_sum / sv.dtx.frames) : 0ull, sv.dtx.elapsed_us_max);
         printf("TX backlog: %s; %u frame(s) waited for room, %u dropped after %u ms, deepest %u\n",
                sv.no_backlog ? "off" : "on", sv.bl.queued, sv.bl.expired, BACKLOG_MAX_AGE_US / 1000u, sv.bl.max_depth);
+        if (sv.sta_data) {
+            printf("station data: %u record(s) added, %u refused, %u removed for room%s; %u frame(s) with a station "
+                   "entry, %u ACKed, transmissions mean %.2f, in the radio mean %llu us\n",
+                   sv.sta.added, sv.sta.failed, sv.sta.evicted, sv.sta_off ? " (fell back to ALTX0)" : "", sv.sta.frames,
+                   sv.sta.acked, sv.sta.frames ? (double)sv.sta.transmissions / sv.sta.frames : 0.0,
+                   sv.sta.frames ? (unsigned long long)(sv.sta.elapsed_us_sum / sv.sta.frames) : 0ull);
+            for (unsigned i = 0; i < MT792X_STA_LAST; i++)
+                if (sv.peers[i].used) r_sta_remove(sv.peers[i].wcid); /* best effort: session_close resets the chip */
+        }
         if (sv.bye_reason == RL_BYE_RADIO_ERROR) printf("RESULT: FAIL - radio error while serving\n");
         else if (sv.bye_reason == RL_BYE_PROTOCOL) printf("RESULT: FAIL - the client broke the protocol\n");
         else {

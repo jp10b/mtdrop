@@ -1763,3 +1763,21 @@ Three arms in one session, all data frames at fixed OFDM 6, 15 transmissions all
 ### Next
 
 S3 of ADR-0007: `radiod serve` registers a station for each AWDL peer awdld knows (new radio link message), unicast data to known peers goes with the station's entry on the AC queue; then the 5.4 MB photo send to the iPhone as the measurement.
+
+---
+
+## F-036 – ADR-0007 S3: sending to the iPhone with station records (`radio-tx-path` = `station`)
+
+- **Date:** 2026-11-19 (predictions written before the run)
+- **Code:** `radiod serve --sta-data`: the receiver of the first unicast data frame to an address is registered with `STA_REC_UPDATE`; its data then goes with that station's entry on the AC queue (ALTX0 for everything else and as fallback). No change to awdld or the radio link. Service setting `ProgramData\mtdrop\settings\radio-tx-path` (`station` / `altx`, default ALTX0); offline: service tests 74/74, `serve --loopback --sta-data` with `radioctl --tx-burst 100` (1 record added, 100 frames with the station entry).
+- **Method:** after re-installing, the 5.4 MB photo of F-033/F-034 sent from Explorer's "Send to" twice in one sitting at the same place: (1) with `radio-tx-path` = `station`, (2) with `altx` (today's path, F-034: 190 kB/s), both at 54 Mbit/s. Measured from `app.log` (upload time) and the radiod summaries (`unicast data:`, `station data:`).
+
+### Predictions
+
+| | (2) ALTX0 | (1) station records | falsified by |
+|---|---|---|---|
+| upload rate | ~190 kB/s (F-034) | **≥ 300 kB/s** (the radio no longer serialises at ~6 ms per frame; next limits: AWDL slots, TCP window over an ~80 ms RTT, OWL's hold at 8 frames) | ≤ 220 kB/s → the per-frame radio cost was not the cap of the whole send |
+| frames given up (NOT ACKed after all tries) | ~2 % | ≤ 3 % | > 5 %: a failed frame costs ~110–150 ms on an AC queue (F-035), or the firmware buffers for the peer (power save, ADR-0007 open point) |
+| in the radio (submit → TX status) mean | ~10–20 ms | clearly lower | about the same or higher |
+| `station data:` | – | 1 record added (the iPhone), 0 refused | refused → payload or state wrong for an AWDL peer |
+| transfer completes, photo intact, Wi-Fi back by itself, no hang | yes | yes | any of them fails |

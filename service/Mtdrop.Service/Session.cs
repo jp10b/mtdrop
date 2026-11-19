@@ -230,6 +230,11 @@ public sealed class Session(
             int mbps = setting ?? ServiceConfig.DefaultDataRate;
             radiodArgs.AddRange(["--data-rate", $"{mbps}"]);
             log.Info($"session: unicast data at {mbps} Mbit/s{(setting is null ? " (default)" : " (setting)")}");
+            bool? path = config.ReadStationData(out string? badPath);
+            if (badPath is not null) log.Warn($"session: ignoring {config.TxPathFile}: {badPath}");
+            bool stationData = path ?? ServiceConfig.DefaultStationData;
+            if (stationData) radiodArgs.Add("--sta-data");
+            log.Info($"session: unicast data path {(stationData ? "station records + AC queue" : "ALTX0")}{(path is null ? " (default)" : " (setting)")}");
             radiod = runner.Start(config.Radiod, radiodArgs, Path.Combine(config.LogDir, "radiod.log"), config.InstallDir);
             awdld = runner.Start(config.Awdld, ["-c", $"{ServiceConfig.Channel}", "-S", "intersect"],
                 Path.Combine(config.LogDir, "awdld.log"), config.InstallDir);

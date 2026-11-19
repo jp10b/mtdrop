@@ -93,6 +93,24 @@ public sealed class SessionTests : IDisposable
         Assert.Equal(expected != content.Trim(), _rig.Log.Has("ignoring"));
     }
 
+    [Theory]
+    [InlineData("station", true)]
+    [InlineData(" Station\r\n", true)]
+    [InlineData("altx", false)]
+    [InlineData("station --max-seconds 900", false)]  // invalid: ignored, default, cannot smuggle options
+    [InlineData("", false)]
+    public async Task Tx_path_setting_adds_sta_data_only_for_station(string content, bool expected)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_rig.Config.TxPathFile)!);
+        File.WriteAllText(_rig.Config.TxPathFile, content);
+        await RunToEnd(2);
+
+        IReadOnlyList<string> args = _rig.Runner.Started[0].Args;
+        Assert.Equal(expected, args.Contains("--sta-data"));
+        Assert.Equal(expected ? 15 : 14, args.Count);
+        Assert.Equal(content.Trim() is not ("station" or "Station" or "altx"), _rig.Log.Has("ignoring"));
+    }
+
     [Fact]
     public async Task Firewall_rule_is_for_the_tray_app_only()
     {

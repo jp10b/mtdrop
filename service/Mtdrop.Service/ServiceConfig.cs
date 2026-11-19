@@ -57,6 +57,30 @@ public sealed record ServiceConfig
         return null;
     }
 
+    /// <summary>
+    /// Setting (ADR-0007 S3, F-035): <c>station</c> = radiod registers each data receiver as a station and sends its
+    /// data on the AC queue (<c>--sta-data</c>); <c>altx</c> or absent = data on ALTX0 as since F-021. In the data
+    /// directory, so only SYSTEM and Administrators can set it.
+    /// </summary>
+    public string TxPathFile => Path.Combine(DataDir, "settings", "radio-tx-path");
+
+    /// <summary>ALTX0 until a send to the iPhone is measured faster on the station path (ADR-0007).</summary>
+    public const bool DefaultStationData = false;
+
+    /// <summary>The TX path setting: true = station, false = altx, null when absent; <paramref name="invalid"/> is set for a bad file.</summary>
+    public bool? ReadStationData(out string? invalid)
+    {
+        invalid = null;
+        string text;
+        try { text = File.ReadAllText(TxPathFile).Trim(); }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { invalid = e.Message; return null; }
+        if (text.Equals("station", StringComparison.OrdinalIgnoreCase)) return true;
+        if (text.Equals("altx", StringComparison.OrdinalIgnoreCase)) return false;
+        invalid = $"'{(text.Length > 20 ? text[..20] : text)}' is not 'station' or 'altx'";
+        return null;
+    }
+
     /// <summary>How long the give-back waits for the MediaTek driver after a rescan, per attempt.</summary>
     public TimeSpan VendorWait { get; init; } = TimeSpan.FromSeconds(40);
     /// <summary>The watchdog task fires this long after the session deadline.</summary>

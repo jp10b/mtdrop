@@ -31,6 +31,8 @@ ASSUMPTION (not verified): the AC-queue delay of F-019/F-020 comes from the miss
 | S4 | Firmware rate adaptation (RA offload with the peer's HT/VHT capabilities from its AWDL frames) | same | further gain |
 | S5 | Block-ack aggregation (`STA_REC_BA` after ADDBA) | same | further gain |
 
+S3 as built (2026-11-19): no new radio link message – `radiod serve --sta-data` registers the receiver of the first unicast data frame to an address (OWL sends data only to peers it has validated), so `awdld` and the protocol are unchanged; records are removed for room (least recently used) and at the end of the session. The service passes `--sta-data` when `ProgramData\mtdrop\settings\radio-tx-path` contains `station`.
+
 Each hardware step runs in the usual service session with the watchdog; the ALTX path stays the default until S3 is measured better, behind an option until then.
 
 ## Consequences
