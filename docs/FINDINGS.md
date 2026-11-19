@@ -1856,3 +1856,20 @@ Remove the stale nodes, re-install the service, one send session as F-036; read 
 | MediaTek start (400 → 410) | **≤ 5 s** (as on 11-11) | ≥ 12 s → stale adapters are not the cause |
 | transfer done → Wi-Fi connected | **≤ 20 s** (from 30–60 s) | > 30 s |
 | networks re-added, connect by itself, no hang | yes | no |
+
+### Raw result (FACT, 2026-11-19 21:17–21:31, home)
+
+- `remove-stale-wfd.ps1 -Apply`: 100 stale nodes removed, 0 failed (5 Wi-Fi Direct nodes left afterwards: the present ones and 2 from the Windows install).
+- Send session (21:18): upload of the 5.4 MB photo **5.2 s (~1.04 MB/s)**, RTT median 22 ms (F-036: 8.7 s, 66 ms – the phone was probably closer).
+- Give-back, from the transfer's end (21:18:44.9): pnputil 21:18:45.7 → 21:18:59.6, **MediaTek start (400 → 410) 12.7 s**; card back 21:19:00; 35 networks re-added 21:19:01; **Windows did not connect by itself**; nudge at 21:19:17 ("2 saved networks in range") → WLAN connect started 21:19:17.76, connected 21:19:18.17; service idle 21:19:20. **36 s** from the end of the transfer to idle.
+- Baseline, no mtdrop (maintainer: `Disable-PnpDevice`, 5 s, `Enable-PnpDevice` on the card with the MediaTek driver): driver halt 21:29:33.8, its init event 8000 at 21:29:41.2 (enable ~21:29:38.8), WLAN extensibility module started 21:29:52.1 (in the give-backs it follows event 410 within 0.2 s) = **~11–13 s from enable to a started driver**. Windows then did **not** connect by itself until 21:31:34 (~100 s).
+
+### Conclusion
+
+1. **Prediction falsified:** with the stale adapters gone the MediaTek start was 12.7 s (≥ 12 s), and the baseline shows ~11–13 s for a plain enable without mtdrop. **The ~13 s are the MediaTek driver's own start**; the stale nodes are at most a few seconds of it (15–17 s before). The 43 s outlier of F-036 stays unexplained. Cleaning up stale nodes is still worth doing (they grow without bound), but it is not the lever.
+2. **The lever is the connect:** on this machine Windows often does not start an automatic connection after the adapter comes back – not after our give-back with networks re-added at once, not even after a plain disable/enable. Removing the fixed 3 s pause (this entry) made the networks arrive earlier and Windows skipped its connect; the nudge, 16 s later, connected in 0.4 s.
+3. Change: the nudge now comes **3 s** after the networks are back instead of 12 s (`GiveBack.NudgeAfter`).
+
+### Prediction for the next session
+
+Transfer end → Wi-Fi connected **≤ 22 s** (≈ 1 radiod + 14 pnputil + 1 card + 1 networks + 3 wait + 1–2 connect); falsified by > 26 s. What remains is the MediaTek start (~13 s), which only avoiding the driver swap would remove (out of scope, ADR-0006).

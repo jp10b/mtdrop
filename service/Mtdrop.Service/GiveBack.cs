@@ -59,9 +59,10 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
         else if (profiles.Missing == 0) log.Info($"give-back: all {profiles.Saved} saved Wi-Fi network(s) are present");
         else log.Info($"give-back: re-added {profiles.Restored} of {profiles.Missing} missing saved network(s) ({profiles.Saved} exported)");
         if (profiles.Failed > 0) log.Warn($"give-back: {profiles.Failed} saved network(s) could not be re-added");
-        // Normally Windows connects 2-5 s after the networks are back (F-026). After an abrupt end of radiod it did
-        // not try at all (F-027), so nudge it the way the user would, then wait again.
-        if (!WaitConnected(TimeSpan.FromSeconds(12)))
+        // Windows connected 2-5 s after the networks were back in F-026, but not at all after an abrupt end of radiod
+        // (F-027), after networks re-added right away (F-037: nudged after 16 s, connected 1 s later) or after a plain
+        // disable/enable of the card (F-037 baseline: ~100 s). Nudge it the way the user would after a short wait.
+        if (!WaitConnected(NudgeAfter))
         {
             log.Info($"give-back: Wi-Fi did not connect by itself; {wifi.NudgeConnect()}");
             WaitConnected(TimeSpan.FromSeconds(25));
@@ -69,6 +70,9 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
         log.Info(wifi.AdapterConnected() ? "give-back: Wi-Fi is connected" : "give-back: Wi-Fi adapter is back but not connected yet");
         return true;
     }
+
+    /// <summary>How long Windows gets to connect by itself before the nudge (F-037).</summary>
+    public static readonly TimeSpan NudgeAfter = TimeSpan.FromSeconds(3);
 
     private bool WaitConnected(TimeSpan wait)
     {
