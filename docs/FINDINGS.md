@@ -1883,3 +1883,12 @@ Transfer end → Wi-Fi connected **≤ 22 s** (≈ 1 radiod + 14 pnputil + 1 car
 ### Change
 
 The nudge connects at once when the driver's own scan already lists a saved network (it did: 6 entries, 2 saved in range) and scans + polls every 250 ms (≤ 4 s) only when it does not; the nudge comes 1 s after the networks are back; the service checks the connection every 0.5 s. Expected: transfer end → connected ≈ 14 + 1 + 1 + association (0.4–9 s) = **~17–26 s**; the rest is the MediaTek driver's start and the access point.
+
+### Raw result, connect from the driver's scan list (FACT, 2026-11-19 21:41, home)
+
+- Upload of the 5.4 MB photo: 4.5 s (~1.2 MB/s).
+- Transfer end 21:41:12.08 → MediaTek configured 21:41:13.29, started 21:41:27.97 (14.7 s) → networks re-added 21:41:30 → nudge "2 saved network(s) in range (driver's own scan)", no scan of ours → WLAN connect started 21:41:32.10 → **connected 21:41:32.45**. **20.4 s from the end of the transfer to Wi-Fi** (prediction 17–26 s: met), against 30–60 s in F-036 and 36 s / 34 s in the two runs above.
+
+### Conclusion (F-037 overall)
+
+The give-back is now the MediaTek driver's own start (~13–15 s, the same as a plain disable/enable without mtdrop) plus ~5 s of ours (pnputil, networks, connect). Shorter needs no driver swap at all (out of scope, ADR-0006). The 43 s start of F-036 did not come back in three runs.
