@@ -139,10 +139,18 @@ int session_open(struct session *s, const char *patch_path, const char *ram_path
         return -1;
     }
 
-    /* 3. Proxy. */
-    if (halwin_open_proxy(s->h, error, sizeof(error)) != 0) {
-        printf("RESULT: FAIL - %s\n", error);
-        return -1;
+    /* 3. Proxy. Started right after the driver swap (F-038), the proxy's device interface can take a moment to
+     * appear: try for up to 5 s instead of a fixed pause before radiod. */
+    {
+        unsigned tries = 0;
+        while (halwin_open_proxy(s->h, error, sizeof(error)) != 0) {
+            if (++tries >= 50) {
+                printf("RESULT: FAIL - %s\n", error);
+                return -1;
+            }
+            halwin_hal(s->h)->sleep_us(halwin_hal(s->h)->ctx, 100000u);
+        }
+        if (tries) printf("proxy: opened after %u ms\n", tries * 100u);
     }
 
     /* 4. The stop list must be armed before the chip gets any chance to do DMA. */

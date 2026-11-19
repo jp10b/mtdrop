@@ -1892,3 +1892,30 @@ The nudge connects at once when the driver's own scan already lists a saved netw
 ### Conclusion (F-037 overall)
 
 The give-back is now the MediaTek driver's own start (~13–15 s, the same as a plain disable/enable without mtdrop) plus ~5 s of ours (pnputil, networks, connect). Shorter needs no driver swap at all (out of scope, ADR-0006). The 43 s start of F-036 did not come back in three runs.
+
+---
+
+## F-038 – Session start: where the time goes before the iPhone can see us
+
+- **Date:** 2026-11-19 (analysis of the 21:40 session; predictions before the next run)
+
+### Breakdown (FACT: app.log, service log, setupapi, Kernel-PnP, radiod live log)
+
+| step | time | Wi-Fi |
+|---|---|---|
+| Send clicked → service starts the session | 0.8 s | on |
+| DMA probe, saved networks exported | 1.0 s | on |
+| proxy package added (0.7 s), driver selection (1.1 s) | 1.9 s | on |
+| MediaTek driver halted, device restarted with the proxy (400 → 410) | 1.1 s | **off from here** |
+| **fixed 2 s pause** before radiod (inherited from `s3-bringup.ps1`) | 2 s | off |
+| radiod: firmware download 0.35 s, post-boot 0.8 s, sniffer start + TX power 0.56 s, client | 1.7 s | off |
+| awdld up, `awdl0` ready | ~1.6 s | off |
+| **Send → `awdl0` ready** | **10.7 s** (Wi-Fi off for the last ~6.8 s) | |
+
+### Change
+
+No fixed pause: radiod tries to open the proxy's device interface for up to 5 s (100 ms steps, prints `proxy: opened after N ms` when it had to wait). Service tests 74/74, library 104/104.
+
+### Prediction
+
+Send → `awdl0` ready **≤ 9 s** (about 2 s less), no `proxy: opened after` longer than 1 s; falsified by ≥ 10.5 s or a failed open.

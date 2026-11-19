@@ -65,9 +65,9 @@ public sealed class SessionTests : IDisposable
 
         (string exe, IReadOnlyList<string> args) = _rig.Runner.Started[0];
         Assert.Equal(_rig.Config.Radiod, exe);
-        // 120 s window - 2 s settle + 30 s margin
+        // 120 s window + 30 s margin (no settle pause since F-038)
         Assert.Equal(["--live-log", Path.Combine(_rig.Config.LogDir, "radiod-live.log"), "serve", "44",
-            _rig.Config.FirmwarePatch, _rig.Config.FirmwareRam, "--max-seconds", "148", "--mac", "random", "--wait-client", "60",
+            _rig.Config.FirmwarePatch, _rig.Config.FirmwareRam, "--max-seconds", "150", "--mac", "random", "--wait-client", "60",
             "--data-rate", "54", "--sta-data"], args);
         Assert.Equal(_rig.Config.Awdld, _rig.Runner.Started[1].Exe);
         Assert.Equal(["-c", "44", "-S", "intersect"], _rig.Runner.Started[1].Args);

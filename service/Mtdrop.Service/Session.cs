@@ -219,7 +219,7 @@ public sealed class Session(
 
             // ---- Starting: radio server, AWDL daemon, firewall for the receiver ----------------------------
             Set(SessionState.Starting, "starting the radio");
-            await clock.Delay(TimeSpan.FromSeconds(2), ct);
+            // No fixed pause (F-038): radiod waits up to 5 s for the proxy's device interface itself.
             int seconds = (int)Math.Clamp(Math.Ceiling((deadline - clock.UtcNow + config.RadiodMargin).TotalSeconds), 5, 900);
             Directory.CreateDirectory(config.LogDir);
             List<string> radiodArgs =
