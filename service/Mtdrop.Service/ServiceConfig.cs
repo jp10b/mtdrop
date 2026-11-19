@@ -58,14 +58,14 @@ public sealed record ServiceConfig
     }
 
     /// <summary>
-    /// Setting (ADR-0007 S3, F-035): <c>station</c> = radiod registers each data receiver as a station and sends its
-    /// data on the AC queue (<c>--sta-data</c>); <c>altx</c> or absent = data on ALTX0 as since F-021. In the data
-    /// directory, so only SYSTEM and Administrators can set it.
+    /// Setting (ADR-0007 S3, F-035, F-036): <c>station</c> or absent = radiod registers each data receiver as a
+    /// station and sends its data on the AC queue (<c>--sta-data</c>); <c>altx</c> = data on ALTX0 as from F-021 to
+    /// F-035. In the data directory, so only SYSTEM and Administrators can set it.
     /// </summary>
     public string TxPathFile => Path.Combine(DataDir, "settings", "radio-tx-path");
 
-    /// <summary>ALTX0 until a send to the iPhone is measured faster on the station path (ADR-0007).</summary>
-    public const bool DefaultStationData = false;
+    /// <summary>F-036: the 5.4 MB photo in 8.7 s (~620 kB/s, 0.1 % frames given up) against 45.6 s on ALTX0 (8.9 %).</summary>
+    public const bool DefaultStationData = true;
 
     /// <summary>The TX path setting: true = station, false = altx, null when absent; <paramref name="invalid"/> is set for a bad file.</summary>
     public bool? ReadStationData(out string? invalid)

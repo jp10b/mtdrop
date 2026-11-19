@@ -68,7 +68,7 @@ public sealed class SessionTests : IDisposable
         // 120 s window - 2 s settle + 30 s margin
         Assert.Equal(["--live-log", Path.Combine(_rig.Config.LogDir, "radiod-live.log"), "serve", "44",
             _rig.Config.FirmwarePatch, _rig.Config.FirmwareRam, "--max-seconds", "148", "--mac", "random", "--wait-client", "60",
-            "--data-rate", "54"], args);
+            "--data-rate", "54", "--sta-data"], args);
         Assert.Equal(_rig.Config.Awdld, _rig.Runner.Started[1].Exe);
         Assert.Equal(["-c", "44", "-S", "intersect"], _rig.Runner.Started[1].Args);
         Assert.True(_rig.Runner.Children["awdld"].Killed);
@@ -89,7 +89,7 @@ public sealed class SessionTests : IDisposable
 
         IReadOnlyList<string> args = _rig.Runner.Started[0].Args;
         Assert.Equal(expected, args[args.ToList().IndexOf("--data-rate") + 1]);
-        Assert.Equal(14, args.Count);
+        Assert.Equal(15, args.Count);
         Assert.Equal(expected != content.Trim(), _rig.Log.Has("ignoring"));
     }
 
@@ -97,9 +97,9 @@ public sealed class SessionTests : IDisposable
     [InlineData("station", true)]
     [InlineData(" Station\r\n", true)]
     [InlineData("altx", false)]
-    [InlineData("station --max-seconds 900", false)]  // invalid: ignored, default, cannot smuggle options
-    [InlineData("", false)]
-    public async Task Tx_path_setting_adds_sta_data_only_for_station(string content, bool expected)
+    [InlineData("station --max-seconds 900", true)]   // invalid: ignored, default, cannot smuggle options
+    [InlineData("", true)]
+    public async Task Tx_path_setting_drops_sta_data_only_for_altx(string content, bool expected)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_rig.Config.TxPathFile)!);
         File.WriteAllText(_rig.Config.TxPathFile, content);

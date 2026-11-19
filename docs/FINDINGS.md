@@ -1781,3 +1781,23 @@ S3 of ADR-0007: `radiod serve` registers a station for each AWDL peer awdld know
 | in the radio (submit → TX status) mean | ~10–20 ms | clearly lower | about the same or higher |
 | `station data:` | – | 1 record added (the iPhone), 0 refused | refused → payload or state wrong for an AWDL peer |
 | transfer completes, photo intact, Wi-Fi back by itself, no hang | yes | yes | any of them fails |
+
+### Raw result (FACT, 2026-11-19 20:52 and 20:54, home, iPhone 15 Pro iOS 26.5.2, channel 44, 54 Mbit/s, 5,428,586 bytes)
+
+| | (1) station records | (2) ALTX0 (same sitting) | F-034 ALTX0 (reference) |
+|---|---|---|---|
+| `/Upload` sent → 200 | **8.7 s = ~624 kB/s** | 45.6 s = ~119 kB/s | 28.5 s = 190 kB/s |
+| Send click → "Delivered" | 14.3 s (awdl0 ready 13.3 s after the click) | – | – |
+| unicast data frames | 4244, **5 NOT ACKed (0.12 %)** | 4429, 393 NOT ACKed (8.9 %) | ~2 % |
+| transmissions per frame | **1.02** | 2.25 | – |
+| in the radio (submit → TX status) mean / max | **2.3 ms** / 215 ms | 35.6 ms / 108 ms | – |
+| `station data:` | 1 record added, 0 refused, 0 removed; 4244 frames with the station entry | – | – |
+| RTT during the transfer | median 66 ms (min 40, max 1062), 0 of 9 lost | – | 80–90 ms |
+| photo on the iPhone, Wi-Fi back by itself, no hang | yes | yes | – |
+
+### Conclusion
+
+1. **All predictions met:** ≥ 300 kB/s (624), losses ≤ 3 % (0.12 %), time in the radio clearly lower (2.3 against 35.6 ms), one station record, no refusal.
+2. **ADR-0007 S3 is accepted by measurement: sending is ~3.3× faster than the best ALTX0 send (F-034) and ~5× faster than ALTX0 in the same sitting.** The station record removes both the ~6 ms per frame of ALTX0 and most second transmissions; the iPhone, an AWDL peer, is served by the firmware like any associated station (no power-save buffering seen – the open point of ADR-0007 did not show up here).
+3. ALTX0 was slower today than in F-034 (119 against 190 kB/s, 8.9 % against ~2 % given up) – conditions vary between sittings, which is why both paths were measured together.
+4. The service now passes `--sta-data` by default; `radio-tx-path` = `altx` keeps the old path. Remaining steps of ADR-0007 (S4 rate adaptation with HT/VHT, S5 block-ack aggregation) can raise the 54 Mbit/s legacy rate ceiling.
