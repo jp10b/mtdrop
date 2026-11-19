@@ -23,8 +23,14 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
             log.Info($"give-back: removed proxy package {package} (pnputil exit {code})");
             if (code == 3010) log.Warn("give-back: Windows asks for a restart to finish removing the proxy driver");
         }
-        driver.ScanDevices();
-        card = WaitForVendor();
+        // pnputil /uninstall returns once the MediaTek driver has started on the device (F-037), so look first and
+        // rescan only when it is not there.
+        card = driver.FindCard();
+        if (!IsVendorBound(card))
+        {
+            driver.ScanDevices();
+            card = WaitForVendor();
+        }
 
         if (!IsVendorBound(card))
         {
@@ -47,7 +53,7 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
         }
         log.Info($"give-back: card driver back: {card}");
 
-        clock.Sleep(TimeSpan.FromSeconds(3));
+        // No fixed pause: RestoreMissingProfiles waits for the Wi-Fi interface itself.
         ProfileRestore profiles = wifi.RestoreMissingProfiles();
         if (profiles.Saved == 0) log.Warn("give-back: no saved Wi-Fi networks were exported; Wi-Fi may need a manual connect");
         else if (profiles.Missing == 0) log.Info($"give-back: all {profiles.Saved} saved Wi-Fi network(s) are present");

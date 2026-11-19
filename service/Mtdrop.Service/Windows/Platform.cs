@@ -64,7 +64,7 @@ public sealed class Wifi(ServiceConfig config, ILog log) : IWifi
             using WlanClient wlan = WlanClient.Open();
             Guid? card;
             DateTime until = DateTime.UtcNow + InterfaceWait;
-            while ((card = FindCard(wlan)) is null && DateTime.UtcNow < until) Thread.Sleep(1000);
+            while ((card = FindCard(wlan)) is null && DateTime.UtcNow < until) Thread.Sleep(250);
             if (card is not Guid id)
             {
                 log.Warn("wifi: the MT7921 Wi-Fi interface did not appear; saved networks not re-added");

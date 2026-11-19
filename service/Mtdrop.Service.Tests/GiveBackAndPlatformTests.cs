@@ -15,7 +15,7 @@ public sealed class GiveBackTests : IDisposable
         _rig.Driver.PackageInStore = true;
 
         Assert.True(_rig.GiveBack().Run());
-        Assert.Equal(["driver:delete oem99.inf", "driver:scan", "wifi:restore"], _rig.Calls);
+        Assert.Equal(["driver:delete oem99.inf", "wifi:restore"], _rig.Calls);
         Assert.Equal(0, _rig.Lock.Held);
     }
 
@@ -28,7 +28,7 @@ public sealed class GiveBackTests : IDisposable
         _rig.Driver.VendorInStore = true;
 
         Assert.True(_rig.GiveBack().Run());
-        Assert.Equal(["driver:delete oem99.inf", "driver:scan", "wifi:restore"], _rig.Calls);
+        Assert.Equal(["driver:delete oem99.inf", "wifi:restore"], _rig.Calls);
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public sealed class GiveBackTests : IDisposable
         _rig.Wifi.Connected = false;
 
         Assert.True(_rig.GiveBack().Run());
-        Assert.Equal(["driver:delete oem99.inf", "driver:scan", "wifi:restore", "wifi:nudge"], _rig.Calls);
+        Assert.Equal(["driver:delete oem99.inf", "wifi:restore", "wifi:nudge"], _rig.Calls);
         Assert.True(_rig.Log.Has("did not connect by itself; nudged (test)"));
         Assert.True(_rig.Log.Has("give-back: Wi-Fi is connected"));
     }
@@ -77,6 +77,7 @@ public sealed class GiveBackTests : IDisposable
         _rig.AddVendorBackup();
 
         Assert.True(_rig.GiveBack().Run());
+        Assert.Equal("driver:scan", _rig.Calls[1]);               // rescan only when the vendor driver did not come back
         Assert.Contains("driver:install-vendor", _rig.Calls);
         Assert.Equal(FakeDriver.Binding.Vendor, _rig.Driver.Bound);
     }

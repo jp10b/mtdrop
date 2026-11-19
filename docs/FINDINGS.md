@@ -1801,3 +1801,58 @@ S3 of ADR-0007: `radiod serve` registers a station for each AWDL peer awdld know
 2. **ADR-0007 S3 is accepted by measurement: sending is ~3.3× faster than the best ALTX0 send (F-034) and ~5× faster than ALTX0 in the same sitting.** The station record removes both the ~6 ms per frame of ALTX0 and most second transmissions; the iPhone, an AWDL peer, is served by the firmware like any associated station (no power-save buffering seen – the open point of ADR-0007 did not show up here).
 3. ALTX0 was slower today than in F-034 (119 against 190 kB/s, 8.9 % against ~2 % given up) – conditions vary between sittings, which is why both paths were measured together.
 4. The service now passes `--sta-data` by default; `radio-tx-path` = `altx` keeps the old path. Remaining steps of ADR-0007 (S4 rate adaptation with HT/VHT, S5 block-ack aggregation) can raise the 54 Mbit/s legacy rate ceiling.
+
+---
+
+## F-037 – Where the Wi-Fi outage goes after a session, and stale Wi-Fi Direct adapters
+
+- **Date:** 2026-11-19 (analysis and predictions written before the run). ADR-0006 B (shorter Wi-Fi outage).
+
+### Breakdown of the give-back (FACT: service log, `setupapi.dev.log`, Kernel-PnP/Configuration events 400/410)
+
+Session of 20:51 (F-036, transfer done 20:52:15.7, Wi-Fi connected 20:53:15 = 60 s) and of 20:53 (30 s):
+
+| step | 20:51 session | 20:53 session |
+|---|---|---|
+| radiod exits | 1 s | 1 s |
+| `pnputil /delete-driver /uninstall`: the MediaTek driver is configured on the device in **< 1 s**, then "Waiting for device post-install" = **its start** (event 400 configured → 410 started; its own init event 8000 comes ~3 s after 400) | **43.2 s** | **15.6 s** |
+| package removed from the store | 2 s | 2 s |
+| rescan + 700 ms polls + fixed 3 s pause before the networks | 3 + 3 s | 3 + 3 s |
+| 35 saved networks re-added (new interface GUID after every swap) | 4 s | – |
+| Windows connects | 5 s | 9 s total for both |
+
+So the MediaTek driver's start dominates, the rest is ~10–15 s.
+
+### Its history (FACT, every give-back in the Kernel-PnP log, against stale adapters by date of creation)
+
+Every swap makes the card a new network interface; the MediaTek driver then creates a new "Microsoft Wi-Fi Direct Virtual Adapter" and the previous one stays as a non-present node: **104 Wi-Fi Direct adapter nodes on 2026-11-19, 2 present, 100 stale since 11-10** (by FirstInstallDate: 10 on 11-10, 8 on 11-11, 32 on 11-17, 41 on 11-18, 9 stale on 11-19, plus 2 from the Windows install).
+
+| day | stale adapters (cumulative) | MediaTek start after a give-back |
+|---|---|---|
+| 11-10 | ~2–12 | 7.6–12.3 s |
+| 11-11 | ~12–20 | **3.1–3.4 s** |
+| 11-17 morning | ~20–30 | 7.7–8.5 s |
+| 11-17 evening | ~45–52 | 12.7–14.6 s |
+| 11-18 | 52–93 | 14–19 s (24–29 s three times) |
+| 11-19 | 93–104 | 15–17 s (43 s once) |
+
+The proxy's own start stays at 0.8–1.5 s throughout.
+
+ASSUMPTION (not verified): the start slows down with the number of stale network interfaces / Wi-Fi Direct nodes (the network stack binds the new adapter while enumerating the old ones). 11-10 does not fit (early bring-up, chip left in other states then).
+
+### Changes
+
+- `scripts/remove-stale-wfd.ps1`: lists (default) or removes (`-Apply`, elevated) the **non-present** Wi-Fi Direct virtual adapter nodes created since 2026-11-10 – what Device Manager's "Show hidden devices > Uninstall" does for a greyed-out entry; the present one and older ones are left alone.
+- Give-back without fixed waits: the card is checked right after `pnputil` (it returns after the driver started) and rescanned only if the MediaTek driver is not there; the 3 s pause before re-adding networks is gone (that step waits for the Wi-Fi interface itself, now in 250 ms steps). Service tests 74/74.
+
+### Method
+
+Remove the stale nodes, re-install the service, one send session as F-036; read the 400 → 410 time of the give-back and the service log.
+
+### Predictions
+
+| | prediction | falsified by |
+|---|---|---|
+| MediaTek start (400 → 410) | **≤ 5 s** (as on 11-11) | ≥ 12 s → stale adapters are not the cause |
+| transfer done → Wi-Fi connected | **≤ 20 s** (from 30–60 s) | > 30 s |
+| networks re-added, connect by itself, no hang | yes | no |
