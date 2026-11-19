@@ -208,8 +208,11 @@ void awdl_send_mif(struct ev_loop *loop, ev_timer *timer, int revents) {
  * near the end of a shared run went on air after the phone had left, were retried up to 15 times and given up
  * (F-033: 16 % of data frames, 75 ms mean in the radio, 3.3 transmissions per frame). So hand over a frame only
  * if the radio holds few frames and all of them can go before the shared run of slots ends. */
-#define MTDROP_TX_MAX_IN_FLIGHT 8u
-#define MTDROP_TX_FRAME_US 1500u      /* 1.5 kB at 12 Mbit/s with preamble, SIFS and ACK, rounded up */
+/* F-039: since F-036 data leaves on the AC queue with a station record at 54 Mbit/s: ~1.8 ms from hand-over to TX
+ * status on average, ~0.4 ms on air per 1.5 kB frame. With 8 frames and 1.5 ms (12 Mbit/s) per frame the hand-over
+ * held back half of all frames (held 1911 of 3916, host empty 74). */
+#define MTDROP_TX_MAX_IN_FLIGHT 12u
+#define MTDROP_TX_FRAME_US 600u       /* 1.5 kB at 54 Mbit/s with preamble, SIFS, ACK and a backoff, rounded up */
 unsigned awdl_radio_in_flight(void);  /* win/io_win.c */
 
 static uint64_t shared_time_left_us(const struct awdl_state *state, const struct awdl_peer *peer, uint64_t now) {
@@ -238,6 +241,7 @@ static double hold_for_radio(struct awdl_state *state, const struct awdl_peer *p
 	/* Shared run nearly over: wait until it has ended (the slot gate then waits for the next one). */
 	if (left <= (uint64_t) MTDROP_TX_FRAME_US + guard) {
 		state->stats.tx_unicast_held++;
+		state->stats.tx_unicast_held_end++;
 		return usec_to_sec(left + 500u);
 	}
 	/* The radio is busy: look again in a millisecond, when TX statuses have come back. Safety net: if the count

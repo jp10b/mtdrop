@@ -1919,3 +1919,28 @@ No fixed pause: radiod tries to open the proxy's device interface for up to 5 s 
 ### Prediction
 
 Send → `awdl0` ready **≤ 9 s** (about 2 s less), no `proxy: opened after` longer than 1 s; falsified by ≥ 10.5 s or a failed open.
+
+---
+
+## F-039 – What limits the send at ~1 MB/s: the hand-over, not the PHY rate
+
+- **Date:** 2026-11-19 (analysis of the 21:41 send; predictions before the next run)
+
+### Counters of the 21:41 send (FACT: awdld `radio:` line, radiod summary)
+
+- 3916 unicast data frames in ~4.5 s (~870 frames/s, ~1.2 MB/s); all 3917 ACKed at the first try (1.00 transmissions per frame), **1.8 ms mean from submit to TX status**, at 54 Mbit/s (TXS).
+- awdld: **held 1911** (F-034 hand-over said "not now"), deferred 1941 (the phone not on our channel / slot guard), **host empty only 74** – TCP kept the queue filled.
+
+So the radio is neither failing nor busy (1.8 ms per frame, 1.00 transmissions) and TCP is not starving it: the hand-over rule of F-034 is the brake. It assumes 1.5 ms per frame (1.5 kB at 12 Mbit/s) and at most 8 frames in the radio; with 54 Mbit/s a frame needs ~0.4 ms on air. A faster PHY rate (ADR-0007 S4) would shorten the on-air time further, but cannot help while frames wait in front of the radio – S4 is postponed until this is measured.
+
+### Change
+
+`MTDROP_TX_FRAME_US` 1500 → 600 µs, `MTDROP_TX_MAX_IN_FLIGHT` 8 → 12; the `held` counter is split: `held N (run ending M)` – M = held because the shared run of slots was ending, N − M = radio full. awdld tests pass.
+
+### Predictions (one send of the 5.4 MB photo, together with F-038)
+
+| | 21:41 | prediction | falsified by |
+|---|---|---|---|
+| held | 1911 | **< 800** | about the same |
+| upload time | 4.5 s (3.9–8.7 s in the last four sends) | **≤ 3.5 s** | ≥ 4.5 s |
+| NOT ACKed data frames | 0 | ≤ 1 % (more frames near a run's end) | > 3 % |
