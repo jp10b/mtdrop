@@ -72,7 +72,7 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
     }
 
     /// <summary>How long Windows gets to connect by itself before the nudge (F-037).</summary>
-    public static readonly TimeSpan NudgeAfter = TimeSpan.FromSeconds(3);
+    public static readonly TimeSpan NudgeAfter = TimeSpan.FromSeconds(1);
 
     private bool WaitConnected(TimeSpan wait)
     {
@@ -80,7 +80,7 @@ public sealed class GiveBack(ServiceConfig config, IDriverControl driver, IWifi 
         while (!wifi.AdapterConnected())
         {
             if (clock.UtcNow >= until) return false;
-            clock.Sleep(TimeSpan.FromSeconds(2));
+            clock.Sleep(TimeSpan.FromMilliseconds(500));
         }
         return true;
     }

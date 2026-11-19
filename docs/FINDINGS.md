@@ -1873,3 +1873,13 @@ Remove the stale nodes, re-install the service, one send session as F-036; read 
 ### Prediction for the next session
 
 Transfer end → Wi-Fi connected **≤ 22 s** (≈ 1 radiod + 14 pnputil + 1 card + 1 networks + 3 wait + 1–2 connect); falsified by > 26 s. What remains is the MediaTek start (~13 s), which only avoiding the driver swap would remove (out of scope, ADR-0006).
+
+### Raw result, nudge after 3 s (FACT, 2026-11-19 21:34, home)
+
+- Upload of the 5.4 MB photo: **3.9 s (~1.39 MB/s)**, RTT median 136 ms.
+- Transfer end 21:34:19.8 → MediaTek started (410) 21:34:34.06 (13.0 s after 400) → networks re-added 21:34:35 → not connected after 3 s → nudge: own scan + fixed 4 s wait → WLAN connect started 21:34:44.12 → **association took 5.7 s and security 3.1 s** → connected 21:34:52.96 → service poll 21:34:54. **34 s** in all; prediction (≤ 22 s) falsified.
+- Where it went: 14 s MediaTek start (inherent), 3 s wait, ~5 s scan wait in the nudge, 8.8 s association with the access point (0.4 s in the previous run: the access point's side, weak signal on channel 36), 1 s poll.
+
+### Change
+
+The nudge connects at once when the driver's own scan already lists a saved network (it did: 6 entries, 2 saved in range) and scans + polls every 250 ms (≤ 4 s) only when it does not; the nudge comes 1 s after the networks are back; the service checks the connection every 0.5 s. Expected: transfer end → connected ≈ 14 + 1 + 1 + association (0.4–9 s) = **~17–26 s**; the rest is the MediaTek driver's start and the access point.

@@ -133,13 +133,27 @@ public sealed class Wifi(ServiceConfig config, ILog log) : IWifi
             (WlanClient.Radio sw, WlanClient.Radio hw) = wlan.RadioState(card);
             string radio = $"radio software {sw}, hardware {hw}";
             if (sw != WlanClient.Radio.On || hw != WlanClient.Radio.On) return $"{radio}; not connecting (the radio is off)";
-            wlan.Scan(card);
-            Thread.Sleep(TimeSpan.FromSeconds(4));                  // scan results take a few seconds
             List<string> order = wlan.Profiles(card).Select(p => p.Name).ToList();
+            List<int> InRange(IReadOnlyList<WlanClient.AvailableNetwork> list) =>
+                list.Where(n => n.ProfileName.Length > 0 && n.Connectable)
+                    .Select(n => order.IndexOf(n.ProfileName)).Where(i => i >= 0).Distinct().Order().ToList();
+            // The driver scans by itself when it starts, so the list is usually filled already (F-037: the fixed 4 s
+            // wait after our own scan was a third of the time from the nudge to the connect). Scan only when it is not.
             IReadOnlyList<WlanClient.AvailableNetwork> seen = wlan.AvailableNetworks(card);
-            List<int> inRange = seen.Where(n => n.ProfileName.Length > 0 && n.Connectable)
-                .Select(n => order.IndexOf(n.ProfileName)).Where(i => i >= 0).Distinct().Order().ToList();
-            string what = $"{radio}; {seen.Count} scan entr{(seen.Count == 1 ? "y" : "ies")}, {inRange.Count} saved network(s) in range";
+            List<int> inRange = InRange(seen);
+            int waitedMs = 0;
+            if (inRange.Count == 0 && !seen.Any(n => n.Connected))
+            {
+                wlan.Scan(card);
+                for (; waitedMs < 4000 && inRange.Count == 0; waitedMs += 250)
+                {
+                    Thread.Sleep(250);
+                    seen = wlan.AvailableNetworks(card);
+                    inRange = InRange(seen);
+                }
+            }
+            string what = $"{radio}; {seen.Count} scan entr{(seen.Count == 1 ? "y" : "ies")}, {inRange.Count} saved network(s) in range" +
+                          (waitedMs > 0 ? $" after our scan ({waitedMs} ms)" : " (driver's own scan)");
             if (seen.Any(n => n.Connected)) return $"{what}; already connecting/connected";
             if (inRange.Count == 0) return $"{what}; nothing to connect to";
             string? error = wlan.Connect(card, order[inRange[0]]);
