@@ -1713,3 +1713,28 @@ Send of the 5.4 MB photo at the default rate: upload 55.6 s, **98 kB/s** (slower
 | ghost frames | NOT ACKed, 15 tries | NOT ACKed, 15 tries | ACKed |
 | burst frames/s | ~150–170 (~6 ms each, one at a time) | **clearly more** (several in flight on the AC queue) | about the same → the per-frame cost is not the queue |
 | system | no hang | no hang (new MCU command: hang risk as in F-011) | hang |
+
+### Raw result (FACT, 2026-11-19 07:36, office, channel 2: 5 BSSIDs, target -60/-65 dBm, random address, `-KeepGoing`)
+
+The run was made at the office, not at home: the strongest access point on channel 2 there **never ACKed anything** – not in A, not in B, data at OFDM 6 (ALTX or AC). So every frame to it used all 15 transmissions, like the ghost.
+
+| | A (ALTX0, vif entry) | B (station records, AC queue) |
+|---|---|---|
+| `STA_REC_UPDATE` | – | **add: status 0 for both arms (wcid 1 and 2, ~2 ms each); remove: status 0** |
+| TXS matched on the station's wcid | – | 10/10 (the chip reports wcid 1/2, so the frames really used the station entries) |
+| AP frames (NOT ACKed, 15 tries) | 11–104 ms | 140–254 ms |
+| ghost frames (NOT ACKed, 15 tries) | 11–48 ms | 140–219 ms |
+| burst 300 | 300 done in 4.4 s = **68 frames/s**, 15 transmissions each | **~6–7 frames/s**: TX-free every ~130–180 ms, one frame after another; 103 of 129 frames declared lost by the library's 2 s limit (their TX-free came later), stopped after 20 s |
+| system | no hang | **no hang**; give-back normal (Wi-Fi needed a manual connect: the hand-run give-back has no connect nudge, only the service has) |
+
+(Cosmetic bug found: the library's TX log line printed the vif's wcid 19 instead of the frame's; fixed.)
+
+### Conclusion
+
+1. **`STA_REC_UPDATE` as built in S1 is accepted by the firmware** (status 0 for add and remove, TXS carries the station's wcid) and does not hang the system. FACT.
+2. **The question of this entry is not answered.** Without ACKs every frame goes through all 15 transmissions, and on an AC queue each retry waits for a growing backoff. ASSUMPTION: best-effort EDCA (CW 15 → 1023, AIFSN 3) gives ~50–100 ms for 15 failed transmissions, which alone explains B's 140–250 ms per frame and its serial ~6–7 frames/s; ALTX's management parameters retry much faster. F-019's AC delay was measured on frames **ACKed at the first try** (134–415 ms) – that wait before the first transmission is what this step must look at, and it needs a receiver that ACKs.
+3. Not falsified yet, not confirmed: "the station record takes data off the slow path". No further ADR-0007 step before the re-run.
+
+### Next
+
+Same session again with a receiver that ACKs (home access point, or the iPhone's Personal Hotspot), with a third arm C = AC queue **without** a station record (`--data --data-fixed-rate --burst 300`), so A/B/C are measured at the same place and time.

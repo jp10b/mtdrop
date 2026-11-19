@@ -512,7 +512,7 @@ int mt792x_tx_frame(struct mt792x *dev, const struct mt792x_tx_req *req, uint32_
     mt_logf(dev, dev->txc.submitted == 1u ? MT_LOG_INFO : MT_LOG_DEBUG,
             "TX cookie %u: %u bytes, fc 0x%04x, %s, %s, q 0x%02x, wcid %u omac %u, token %u pid %u, channel %u",
             s->cookie, req->len, mt_get_le16(req->frame), c.fix_rate ? rate_name[req->rate] : "firmware rate",
-            req->want_ack ? "ACK" : "no ACK", c.psd ? MT_LMAC_ALTX0 : (dev->tx_omac % 4u) * 4u + 3u - c.ac, dev->tx_wcid,
+            req->want_ack ? "ACK" : "no ACK", c.psd ? MT_LMAC_ALTX0 : (dev->tx_omac % 4u) * 4u + 3u - c.ac, c.wcid,
             dev->tx_omac, s->token, pid, dev->cur_channel);
     return 0;
 }
