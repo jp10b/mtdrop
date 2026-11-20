@@ -1920,6 +1920,12 @@ No fixed pause: radiod tries to open the proxy's device interface for up to 5 s 
 
 Send → `awdl0` ready **≤ 9 s** (about 2 s less), no `proxy: opened after` longer than 1 s; falsified by ≥ 10.5 s or a failed open.
 
+### Result (2026-11-20, three sends; FACT: app.log, radiod.log)
+
+Send → `awdl0` ready **8.5 s, 6.0 s, 6.0 s** (was 9.4–13.3 s on 2026-11-19); radiod opened the proxy at the first try (no `proxy: opened after` line). **PASS** – the prediction (≤ 9 s) held with room to spare; Wi-Fi is now off for about 4 s before the radio is up.
+
+Side finding: the first two sends that day listed no iPhone because **Bluetooth was switched off in Windows** – the wake advert was refused (`Aborted (RadioNotAvailable)`, 11 retries) and the phone never announced itself. The tray app now checks the Bluetooth radio before a send and refuses with a message instead of turning Wi-Fi off for nothing (confirmed: `not started: Bluetooth is off`, Wi-Fi stayed on).
+
 ---
 
 ## F-039 – What limits the send at ~1 MB/s: the hand-over, not the PHY rate
@@ -1944,3 +1950,19 @@ So the radio is neither failing nor busy (1.8 ms per frame, 1.00 transmissions) 
 | held | 1911 | **< 800** | about the same |
 | upload time | 4.5 s (3.9–8.7 s in the last four sends) | **≤ 3.5 s** | ≥ 4.5 s |
 | NOT ACKed data frames | 0 | ≤ 1 % (more frames near a run's end) | > 3 % |
+
+### Result (2026-11-20 21:22, one send of the 5.4 MB photo; FACT: app.log, awdld and radiod logs in mtdrop-private)
+
+| | 21:41 (before) | prediction | 2026-11-20 |
+|---|---|---|---|
+| held | 1911 (run ending: not split) | < 800 | **≥ 988** (last `radio:` line 1.7 s before the end; run ending 1) |
+| upload time (/Upload sent → 200) | 4.5 s | ≤ 3.5 s | **3.95 s** (~1.37 MB/s) |
+| NOT ACKed data frames | 0 | ≤ 1 % | **0 of 3916**, 1.00 transmissions per frame |
+| in the radio, submit → TX status | 1.8 ms | – | **5.8 ms** mean (max 64 ms) |
+| deferred (phone not on our channel) | 1941 | – | 1013 for **2.0 s** of the ~4 s upload |
+
+**Partly confirmed.** The upload got ~12 % shorter and nothing was lost, but held is above the predicted bound and the upload missed 3.5 s. Held is now almost all "radio full" (run ending 1): with 12 frames in flight the frames queue inside the firmware (5.8 ms instead of 1.8 ms), so more in flight does not move more frames. The larger brake is now the phone itself: for about half of the upload it was off our channel (its own AWDL channel sequence), which neither the hand-over nor a faster PHY rate (ADR-0007 S4) can change. One run only; earlier sends of the same photo varied 3.9–8.7 s.
+
+Wi-Fi back in the same session: transfer end → Wi-Fi connected **15.7 s** (F-037: 20.4 s), connect nudged after 1 s again.
+
+Conclusion: the send of a 5.4 MB photo is now ~15 s from click to "Delivered" (radio up 6 s, receiver listed 1.9 s after the advert, /Ask waits for the owner, upload ~4 s). Further work on the radio path would shave at most ~1–2 s of the upload; S4/S5 stay postponed.
