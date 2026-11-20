@@ -1,0 +1,27 @@
+mtdrop - AirDrop-compatible file sharing for Windows laptops with a MediaTek MT7921 Wi-Fi card
+
+This is an ALPHA version, tested on one laptop. Please read before installing:
+
+* Only for the MediaTek MT7921 Wi-Fi card (PCI 14C3:7961). The setup checks this and stops otherwise.
+
+* While you receive or send (at most about 2 minutes), mtdrop takes over the Wi-Fi card:
+  there is NO Wi-Fi internet during that time. Afterwards the card goes back to the MediaTek
+  driver by itself, also after a crash or a restart. Ethernet and USB tethering keep working.
+
+* The setup:
+  - copies mtdrop to C:\Program Files\mtdrop and registers the Windows service "mtdrop";
+  - downloads the MT7961 Wi-Fi firmware from the openwrt/mt76 project (needs internet now)
+    and checks its SHA-256 (the Windows firmware does not accept the commands mtdrop needs);
+  - saves a backup of your MediaTek Wi-Fi driver to C:\ProgramData\mtdrop;
+  - signs the small mtdrop radio driver with a certificate created on this PC and trusted only
+    on this PC. Its private key is deleted right away, so nothing else can be signed with it.
+  It does not change the Wi-Fi card itself until you click Receive or Send.
+
+* On the iPhone: AirDrop must be set to "Everyone for 10 Minutes" ("Contacts Only" cannot work).
+* To send to an iPhone, Bluetooth must be on.
+
+Uninstall from Settings > Apps removes everything, including the certificate.
+
+mtdrop is an independent open-source project (GPL-3.0-or-later), not affiliated with or
+endorsed by Apple Inc. AirDrop and iPhone are trademarks of Apple Inc.
+Source code and issues: https://github.com/jp10b/mtdrop
