@@ -20,8 +20,32 @@ public sealed class BleWake : IDisposable
     private BluetoothLEAdvertisementPublisher? _publisher;
     private bool _stopped;
     private int _restarts;
+    private volatile bool _radioOff;
 
     public BleWake(Action<string> log) => _log = log;
+
+    /// <summary>True once Windows refused the advert because the Bluetooth radio is off.</summary>
+    public bool RadioOff => _radioOff;
+
+    /// <summary>
+    /// Whether the Bluetooth radio is switched on in Windows; null when Windows does not say (no radio listed, or
+    /// the query failed). Read before a send so Wi-Fi is not turned off for nothing: with Bluetooth off the advert is
+    /// refused (RadioNotAvailable) and no iPhone lists this PC (2026-11-20).
+    /// </summary>
+    public static async Task<bool?> IsBluetoothOnAsync()
+    {
+        try
+        {
+            var radios = await Windows.Devices.Radios.Radio.GetRadiosAsync();
+            var bluetooth = radios.Where(r => r.Kind == Windows.Devices.Radios.RadioKind.Bluetooth).ToList();
+            if (bluetooth.Count == 0) return null;
+            return bluetooth.Any(r => r.State == Windows.Devices.Radios.RadioState.On);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     /// <summary>Type 0x05 payload with random hashes (winawdl scripts/airdrop-beacon.ps1, mt7921 tools/blewake.sh).</summary>
     public static byte[] Payload()
@@ -64,6 +88,7 @@ public sealed class BleWake : IDisposable
     {
         _log($"ble: advertisement {args.Status}{(args.Error != Windows.Devices.Bluetooth.BluetoothError.Success ? $" ({args.Error})" : "")}");
         if (args.Status != BluetoothLEAdvertisementPublisherStatus.Aborted) return;
+        if (args.Error == Windows.Devices.Bluetooth.BluetoothError.RadioNotAvailable) _radioOff = true;
         // Aborted: Bluetooth was switched off or reset (on a combo chip a Wi-Fi reconfiguration can do that,
         // mt7921 FINDINGS §36). Try again a moment later, a bounded number of times.
         lock (_gate)

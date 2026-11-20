@@ -61,9 +61,16 @@ public sealed class SendFlow(
         var named = new Dictionary<string, (AirDropServiceEndpoint Endpoint, string Name)>(StringComparer.OrdinalIgnoreCase);
         var hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int announced = 0;
+        bool toldRadioOff = false;
         while (!picker.Choice.IsCompleted)
         {
             ct.ThrowIfCancellationRequested();
+            if (ble.RadioOff && !toldRadioOff && named.Count == 0)
+            {
+                toldRadioOff = true;     // switched off during the session: iPhones will not list this PC without it
+                log("send: Bluetooth is off; the advert is refused");
+                picker.SetStatus("Bluetooth is off. Turn it on (Quick Settings) so iPhones can see this PC.");
+            }
             foreach (AirDropServiceEndpoint e in browser.Current)
             {
                 if (picker.Choice.IsCompleted) break;

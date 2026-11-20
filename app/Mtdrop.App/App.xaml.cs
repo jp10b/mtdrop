@@ -554,6 +554,15 @@ public partial class App : System.Windows.Application
             _prompts.ShowMessage("Cannot send", ex.Message);
             return;
         }
+        if (await BleWake.IsBluetoothOnAsync() == false)
+        {
+            // Without the Bluetooth advert no iPhone lists this PC as a receiver; do not turn Wi-Fi off for nothing.
+            AppLog.Write($"user: send {files.Count} file(s); not started: Bluetooth is off");
+            _prompts.ShowMessage("Bluetooth is off",
+                "Turn Bluetooth on (Quick Settings or Settings > Bluetooth & devices) and send again. " +
+                "An iPhone lists this PC as a receiver only after a Bluetooth signal from it. Wi-Fi was not turned off.");
+            return;
+        }
         AppLog.Write($"user: send {files.Count} file(s), {files.Sum(f => f.Size)} bytes");
         _lastProblem = null;
         var window = new CancellationTokenSource(_duration);
