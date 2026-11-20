@@ -25,7 +25,7 @@ Nothing below is automated. Every command that changes driver, boot or network-a
 ### Building the proxy driver
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio8\Community\MSBuild\Current\Binmd64\MSBuild.exe" `
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" `
   driver\proxy\mtdrop_proxy.vcxproj /p:Configuration=Release /p:Platform=x64 /nologo /v:m
 ```
 

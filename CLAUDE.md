@@ -5,13 +5,15 @@
 
 ---
 
-## 0. How to work with the maintainer
+## 0. How to work on this project
 
-- The maintainer communicates in **Polish**. Reply in Polish. Code, comments, commit messages and public docs (README, docs/) are in **English** (open-source audience).
-- The maintainer is ambitious and ready to learn, but kernel/driver development may be new to them. When you introduce a non-obvious concept (NDIS, KMDF, IRQL, DMA rings, radiotap, AWDL sync), explain it briefly the first time.
+- Code, comments, commit messages and docs (README, docs/) are in **English** (open-source audience). Talk to the maintainer in the language set in `CLAUDE.local.md` (if present).
+- Commit messages carry no AI attribution trailers.
+- When you introduce a non-obvious concept (NDIS, KMDF, IRQL, DMA rings, radiotap, AWDL sync), explain it briefly the first time.
 - Research before code. This project sits on top of reverse-engineered, poorly documented protocols. Read prior art (section 5) before designing anything.
 - Separate **FACT** (verified in source code, a capture or official docs), **ASSUMPTION** (plausible, not yet verified) and **TODO-VERIFY**. Never present an assumption as fact. Prior projects in this space retracted several confident conclusions – see `jedbillyb/airdrop-mt7921/docs/FINDINGS.md`.
 - Anything that needs a physical action (iPhone in hand, rebooting, changing BIOS/UEFI settings, router settings) – ask the maintainer and give exact step-by-step instructions.
+- Private results and logs go to a folder outside the repository (scripts default to `%USERPROFILE%\mtdrop-private`); machine-specific notes live in the git-ignored `CLAUDE.local.md`.
 
 ---
 
@@ -87,23 +89,16 @@ AirDrop stack, bottom to top:
 
 ---
 
-## 4. Target hardware / environment
+## 4. Reference hardware
 
-Values marked FACT were read from the system on 2026-11-08 (`Get-CimInstance`, `Get-PnpDevice`, `netsh wlan`). Device-identifying values (MAC, SSID, BT peers) are deliberately NOT recorded here.
+The MT7921 port was developed and tested on one machine. Device-identifying values (MAC, SSID, names, serials) are never recorded in the repository.
 
-- Laptop model: **Acer Swift X SFX14-41G** (FACT, WMI). No built-in RJ45 port (FACT: no Ethernet adapter enumerated).
-- Wi-Fi card: **MediaTek Wi-Fi 6 MT7921**, `PCI\VEN_14C3&DEV_7961&SUBSYS_380211AD&REV_00` (FACT). Vendor driver version `3.5.0.1349` (FACT).
-  - `netsh wlan show wirelesscapabilities`: Network monitor mode **Not supported**; Wi-Fi Direct Device/GO/Client supported; 2 concurrent channels; 2x2 MIMO (FACT).
-- Bluetooth: **MediaTek Bluetooth MT7921** on **USB** `VID_04CA&PID_3802` (FACT) – the BT half of the combo chip is a separate USB function, not PCIe.
-- Windows version / build: **Windows 11 Home 25H2, build 26200** (FACT).
-- Secure Boot: **disabled** (maintainer, 2026-11-08).
-- BitLocker / Device Encryption: **disabled** (maintainer, 2026-11-08). Re-check before first driver install; if it ever gets enabled, back up the recovery key first.
-- iPhone model / iOS version: **iPhone 15 Pro, iOS 26.5.2** (maintainer). Policy: do NOT update iOS during the project unless a finding requires it – iOS cannot be downgraded and updates may break AirDrop interop. Record the iOS version in every FINDINGS entry.
-- Home router: 2.4 GHz, **channel 1** on 2026-11-08, **channel 2** on 2026-11-17 (FACT, `netsh`; the router picks its channel itself, so check before choosing a TX test channel). At home on 2026-11-17 only 4 BSSIDs were in range (2 on ch 2, 1 on 11, 1 on 36): too few for the probe-response ACK method, which needs several access points on the test channel. Not an AWDL social channel → same-channel coexistence (M9) would not apply with this AP as-is. Router supports 5 GHz (maintainer); 5 GHz SSID/channel `TODO` (not visible under the same SSID prefix in `netsh wlan show networks`). The maintainer also works from an office network (5 GHz, channel 104 = DFS: no TX allowed there, not an AWDL channel). **Requirement (maintainer, 2026-11-17): the final product must work with any router / channel** (coexistence is M9).
-- Ethernet / internet fallback without Wi-Fi: **no adapter**. Plan: iPhone USB tethering (Windows needs Apple Devices app / Apple Mobile Device driver – TODO-VERIFY on this machine; Linux uses `ipheth`). A USB-C Ethernet adapter is recommended before M3 (also relevant for KDNET).
-- Second machine for kernel debugging: **available, Windows** (maintainer) → WinDbg host. Caveat: KDNET needs a supported wired NIC on the *target* (this laptop has only Wi-Fi; USB NICs are generally not supported by KDNET – TODO-VERIFY with `kdnet.exe`). Fallbacks: crash dumps + WinDbg, or KDNET via a supported adapter.
-- USB stick for M0: **64 GB** (maintainer) → full Linux install on the stick (not live+persistence).
-- Other software on the machine relevant to driver work: VMware Workstation (VMnet adapters), Tailscale (FACT).
+- Laptop: **Acer Swift X SFX14-41G**, no RJ45 port.
+- Wi-Fi: **MediaTek MT7921**, `PCI\VEN_14C3&DEV_7961&SUBSYS_380211AD&REV_00`, vendor driver `3.5.0.1349`. `netsh wlan show wirelesscapabilities`: monitor mode not supported.
+- Bluetooth: the BT half of the combo chip is a separate **USB** function (`VID_04CA&PID_3802`), not PCIe.
+- Windows 11 Home 25H2, build 26200; Secure Boot off during development.
+- iPhone 15 Pro, iOS 26.5.2. Policy: do not update iOS during the project unless a finding requires it (no downgrade). Record the iOS version in every FINDINGS entry.
+- Coexistence (M9) must work with any router and channel; channel 104 and other DFS channels allow no TX.
 
 ---
 
@@ -290,7 +285,7 @@ mtdrop/
 3. Write `docs/PROTOCOL.md` from OWL + OpenDrop + airdrop-mt7921 findings (mark FACT / ASSUMPTION / TODO-VERIFY). — *done (2026-11-09), includes our own decrypted capture.*
 4. Propose ADR-0001 (language/stack) and ADR-0002 (driver strategy: full custom MT7921 driver vs alternatives) with pros/cons. — *accepted by the maintainer (2026-11-09), see `docs/adr/`. ADR-0001 proposes C#/.NET for `airdropd`; ADR-0002 proposes a UMDF proxy + user-mode chip library first, thin KMDF as fallback, fixed channel 44 first.*
 5. Scaffold the repo (M1). — *done (2026-11-09): README, LICENSE, ARCHITECTURE, DEV-SETUP, FINDINGS, ADRs, `third_party/NOTICE`, CI (Python tool tests), reference codecs in `tools/proto/`.*
-6. Write a step-by-step **M0 guide in Polish** for the maintainer: which Linux live USB, how to set it up, how to build patched OWL + OpenDrop, how to capture pcaps and TLS keylog, what to send back. — *done (2026-11-08), moved ahead of 3–5 at maintainer's request: `docs/M0-GUIDE.pl.md` + `tools/m0/`. Results go to `C:\Users\desktop\mtdrop-private\` (outside the repo, never committed).*
+6. Write a step-by-step **M0 guide in Polish** for the maintainer: which Linux live USB, how to set it up, how to build patched OWL + OpenDrop, how to capture pcaps and TLS keylog, what to send back. — *done (2026-11-08), moved ahead of 3–5 at maintainer's request: `docs/M0-GUIDE.pl.md` + `tools/m0/`. Results go to `%USERPROFILE%\mtdrop-private\` (outside the repo, never committed).*
 
 Do not start driver code before M0 succeeds. (M0 succeeded 2026-11-09. Driver work additionally requires ADR-0002 accepted and the checklist in `docs/DEV-SETUP.md` complete.)
 
