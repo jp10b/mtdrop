@@ -49,6 +49,17 @@ AirDrop, iPhone and Mac are trademarks of Apple Inc. They appear here only to sa
 | **Send** | Right-click files in Explorer → *Send to → iPhone (mtdrop)*, or use the tray menu. Nearby iPhones are listed, you pick one, and the owner accepts on the phone. |
 | **Gives Wi-Fi back by itself** | A session takes over the Wi-Fi card for up to 2 minutes. A Windows service always hands it back to the MediaTek driver afterwards, even if a process crashes or the laptop restarts. |
 
+### Receiving a photo, step by step
+
+<p align="center">
+  <a href="docs/media/how-it-works.mp4"><img src="docs/media/how-it-works.gif" width="800" alt="Animation: on the PC, the mtdrop tray menu, Start receiving; on the iPhone, AirDrop set to Everyone for 10 Minutes, a photo shared and the PC tapped; on the PC, Accept; the photo appears in the Downloads folder"></a>
+</p>
+
+1. On the PC, click the mtdrop icon in the notification area and choose **Start receiving**. The PC stays visible for 2 minutes.
+2. On the iPhone, set AirDrop to **Everyone for 10 Minutes** (Control Centre or *Settings → General → AirDrop*).
+3. Share a photo, tap **AirDrop** and choose your PC.
+4. On the PC, click **Accept**. The photo is saved to `Downloads`; *Open folder* shows it.
+
 ### Measured on the test machine
 
 | What | Time |
