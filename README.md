@@ -43,15 +43,15 @@ AirDrop, iPhone and Mac are trademarks of Apple Inc. They appear here only to sa
 
 ## What it does
 
-| | |
+| Feature | How it works |
 |---|---|
-| 📥 **Receive** | Click *Receive* in the tray app. The PC appears in the iPhone's AirDrop sheet next to Apple devices. You accept or decline each transfer on the PC, and files land in `Downloads`. |
-| 📤 **Send** | Right-click files in Explorer → *Send to → iPhone (mtdrop)*, or use the tray menu. Nearby iPhones are listed, you pick one, and the owner accepts on the phone. |
-| 📶 **Gives Wi-Fi back by itself** | A session takes over the Wi-Fi card for up to 2 minutes. A Windows service always hands it back to the MediaTek driver afterwards, even if a process crashes or the laptop restarts. |
+| **Receive** | Click *Receive* in the tray app. The PC appears in the iPhone's AirDrop sheet next to Apple devices. You accept or decline each transfer on the PC, and files land in `Downloads`. |
+| **Send** | Right-click files in Explorer → *Send to → iPhone (mtdrop)*, or use the tray menu. Nearby iPhones are listed, you pick one, and the owner accepts on the phone. |
+| **Gives Wi-Fi back by itself** | A session takes over the Wi-Fi card for up to 2 minutes. A Windows service always hands it back to the MediaTek driver afterwards, even if a process crashes or the laptop restarts. |
 
 ### Measured on the test machine
 
-| | |
+| What | Time |
 |---|---|
 | Click on *Send* until the radio is up | ~6 s |
 | 5.4 MB photo PC → iPhone, upload | ~4 s (~1.4 MB/s); ~15 s from the click to "Delivered" |
