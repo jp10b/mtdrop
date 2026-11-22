@@ -15,6 +15,11 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * Modified for mtdrop, 2026-11-17 to 2026-11-18 (changes marked "mtdrop"):
+ * received frames are dated with the radiotap TSFT when built with
+ * OWL_RADIOTAP_TSFT_IS_HOST_CLOCK (F-022), and the peer's channel sequence
+ * is logged at INFO (F-031).
  */
 
 #include <string.h>

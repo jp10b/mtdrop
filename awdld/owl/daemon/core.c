@@ -15,6 +15,10 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * Modified for mtdrop, 2026-11-17 to 2026-11-19 (changes marked "[mtdrop]"):
+ * send-time counters (F-033), logging of the peer's channel sequence (F-031)
+ * and a slot-aware hand-over of unicast frames to the radio (F-034, F-039).
  */
 
 #include "core.h"

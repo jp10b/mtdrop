@@ -15,6 +15,9 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * Modified for mtdrop, 2026-11-17 to 2026-11-19 (changes marked "[mtdrop]"):
+ * counters for where a send spends its time (F-033, F-034, F-039).
  */
 
 #ifndef AWDL_STATE_H_
