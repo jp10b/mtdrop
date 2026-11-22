@@ -40,10 +40,6 @@ const Caption: React.FC = () => {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 14, opacity: 1 - exitP,
         transform: `translateY(${-14 * exitP}px)` }}>
-        <div style={{ width: 34, height: 34, borderRadius: 17, border: "1.5px solid rgba(243,244,246,0.35)", color: C.text,
-          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 600,
-          opacity: sp(frame, f(cap.at), fps, theme.spring.snappy),
-          transform: `scale(${interpolate(sp(frame, f(cap.at), fps, theme.spring.bouncy), [0, 1], [0.6, 1])})` }}>{idx + 1}</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 9, fontSize: 30, fontWeight: 600, letterSpacing: "-0.02em", color: C.text }}>
           {words.map((w, i) => {
             const p = sp(frame, f(cap.at) + 3 + i * 2, fps, theme.spring.snappy);
